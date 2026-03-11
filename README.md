@@ -18,4 +18,4 @@ let client = Client::connect("http://localhost:50051").await?;
 
 ## License
 
-Apache 2.0
+BSD-3-Clause
