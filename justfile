@@ -9,7 +9,7 @@
 #
 # When running outside a devcontainer:
 #   - Uses pre-built angzarr-rust image from ghcr.io/angzarr
-#   - Podman mounts justfile.container as /workspace/client/rust/justfile
+#   - Podman mounts justfile.container as /workspace/justfile
 #
 # When running inside a devcontainer (DEVCONTAINER=true):
 #   - Commands execute directly via `just <target>`
@@ -17,7 +17,7 @@
 
 set shell := ["bash", "-c"]
 
-TOP := `git rev-parse --show-toplevel`
+ROOT := `git rev-parse --show-toplevel`
 IMAGE := "ghcr.io/angzarr-io/angzarr-rust:latest"
 
 # Run just target in container (or directly if already in devcontainer)
@@ -28,9 +28,9 @@ _container +ARGS:
         just {{ARGS}}
     else
         podman run --rm --network=host \
-            -v "{{TOP}}:/workspace:Z" \
-            -v "{{TOP}}/client/rust/justfile.container:/workspace/client/rust/justfile:ro" \
-            -w /workspace/client/rust \
+            -v "{{ROOT}}:/workspace:Z" \
+            -v "{{ROOT}}/justfile.container:/workspace/justfile:ro" \
+            -w /workspace \
             -e CARGO_HOME=/workspace/.cargo-container \
             -e DEVCONTAINER=true \
             {{IMAGE}} just {{ARGS}}
