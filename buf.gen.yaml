@@ -1,0 +1,8 @@
+version: v2
+inputs:
+  - module: buf.build/angzarr/angzarr
+plugins:
+  - remote: buf.build/prost/rust
+    out: proto
+  - remote: buf.build/tonic/rust
+    out: proto
