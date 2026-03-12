@@ -28,6 +28,12 @@ test-bdd:
 test-unit:
     cargo test -p angzarr-client --lib
 
+lint:
+    cargo clippy --all-targets -- -D warnings
+
+fmt:
+    cargo fmt --check
+
 mutate:
     cargo mutants --jobs 4
 

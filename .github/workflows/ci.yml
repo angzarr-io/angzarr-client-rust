@@ -6,34 +6,70 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  REGISTRY: ghcr.io
+  RUST_IMAGE: ghcr.io/angzarr-io/angzarr-rust:latest
+
+permissions:
+  contents: read
+  packages: read
+
 jobs:
-  build:
+  build-test:
     name: Build & Test
     runs-on: ubuntu-latest
-    container: ghcr.io/angzarr-io/angzarr-rust:latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure git safe directory
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Export protos from Buf registry
+        run: |
+          # Install buf CLI
+          curl -sSL https://github.com/bufbuild/buf/releases/latest/download/buf-Linux-x86_64 -o buf
+          chmod +x buf
+          sudo mv buf /usr/local/bin/
+
+          # Export protos to local directory
+          mkdir -p proto
+          buf export buf.build/angzarr/angzarr -o proto
 
       - name: Build
-        run: just build
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            -e ANGZARR_PROTO_ROOT=/workspace/proto \
+            ${{ env.RUST_IMAGE }} \
+            cargo build --release
 
       - name: Test
-        run: just test
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            -e ANGZARR_PROTO_ROOT=/workspace/proto \
+            ${{ env.RUST_IMAGE }} \
+            cargo test --lib
 
-      - name: Lint
-        run: just lint
+      - name: Clippy
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            -e ANGZARR_PROTO_ROOT=/workspace/proto \
+            ${{ env.RUST_IMAGE }} \
+            cargo clippy --all-targets -- -D warnings
 
       - name: Format check
-        run: cargo fmt --check
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            ${{ env.RUST_IMAGE }} \
+            cargo fmt --check

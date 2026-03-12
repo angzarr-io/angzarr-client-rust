@@ -55,6 +55,14 @@ serve:
 test-verbose:
     just _container test-verbose
 
+# Run clippy linter
+lint:
+    just _container lint
+
+# Check formatting
+fmt:
+    just _container fmt
+
 # Run mutation testing with cargo-mutants
 mutate:
     just _container mutate
