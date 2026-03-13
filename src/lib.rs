@@ -155,3 +155,8 @@ pub use validation::{
     require_exists, require_non_negative, require_not_empty, require_not_empty_str,
     require_not_exists, require_positive, require_status, require_status_not,
 };
+
+// Re-export proc macros for OO-style component definitions
+pub use angzarr_macros::{
+    aggregate, applies, handles, prepares, process_manager, projector, projects, rejected, saga,
+};

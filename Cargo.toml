@@ -10,6 +10,9 @@ keywords = ["cqrs", "event-sourcing", "grpc", "client"]
 categories = ["network-programming", "asynchronous"]
 
 [dependencies]
+# Macros (re-exported for convenience)
+angzarr-macros = { path = "angzarr-macros" }
+
 # gRPC
 tonic = { version = "0.12", features = ["tls"] }
 prost = "0.13"
