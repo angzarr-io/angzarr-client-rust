@@ -273,6 +273,7 @@ async fn given_command_response_with_events(world: &mut EventDecodingWorld) {
     world.command_response = Some(CommandResponse {
         events: Some(event_book),
         projections: vec![],
+        cascade_errors: vec![],
     });
 }
 
@@ -281,6 +282,7 @@ async fn given_command_response_no_events(world: &mut EventDecodingWorld) {
     world.command_response = Some(CommandResponse {
         events: Some(make_event_book(vec![])),
         projections: vec![],
+        cascade_errors: vec![],
     });
 }
 
