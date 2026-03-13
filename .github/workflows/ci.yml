@@ -5,14 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  repository_dispatch:
+    types: [core-updated]
 
 env:
-  REGISTRY: ghcr.io
-  RUST_IMAGE: ghcr.io/angzarr-io/angzarr-rust:latest
-
-permissions:
-  contents: read
-  packages: read
+  CARGO_TERM_COLOR: always
 
 jobs:
   build-test:
@@ -21,55 +18,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          components: rustfmt, clippy
 
-      - name: Export protos from Buf registry
-        run: |
-          # Install buf CLI
-          curl -sSL https://github.com/bufbuild/buf/releases/latest/download/buf-Linux-x86_64 -o buf
-          chmod +x buf
-          sudo mv buf /usr/local/bin/
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-          # Export protos to local directory
-          mkdir -p proto
-          buf export buf.build/angzarr/angzarr -o proto
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build
-        run: |
-          docker run --rm \
-            -v "${{ github.workspace }}:/workspace" \
-            -w /workspace \
-            -e ANGZARR_PROTO_ROOT=/workspace/proto \
-            ${{ env.RUST_IMAGE }} \
-            cargo build --release
+        run: cargo build --workspace
 
       - name: Test
-        run: |
-          docker run --rm \
-            -v "${{ github.workspace }}:/workspace" \
-            -w /workspace \
-            -e ANGZARR_PROTO_ROOT=/workspace/proto \
-            ${{ env.RUST_IMAGE }} \
-            cargo test --lib
+        run: cargo test --workspace
 
       - name: Clippy
-        run: |
-          docker run --rm \
-            -v "${{ github.workspace }}:/workspace" \
-            -w /workspace \
-            -e ANGZARR_PROTO_ROOT=/workspace/proto \
-            ${{ env.RUST_IMAGE }} \
-            cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace -- -D warnings
 
       - name: Format check
-        run: |
-          docker run --rm \
-            -v "${{ github.workspace }}:/workspace" \
-            -w /workspace \
-            ${{ env.RUST_IMAGE }} \
-            cargo fmt --check
+        run: cargo fmt --check
+
+  notify-downstream:
+    name: Notify Downstream Repos
+    runs-on: ubuntu-latest
+    needs: build-test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    steps:
+      - name: Trigger examples-rust rebuild
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.REPO_DISPATCH_TOKEN }}
+          repository: angzarr-io/angzarr-examples-rust
+          event-type: client-updated
+          client-payload: '{"ref": "${{ github.ref }}", "sha": "${{ github.sha }}"}'
