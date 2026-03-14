@@ -236,12 +236,13 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
             });
 
         /// Auto-generated handler wrapper implementing CommandHandlerDomainHandler.
+        /// Uses Arc to allow Clone without requiring inner type to be Clone.
         pub struct #handler_name {
-            inner: #self_ty,
+            inner: std::sync::Arc<#self_ty>,
         }
 
-        // Clone only when inner type is Clone
-        impl Clone for #handler_name where #self_ty: Clone {
+        // Clone is always available since inner is Arc
+        impl Clone for #handler_name {
             fn clone(&self) -> Self {
                 Self { inner: self.inner.clone() }
             }
@@ -249,7 +250,7 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
 
         impl #handler_name {
             pub fn new(inner: #self_ty) -> Self {
-                Self { inner }
+                Self { inner: std::sync::Arc::new(inner) }
             }
         }
 
@@ -289,26 +290,11 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
 
         impl #self_ty {
             /// Creates a CommandHandlerRouter from this aggregate's annotated methods.
-            /// Requires `Clone` on the handler type.
             pub fn into_router(self) -> angzarr_client::CommandHandlerRouter<#state_ty, #handler_name>
             where
-                Self: Clone + Send + Sync + 'static,
-            {
-                angzarr_client::CommandHandlerRouter::new(#domain, #domain, #handler_name::new(self))
-            }
-
-            /// Creates a CommandHandlerRouter using a factory function.
-            /// Does NOT require `Clone` on the handler type.
-            pub fn into_router_factory<F>(factory: F) -> angzarr_client::CommandHandlerRouter<#state_ty, #handler_name>
-            where
-                F: Fn() -> Self + Send + Sync + 'static,
                 Self: Send + Sync + 'static,
             {
-                angzarr_client::CommandHandlerRouter::with_factory(
-                    #domain,
-                    #domain,
-                    move || #handler_name::new(factory())
-                )
+                angzarr_client::CommandHandlerRouter::new(#domain, #domain, #handler_name::new(self))
             }
         }
     }
@@ -512,12 +498,13 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
         #input
 
         /// Auto-generated handler wrapper implementing SagaDomainHandler.
+        /// Uses Arc to allow Clone without requiring inner type to be Clone.
         pub struct #handler_name {
-            inner: #self_ty,
+            inner: std::sync::Arc<#self_ty>,
         }
 
-        // Clone only when inner type is Clone
-        impl Clone for #handler_name where #self_ty: Clone {
+        // Clone is always available since inner is Arc
+        impl Clone for #handler_name {
             fn clone(&self) -> Self {
                 Self { inner: self.inner.clone() }
             }
@@ -525,7 +512,7 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
 
         impl #handler_name {
             pub fn new(inner: #self_ty) -> Self {
-                Self { inner }
+                Self { inner: std::sync::Arc::new(inner) }
             }
         }
 
@@ -546,26 +533,11 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
 
         impl #self_ty {
             /// Creates a SagaRouter from this saga's annotated methods.
-            /// Requires `Clone` on the handler type.
             pub fn into_router(self) -> angzarr_client::SagaRouter<#handler_name>
             where
-                Self: Clone + Send + Sync + 'static,
-            {
-                angzarr_client::SagaRouter::new(#name, #input_domain, #handler_name::new(self))
-            }
-
-            /// Creates a SagaRouter using a factory function.
-            /// Does NOT require `Clone` on the handler type.
-            pub fn into_router_factory<F>(factory: F) -> angzarr_client::SagaRouter<#handler_name>
-            where
-                F: Fn() -> Self + Send + Sync + 'static,
                 Self: Send + Sync + 'static,
             {
-                angzarr_client::SagaRouter::with_factory(
-                    #name,
-                    #input_domain,
-                    move || #handler_name::new(factory())
-                )
+                angzarr_client::SagaRouter::new(#name, #input_domain, #handler_name::new(self))
             }
         }
     }
