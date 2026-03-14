@@ -68,6 +68,7 @@ jobs:
       example-images: '{}'
       # Use matching branch if exists, callable falls back to main
       examples-ref: ${{ github.head_ref || 'main' }}
+    secrets: inherit
 
   notify-downstream:
     name: Notify Downstream Repos
