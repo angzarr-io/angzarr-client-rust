@@ -15,7 +15,15 @@ jobs:
   build-test:
     name: Build & Test
     runs-on: ubuntu-latest
+    outputs:
+      coordinator-version: ${{ steps.versions.outputs.coordinator }}
     steps:
+      - name: Set version outputs
+        id: versions
+        run: |
+          # Pinned coordinator version for acceptance tests - update when releasing
+          echo "coordinator=v0.1.0" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
@@ -55,8 +63,7 @@ jobs:
     needs: build-test
     uses: angzarr-io/angzarr-examples-rust/.github/workflows/acceptance-callable.yml@main
     with:
-      # Pinned coordinator version - update when releasing
-      coordinator-version: v0.1.0
+      coordinator-version: ${{ needs.build-test.outputs.coordinator-version }}
       # Build example images locally in callable workflow
       example-images: '{}'
       # Use matching branch if exists, callable falls back to main
