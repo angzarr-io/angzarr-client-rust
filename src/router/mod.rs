@@ -32,6 +32,7 @@
 
 mod cloudevents;
 mod dispatch;
+mod factory;
 mod helpers;
 mod saga_context;
 mod state;
@@ -54,13 +55,16 @@ use crate::proto::{
 // Re-export public types
 pub use helpers::{event_book_from, event_page, new_event_book, new_event_book_multi, pack_event};
 pub use saga_context::SagaContext;
-pub use state::{EventApplier, StateFactory, StateRouter};
+pub use state::{EventApplier, EventApplierHOF, StateFactory, StateRouter};
 pub use traits::{
     CommandHandlerDomainHandler, CommandRejectedError, CommandResult, ProcessManagerDomainHandler,
     ProcessManagerResponse, ProjectorDomainHandler, RejectionHandlerResponse, SagaDomainHandler,
     SagaHandlerResponse, UnpackAny,
 };
-pub use upcaster::{BoxedUpcasterHandler, UpcasterHandler, UpcasterMode, UpcasterRouter};
+pub use upcaster::{BoxedUpcasterHandler, UpcasterHandler, UpcasterHandlerHOF, UpcasterMode, UpcasterRouter};
+
+// Factory support for per-request handlers and HOF
+pub use factory::{BoxedHandlerFactory, HandlerFactory, HandlerHOF};
 
 // CloudEvents
 pub use cloudevents::{CloudEventsHandler, CloudEventsProjector, CloudEventsRouter};
@@ -86,6 +90,48 @@ pub struct ProcessManagerMode;
 pub struct ProjectorMode;
 
 // ============================================================================
+// Handler Storage Types (static or factory)
+// ============================================================================
+
+/// Handler storage supporting both static handlers and factories.
+enum HandlerStorage<H> {
+    /// Static handler - shared across all requests.
+    Static(H),
+    /// Factory - creates fresh handler per-request.
+    Factory(Arc<dyn Fn() -> H + Send + Sync>),
+}
+
+impl<H> HandlerStorage<H> {
+    /// Get or create handler for this request.
+    fn get(&self) -> HandlerRef<'_, H>
+    where
+        H: Clone,
+    {
+        match self {
+            Self::Static(h) => HandlerRef::Borrowed(h),
+            Self::Factory(f) => HandlerRef::Owned(f()),
+        }
+    }
+}
+
+/// Reference to a handler - either borrowed or owned.
+enum HandlerRef<'a, H> {
+    Borrowed(&'a H),
+    Owned(H),
+}
+
+impl<'a, H> std::ops::Deref for HandlerRef<'a, H> {
+    type Target = H;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(h) => h,
+            Self::Owned(h) => h,
+        }
+    }
+}
+
+// ============================================================================
 // SingleDomainRouter — CommandHandler Mode
 // ============================================================================
 
@@ -93,27 +139,66 @@ pub struct ProjectorMode;
 ///
 /// Domain is set at construction time. No `.domain()` method exists,
 /// enforcing single-domain constraint at compile time.
+///
+/// # Factory Pattern (per-request handlers)
+///
+/// ```rust,ignore
+/// let db_pool = Arc::new(DbPool::new());
+/// let router = CommandHandlerRouter::with_factory(
+///     "agg-player",
+///     "player",
+///     move || PlayerHandler::new(db_pool.clone())
+/// );
+/// ```
 pub struct CommandHandlerRouter<S, H>
 where
     H: CommandHandlerDomainHandler<State = S>,
 {
     name: String,
     domain: String,
-    handler: H,
+    storage: HandlerStorage<H>,
     _state: PhantomData<S>,
 }
 
-impl<S: Default + Send + Sync + 'static, H: CommandHandlerDomainHandler<State = S>>
+impl<S: Default + Send + Sync + 'static, H: CommandHandlerDomainHandler<State = S> + Clone>
     CommandHandlerRouter<S, H>
 {
-    /// Create a new command handler router.
+    /// Create a new command handler router with a static handler.
     ///
     /// Command handlers accept commands and emit events. Single domain enforced at construction.
+    /// The handler is shared across all requests.
     pub fn new(name: impl Into<String>, domain: impl Into<String>, handler: H) -> Self {
         Self {
             name: name.into(),
             domain: domain.into(),
-            handler,
+            storage: HandlerStorage::Static(handler),
+            _state: PhantomData,
+        }
+    }
+
+    /// Create a new command handler router with a factory.
+    ///
+    /// The factory is called per-request to create fresh handler instances.
+    /// Use this for dependency injection.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let db_pool = Arc::new(DbPool::new());
+    /// let router = CommandHandlerRouter::with_factory(
+    ///     "agg-player",
+    ///     "player",
+    ///     move || PlayerHandler::new(db_pool.clone())
+    /// );
+    /// ```
+    pub fn with_factory<F>(name: impl Into<String>, domain: impl Into<String>, factory: F) -> Self
+    where
+        F: Fn() -> H + Send + Sync + 'static,
+    {
+        Self {
+            name: name.into(),
+            domain: domain.into(),
+            storage: HandlerStorage::Factory(Arc::new(factory)),
             _state: PhantomData,
         }
     }
@@ -130,7 +215,7 @@ impl<S: Default + Send + Sync + 'static, H: CommandHandlerDomainHandler<State = 
 
     /// Get command types from the handler.
     pub fn command_types(&self) -> Vec<String> {
-        self.handler.command_types()
+        self.storage.get().command_types()
     }
 
     /// Get subscriptions for this command handler.
@@ -140,7 +225,7 @@ impl<S: Default + Send + Sync + 'static, H: CommandHandlerDomainHandler<State = 
 
     /// Rebuild state from events using the handler's state router.
     pub fn rebuild_state(&self, events: &EventBook) -> S {
-        self.handler.rebuild(events)
+        self.storage.get().rebuild(events)
     }
 
     /// Dispatch a contextual command to the handler.
@@ -165,21 +250,22 @@ impl<S: Default + Send + Sync + 'static, H: CommandHandlerDomainHandler<State = 
             .as_ref()
             .ok_or_else(|| Status::invalid_argument("Missing event book"))?;
 
+        // Get handler (static or freshly created via factory)
+        let handler = self.storage.get();
+
         // Rebuild state
-        let state = self.handler.rebuild(event_book);
+        let state = handler.rebuild(event_book);
         let seq = crate::EventBookExt::next_sequence(event_book);
 
         let type_url = &command_any.type_url;
 
         // Check for Notification (rejection/compensation)
         if type_url.ends_with("Notification") {
-            return dispatch_command_handler_notification(&self.handler, command_any, &state);
+            return dispatch_command_handler_notification(&*handler, command_any, &state);
         }
 
         // Execute handler
-        let result_book = self
-            .handler
-            .handle(command_book, command_any, &state, seq)?;
+        let result_book = handler.handle(command_book, command_any, &state, seq)?;
 
         Ok(BusinessResponse {
             result: Some(business_response::Result::Events(result_book)),
@@ -242,17 +328,28 @@ fn dispatch_command_handler_notification<S: Default + 'static>(
 ///
 /// Domain is set at construction time. No `.domain()` method exists,
 /// enforcing single-domain constraint at compile time.
+///
+/// # Factory Pattern (per-request handlers)
+///
+/// ```rust,ignore
+/// let message_bus = Arc::new(MessageBus::new());
+/// let router = SagaRouter::with_factory(
+///     "saga-order-fulfillment",
+///     "order",
+///     move || OrderFulfillmentHandler::new(message_bus.clone())
+/// );
+/// ```
 pub struct SagaRouter<H>
 where
     H: SagaDomainHandler,
 {
     name: String,
     domain: String,
-    handler: H,
+    storage: HandlerStorage<H>,
 }
 
-impl<H: SagaDomainHandler> SagaRouter<H> {
-    /// Create a new saga router.
+impl<H: SagaDomainHandler + Clone> SagaRouter<H> {
+    /// Create a new saga router with a static handler.
     ///
     /// Sagas translate events from one domain to commands for another.
     /// Single domain enforced at construction.
@@ -260,7 +357,32 @@ impl<H: SagaDomainHandler> SagaRouter<H> {
         Self {
             name: name.into(),
             domain: domain.into(),
-            handler,
+            storage: HandlerStorage::Static(handler),
+        }
+    }
+
+    /// Create a new saga router with a factory.
+    ///
+    /// The factory is called per-request to create fresh handler instances.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let message_bus = Arc::new(MessageBus::new());
+    /// let router = SagaRouter::with_factory(
+    ///     "saga-order-fulfillment",
+    ///     "order",
+    ///     move || OrderFulfillmentHandler::new(message_bus.clone())
+    /// );
+    /// ```
+    pub fn with_factory<F>(name: impl Into<String>, domain: impl Into<String>, factory: F) -> Self
+    where
+        F: Fn() -> H + Send + Sync + 'static,
+    {
+        Self {
+            name: name.into(),
+            domain: domain.into(),
+            storage: HandlerStorage::Factory(Arc::new(factory)),
         }
     }
 
@@ -276,7 +398,7 @@ impl<H: SagaDomainHandler> SagaRouter<H> {
 
     /// Get event types from the handler.
     pub fn event_types(&self) -> Vec<String> {
-        self.handler.event_types()
+        self.storage.get().event_types()
     }
 
     /// Get subscriptions for this saga.
@@ -299,12 +421,15 @@ impl<H: SagaDomainHandler> SagaRouter<H> {
             _ => return Err(Status::invalid_argument("Missing event payload")),
         };
 
+        // Get handler (static or freshly created via factory)
+        let handler = self.storage.get();
+
         // Check for Notification (rejection/compensation)
         if event_any.type_url.ends_with("Notification") {
-            return dispatch_saga_notification(&self.handler, event_any);
+            return dispatch_saga_notification(&*handler, event_any);
         }
 
-        let response = self.handler.handle(source, event_any)?;
+        let response = handler.handle(source, event_any)?;
 
         Ok(SagaResponse {
             commands: response.commands,

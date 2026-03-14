@@ -96,8 +96,16 @@ pub use router::{
     new_event_book,
     new_event_book_multi,
     pack_event,
+    // Factory support for per-request handlers and HOF
+    BoxedHandlerFactory,
+    HandlerFactory,
+    HandlerHOF,
     // Upcaster types
     BoxedUpcasterHandler,
+    UpcasterHandler,
+    UpcasterHandlerHOF,
+    UpcasterMode,
+    UpcasterRouter,
     // CloudEvents types
     CloudEventsHandler,
     CloudEventsProjector,
@@ -113,10 +121,15 @@ pub use router::{
     CommandResult,
     // State management
     EventApplier,
+    EventApplierHOF,
+    StateFactory,
+    StateRouter,
+    // Process Manager types
     ProcessManagerDomainHandler,
     ProcessManagerMode,
     ProcessManagerResponse,
     ProcessManagerRouter,
+    // Projector types
     ProjectorDomainHandler,
     ProjectorMode,
     ProjectorRouter,
@@ -127,12 +140,7 @@ pub use router::{
     SagaHandlerResponse,
     SagaMode,
     SagaRouter,
-    StateFactory,
-    StateRouter,
     UnpackAny,
-    UpcasterHandler,
-    UpcasterMode,
-    UpcasterRouter,
 };
 
 // Note: dispatch_command! and dispatch_event! macros are available at crate root

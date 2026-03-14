@@ -24,6 +24,22 @@
 //!
 //! let new_events = router.upcast(&old_events);
 //! ```
+//!
+//! # HOF Pattern (with dependency injection)
+//!
+//! ```rust,ignore
+//! let migration_context = Arc::new(MigrationContext::new());
+//! let router = UpcasterRouter::new("order")
+//!     .on_with("OrderCreatedV1", || {
+//!         let ctx = migration_context.clone();
+//!         move |old: &Any| -> Any {
+//!             // ctx accessible here per-event
+//!             upcast_with_context(old, &ctx)
+//!         }
+//!     });
+//! ```
+
+use std::sync::Arc;
 
 use prost_types::Any;
 
@@ -41,11 +57,22 @@ pub type UpcasterHandler = fn(&Any) -> Any;
 /// Boxed handler for dynamic upcasting (allows closures).
 pub type BoxedUpcasterHandler = Box<dyn Fn(&Any) -> Any + Send + Sync>;
 
+/// Higher-order function that produces upcaster handlers per-event.
+pub type UpcasterHandlerHOF = Arc<dyn Fn() -> BoxedUpcasterHandler + Send + Sync>;
+
+/// Internal handler type supporting both static and factory patterns.
+enum UpcasterHandlerEntry {
+    /// Static handler called directly.
+    Static(BoxedUpcasterHandler),
+    /// HOF called per-event to produce handler.
+    Factory(UpcasterHandlerHOF),
+}
+
 struct UpcasterEntry {
     /// Type URL suffix to match (e.g., "OrderCreatedV1")
     suffix: String,
-    /// Handler function to transform the event
-    handler: BoxedUpcasterHandler,
+    /// Handler (static or factory)
+    handler: UpcasterHandlerEntry,
 }
 
 /// Router for transforming old event versions to current versions.
@@ -110,7 +137,7 @@ impl UpcasterRouter {
     {
         self.handlers.push(UpcasterEntry {
             suffix: suffix.into(),
-            handler: Box::new(handler),
+            handler: UpcasterHandlerEntry::Static(Box::new(handler)),
         });
         self
     }
@@ -120,6 +147,34 @@ impl UpcasterRouter {
     /// This is a convenience method for registering simple function pointers.
     pub fn on_fn(self, suffix: impl Into<String>, handler: UpcasterHandler) -> Self {
         self.on(suffix, handler)
+    }
+
+    /// Register a higher-order function that produces handlers per-event.
+    ///
+    /// Called each time an event is processed, allowing fresh closures with
+    /// captured dependencies.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let migration_ctx = Arc::new(MigrationContext::new());
+    /// let router = UpcasterRouter::new("order")
+    ///     .on_with("OrderCreatedV1", || {
+    ///         let ctx = migration_ctx.clone();
+    ///         Box::new(move |old: &Any| -> Any {
+    ///             upcast_with_context(old, &ctx)
+    ///         })
+    ///     });
+    /// ```
+    pub fn on_with<F>(mut self, suffix: impl Into<String>, factory: F) -> Self
+    where
+        F: Fn() -> BoxedUpcasterHandler + Send + Sync + 'static,
+    {
+        self.handlers.push(UpcasterEntry {
+            suffix: suffix.into(),
+            handler: UpcasterHandlerEntry::Factory(Arc::new(factory)),
+        });
+        self
     }
 
     /// Get the domain this upcaster handles.
@@ -141,7 +196,13 @@ impl UpcasterRouter {
 
         for entry in &self.handlers {
             if type_url.ends_with(&entry.suffix) {
-                return (entry.handler)(event);
+                return match &entry.handler {
+                    UpcasterHandlerEntry::Static(handler) => handler(event),
+                    UpcasterHandlerEntry::Factory(factory) => {
+                        let handler = factory();
+                        handler(event)
+                    }
+                };
             }
         }
 

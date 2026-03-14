@@ -56,6 +56,17 @@ pub type CloudEventsHandler<T> = fn(&T) -> Option<CloudEvent>;
 /// Boxed handler for type-erased storage.
 type BoxedHandler = Arc<dyn Fn(&Any) -> Option<CloudEvent> + Send + Sync>;
 
+/// Higher-order function that produces CloudEvents handlers per-event.
+type BoxedHandlerFactory = Arc<dyn Fn() -> BoxedHandler + Send + Sync>;
+
+/// Internal handler entry supporting both static and factory patterns.
+enum HandlerEntry {
+    /// Static handler called directly.
+    Static(BoxedHandler),
+    /// HOF called per-event to produce handler.
+    Factory(BoxedHandlerFactory),
+}
+
 /// Trait for OO-style CloudEvents projectors.
 ///
 /// Implement this trait along with `on_{event_type}` methods to create
@@ -80,10 +91,24 @@ pub trait CloudEventsProjector: Send + Sync {
 ///     .on::<PlayerRegistered>(handle_player_registered)
 ///     .on::<FundsDeposited>(handle_funds_deposited);
 /// ```
+///
+/// # HOF Pattern (with dependency injection)
+///
+/// ```rust,ignore
+/// let http_client = Arc::new(HttpClient::new());
+/// let router = CloudEventsRouter::new("prj-player-cloudevents", "player")
+///     .on_with::<PlayerRegistered, _>(|| {
+///         let client = http_client.clone();
+///         Arc::new(move |event: &PlayerRegistered| -> Option<CloudEvent> {
+///             // client accessible here per-event
+///             Some(CloudEvent { ... })
+///         })
+///     });
+/// ```
 pub struct CloudEventsRouter {
     name: String,
     domain: String,
-    handlers: HashMap<String, BoxedHandler>,
+    handlers: HashMap<String, HandlerEntry>,
 }
 
 impl CloudEventsRouter {
@@ -132,7 +157,42 @@ impl CloudEventsRouter {
             Ok(event) => handler(&event),
             Err(_) => None,
         });
-        self.handlers.insert(suffix.to_string(), boxed);
+        self.handlers.insert(suffix.to_string(), HandlerEntry::Static(boxed));
+        self
+    }
+
+    /// Register a higher-order function that produces handlers per-event.
+    ///
+    /// Called each time an event is processed, allowing fresh closures with
+    /// captured dependencies.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let http_client = Arc::new(HttpClient::new());
+    /// let router = CloudEventsRouter::new("prj-player-cloudevents", "player")
+    ///     .on_with::<PlayerRegistered, _>(|| {
+    ///         let client = http_client.clone();
+    ///         Arc::new(move |event: &PlayerRegistered| -> Option<CloudEvent> {
+    ///             // client accessible here per-event
+    ///             Some(CloudEvent { r#type: "...".into(), ..Default::default() })
+    ///         })
+    ///     });
+    /// ```
+    pub fn on_with<T, F>(mut self, factory: F) -> Self
+    where
+        T: prost::Message + Name + Default + 'static,
+        F: Fn() -> Arc<dyn Fn(&T) -> Option<CloudEvent> + Send + Sync> + Send + Sync + 'static,
+    {
+        let suffix = T::NAME;
+        let factory_arc: BoxedHandlerFactory = Arc::new(move || {
+            let inner = factory();
+            Arc::new(move |any: &Any| match any.to_msg::<T>() {
+                Ok(event) => inner(&event),
+                Err(_) => None,
+            })
+        });
+        self.handlers.insert(suffix.to_string(), HandlerEntry::Factory(factory_arc));
         self
     }
 
@@ -177,9 +237,16 @@ impl CloudEventsRouter {
                 .and_then(|full_name: &str| full_name.rsplit('.').next())
                 .unwrap_or("");
 
-            if let Some(handler) = self.handlers.get(suffix) {
-                if let Some(cloud_event) = handler(event_any) {
-                    events.push(cloud_event);
+            if let Some(entry) = self.handlers.get(suffix) {
+                let cloud_event = match entry {
+                    HandlerEntry::Static(handler) => handler(event_any),
+                    HandlerEntry::Factory(factory) => {
+                        let handler = factory();
+                        handler(event_any)
+                    }
+                };
+                if let Some(ce) = cloud_event {
+                    events.push(ce);
                 }
             }
         }
