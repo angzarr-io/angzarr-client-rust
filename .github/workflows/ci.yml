@@ -10,8 +10,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Pinned coordinator version for acceptance tests - update when releasing
-  COORDINATOR_VERSION: v0.1.0
 
 jobs:
   build-test:
@@ -43,7 +41,7 @@ jobs:
         run: cargo build --workspace
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --lib
 
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
@@ -57,8 +55,8 @@ jobs:
     needs: build-test
     uses: angzarr-io/angzarr-examples-rust/.github/workflows/acceptance-callable.yml@main
     with:
-      # Pinned coordinator version
-      coordinator-version: ${{ env.COORDINATOR_VERSION }}
+      # Pinned coordinator version - update when releasing
+      coordinator-version: v0.1.0
       # Build example images locally in callable workflow
       example-images: '{}'
       # Use matching branch if exists, callable falls back to main
