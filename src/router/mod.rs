@@ -103,10 +103,7 @@ enum HandlerStorage<H> {
 
 impl<H> HandlerStorage<H> {
     /// Get or create handler for this request.
-    fn get(&self) -> HandlerRef<'_, H>
-    where
-        H: Clone,
-    {
+    fn get(&self) -> HandlerRef<'_, H> {
         match self {
             Self::Static(h) => HandlerRef::Borrowed(h),
             Self::Factory(f) => HandlerRef::Owned(f()),
@@ -160,13 +157,14 @@ where
     _state: PhantomData<S>,
 }
 
+// Constructor requiring Clone for static handlers
 impl<S: Default + Send + Sync + 'static, H: CommandHandlerDomainHandler<State = S> + Clone>
     CommandHandlerRouter<S, H>
 {
     /// Create a new command handler router with a static handler.
     ///
     /// Command handlers accept commands and emit events. Single domain enforced at construction.
-    /// The handler is shared across all requests.
+    /// The handler is shared across all requests. Requires `Clone` on the handler type.
     pub fn new(name: impl Into<String>, domain: impl Into<String>, handler: H) -> Self {
         Self {
             name: name.into(),
@@ -175,11 +173,16 @@ impl<S: Default + Send + Sync + 'static, H: CommandHandlerDomainHandler<State = 
             _state: PhantomData,
         }
     }
+}
 
+// Factory constructor and methods - no Clone required
+impl<S: Default + Send + Sync + 'static, H: CommandHandlerDomainHandler<State = S>>
+    CommandHandlerRouter<S, H>
+{
     /// Create a new command handler router with a factory.
     ///
     /// The factory is called per-request to create fresh handler instances.
-    /// Use this for dependency injection.
+    /// Use this for dependency injection. Does NOT require `Clone` on the handler type.
     ///
     /// # Example
     ///
@@ -348,11 +351,12 @@ where
     storage: HandlerStorage<H>,
 }
 
+// Constructor requiring Clone for static handlers
 impl<H: SagaDomainHandler + Clone> SagaRouter<H> {
     /// Create a new saga router with a static handler.
     ///
     /// Sagas translate events from one domain to commands for another.
-    /// Single domain enforced at construction.
+    /// Single domain enforced at construction. Requires `Clone` on the handler type.
     pub fn new(name: impl Into<String>, domain: impl Into<String>, handler: H) -> Self {
         Self {
             name: name.into(),
@@ -360,10 +364,14 @@ impl<H: SagaDomainHandler + Clone> SagaRouter<H> {
             storage: HandlerStorage::Static(handler),
         }
     }
+}
 
+// Factory constructor and methods - no Clone required
+impl<H: SagaDomainHandler> SagaRouter<H> {
     /// Create a new saga router with a factory.
     ///
     /// The factory is called per-request to create fresh handler instances.
+    /// Does NOT require `Clone` on the handler type.
     ///
     /// # Example
     ///

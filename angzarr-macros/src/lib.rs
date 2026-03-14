@@ -283,11 +283,26 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
 
         impl #self_ty {
             /// Creates a CommandHandlerRouter from this aggregate's annotated methods.
+            /// Requires `Clone` on the handler type.
             pub fn into_router(self) -> angzarr_client::CommandHandlerRouter<#state_ty, #handler_name>
             where
-                Self: Send + Sync + 'static,
+                Self: Clone + Send + Sync + 'static,
             {
                 angzarr_client::CommandHandlerRouter::new(#domain, #domain, #handler_name::new(self))
+            }
+
+            /// Creates a CommandHandlerRouter using a factory function.
+            /// Does NOT require `Clone` on the handler type.
+            pub fn into_router_factory<F>(factory: F) -> angzarr_client::CommandHandlerRouter<#state_ty, #handler_name>
+            where
+                F: Fn() -> Self + Send + Sync + 'static,
+                Self: Send + Sync + 'static,
+            {
+                angzarr_client::CommandHandlerRouter::with_factory(
+                    #domain,
+                    #domain,
+                    move || #handler_name::new(factory())
+                )
             }
         }
     }
@@ -519,11 +534,26 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
 
         impl #self_ty {
             /// Creates a SagaRouter from this saga's annotated methods.
+            /// Requires `Clone` on the handler type.
             pub fn into_router(self) -> angzarr_client::SagaRouter<#handler_name>
             where
-                Self: Send + Sync + 'static,
+                Self: Clone + Send + Sync + 'static,
             {
                 angzarr_client::SagaRouter::new(#name, #input_domain, #handler_name::new(self))
+            }
+
+            /// Creates a SagaRouter using a factory function.
+            /// Does NOT require `Clone` on the handler type.
+            pub fn into_router_factory<F>(factory: F) -> angzarr_client::SagaRouter<#handler_name>
+            where
+                F: Fn() -> Self + Send + Sync + 'static,
+                Self: Send + Sync + 'static,
+            {
+                angzarr_client::SagaRouter::with_factory(
+                    #name,
+                    #input_domain,
+                    move || #handler_name::new(factory())
+                )
             }
         }
     }

@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/babbitt/go/bin/scm hook inject-context 08af581bda35bf5d",
+            "timeout": 60,
+            "_scm": "660c4931facabb28"
+          }
+        ]
+      }
+    ]
+  }
+}

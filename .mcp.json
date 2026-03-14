@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "scm": {
+      "command": "/home/babbitt/go/bin/scm",
+      "args": [
+        "mcp"
+      ],
+      "_scm": "scm-auto"
+    }
+  }
+}
