@@ -236,9 +236,15 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
             });
 
         /// Auto-generated handler wrapper implementing CommandHandlerDomainHandler.
-        #[derive(Clone)]
         pub struct #handler_name {
             inner: #self_ty,
+        }
+
+        // Clone only when inner type is Clone
+        impl Clone for #handler_name where #self_ty: Clone {
+            fn clone(&self) -> Self {
+                Self { inner: self.inner.clone() }
+            }
         }
 
         impl #handler_name {
@@ -506,9 +512,15 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
         #input
 
         /// Auto-generated handler wrapper implementing SagaDomainHandler.
-        #[derive(Clone)]
         pub struct #handler_name {
             inner: #self_ty,
+        }
+
+        // Clone only when inner type is Clone
+        impl Clone for #handler_name where #self_ty: Clone {
+            fn clone(&self) -> Self {
+                Self { inner: self.inner.clone() }
+            }
         }
 
         impl #handler_name {
@@ -831,9 +843,15 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
         }
 
         /// Auto-generated handler wrapper implementing ProcessManagerDomainHandler.
-        #[derive(Clone)]
         pub struct #handler_name {
             inner: std::sync::Arc<#self_ty>,
+        }
+
+        // Clone always available since inner is Arc
+        impl Clone for #handler_name {
+            fn clone(&self) -> Self {
+                Self { inner: self.inner.clone() }
+            }
         }
 
         impl angzarr_client::ProcessManagerDomainHandler<#state_ty> for #handler_name {
