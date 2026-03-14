@@ -61,8 +61,6 @@ jobs:
       example-images: '{}'
       # Use matching branch if exists, otherwise main
       examples-ref: ${{ github.head_ref || 'main' }}
-    secrets:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   notify-downstream:
     name: Notify Downstream Repos
