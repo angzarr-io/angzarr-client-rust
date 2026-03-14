@@ -22,7 +22,7 @@ jobs:
         id: versions
         run: |
           # Pinned coordinator version for acceptance tests - update when releasing
-          echo "coordinator=v0.1.0" >> "$GITHUB_OUTPUT"
+          echo "coordinator=v0.1.3" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v4
 
