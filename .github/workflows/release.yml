@@ -86,4 +86,4 @@ jobs:
             -e ANGZARR_PROTO_ROOT=/workspace/proto \
             -e CARGO_REGISTRY_TOKEN=${{ secrets.CARGO_REGISTRY_TOKEN }} \
             ${{ env.RUST_IMAGE }} \
-            cargo publish
+            cargo publish --allow-dirty
