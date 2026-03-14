@@ -95,7 +95,7 @@ pub async fn run_command_handler_server<S, H>(
 ) -> Result<(), tonic::transport::Error>
 where
     S: Default + Send + Sync + 'static,
-    H: CommandHandlerDomainHandler<State = S> + Clone + 'static,
+    H: CommandHandlerDomainHandler<State = S> + 'static,
 {
     let config = ServerConfig::from_env(default_port);
     let handler = CommandHandlerGrpc::new(router);
@@ -155,7 +155,7 @@ pub async fn run_saga_server<H>(
     router: SagaRouter<H>,
 ) -> Result<(), tonic::transport::Error>
 where
-    H: SagaDomainHandler + Clone + 'static,
+    H: SagaDomainHandler + 'static,
 {
     let config = ServerConfig::from_env(default_port);
     let handler = SagaHandler::new(router);

@@ -33,17 +33,31 @@ pub type StatePacker<S> = fn(&S) -> Result<Any, Status>;
 pub struct CommandHandlerGrpc<S, H>
 where
     S: Default + Send + Sync + 'static,
-    H: CommandHandlerDomainHandler<State = S> + Clone + 'static,
+    H: CommandHandlerDomainHandler<State = S> + 'static,
 {
     router: Arc<CommandHandlerRouter<S, H>>,
     /// Optional state packer for Replay RPC support.
     state_packer: Option<StatePacker<S>>,
 }
 
+// Clone doesn't require H: Clone because router is Arc
+impl<S, H> Clone for CommandHandlerGrpc<S, H>
+where
+    S: Default + Send + Sync + 'static,
+    H: CommandHandlerDomainHandler<State = S> + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            router: self.router.clone(),
+            state_packer: self.state_packer,
+        }
+    }
+}
+
 impl<S, H> CommandHandlerGrpc<S, H>
 where
     S: Default + Send + Sync + 'static,
-    H: CommandHandlerDomainHandler<State = S> + Clone + 'static,
+    H: CommandHandlerDomainHandler<State = S> + 'static,
 {
     /// Create a new command handler from a router.
     pub fn new(router: CommandHandlerRouter<S, H>) -> Self {
@@ -69,7 +83,7 @@ where
 impl<S, H> CommandHandlerService for CommandHandlerGrpc<S, H>
 where
     S: Default + Send + Sync + 'static,
-    H: CommandHandlerDomainHandler<State = S> + Clone + 'static,
+    H: CommandHandlerDomainHandler<State = S> + 'static,
 {
     async fn handle(
         &self,
@@ -116,12 +130,21 @@ fn build_event_book_for_replay(req: &ReplayRequest) -> EventBook {
 /// Wraps a `SagaRouter` to handle saga events.
 pub struct SagaHandler<H>
 where
-    H: SagaDomainHandler + Clone + 'static,
+    H: SagaDomainHandler + 'static,
 {
     router: Arc<SagaRouter<H>>,
 }
 
-impl<H: SagaDomainHandler + Clone + 'static> SagaHandler<H> {
+// Clone doesn't require H: Clone because router is Arc
+impl<H: SagaDomainHandler + 'static> Clone for SagaHandler<H> {
+    fn clone(&self) -> Self {
+        Self {
+            router: self.router.clone(),
+        }
+    }
+}
+
+impl<H: SagaDomainHandler + 'static> SagaHandler<H> {
     /// Create a new saga handler from a router.
     pub fn new(router: SagaRouter<H>) -> Self {
         Self {
@@ -136,7 +159,7 @@ impl<H: SagaDomainHandler + Clone + 'static> SagaHandler<H> {
 }
 
 #[tonic::async_trait]
-impl<H: SagaDomainHandler + Clone + 'static> SagaService for SagaHandler<H> {
+impl<H: SagaDomainHandler + 'static> SagaService for SagaHandler<H> {
     async fn handle(
         &self,
         request: Request<SagaHandleRequest>,
