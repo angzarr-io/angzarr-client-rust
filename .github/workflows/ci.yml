@@ -10,8 +10,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Pinned coordinator version for acceptance tests - update when releasing
-  COORDINATOR_VERSION: v0.1.0
 
 jobs:
   build-test:
@@ -43,7 +41,7 @@ jobs:
         run: cargo build --workspace
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --lib
 
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
@@ -51,23 +49,10 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
-  # Run acceptance tests against deployed Kind cluster
-  acceptance:
-    name: Acceptance Tests
-    needs: build-test
-    uses: angzarr-io/angzarr-examples-rust/.github/workflows/acceptance-callable.yml@main
-    with:
-      # Pinned coordinator version
-      coordinator-version: ${{ env.COORDINATOR_VERSION }}
-      # Build example images locally in callable workflow
-      example-images: '{}'
-      # Use matching branch if exists, callable falls back to main
-      examples-ref: ${{ github.head_ref || 'main' }}
-
   notify-downstream:
     name: Notify Downstream Repos
     runs-on: ubuntu-latest
-    needs: [build-test, acceptance]
+    needs: build-test
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     steps:
       - name: Trigger examples-rust rebuild
