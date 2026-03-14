@@ -10,6 +10,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Pinned coordinator version for acceptance tests - update when releasing
+  COORDINATOR_VERSION: v0.1.0
 
 jobs:
   build-test:
@@ -55,8 +57,8 @@ jobs:
     needs: build-test
     uses: angzarr-io/angzarr-examples-rust/.github/workflows/acceptance-callable.yml@main
     with:
-      # Use latest coordinator images
-      coordinator-images: '{}'
+      # Pinned coordinator version
+      coordinator-version: ${{ env.COORDINATOR_VERSION }}
       # Build example images locally in callable workflow
       example-images: '{}'
       # Use matching branch if exists, callable falls back to main
