@@ -105,6 +105,7 @@ fn make_command_book(domain: &str, type_url: &str, data: &str, seq: u32) -> Comm
 // ============================================================================
 
 /// Test aggregate handler that tracks invocation.
+#[derive(Clone)]
 struct TestAggregateHandler {
     handler_invoked: Arc<AtomicBool>,
     other_handler_invoked: Arc<AtomicBool>,
@@ -200,6 +201,7 @@ impl CommandHandlerDomainHandler for TestAggregateHandler {
 }
 
 /// Test saga handler.
+#[derive(Clone)]
 struct TestSagaHandler {
     handler_invoked: Arc<AtomicBool>,
     other_handler_invoked: Arc<AtomicBool>,

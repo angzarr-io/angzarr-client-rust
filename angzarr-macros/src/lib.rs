@@ -236,6 +236,7 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
             });
 
         /// Auto-generated handler wrapper implementing CommandHandlerDomainHandler.
+        #[derive(Clone)]
         pub struct #handler_name {
             inner: #self_ty,
         }
@@ -490,6 +491,7 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
         #input
 
         /// Auto-generated handler wrapper implementing SagaDomainHandler.
+        #[derive(Clone)]
         pub struct #handler_name {
             inner: #self_ty,
         }
@@ -799,6 +801,7 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
         }
 
         /// Auto-generated handler wrapper implementing ProcessManagerDomainHandler.
+        #[derive(Clone)]
         pub struct #handler_name {
             inner: std::sync::Arc<#self_ty>,
         }
