@@ -59,8 +59,8 @@ jobs:
       coordinator-images: '{}'
       # Build example images locally in callable workflow
       example-images: '{}'
-      # Use matching branch if exists, otherwise main
-      examples-ref: ${{ github.head_ref || 'main' }}
+      # Always use main - client changes don't require matching example branches
+      examples-ref: main
 
   notify-downstream:
     name: Notify Downstream Repos
