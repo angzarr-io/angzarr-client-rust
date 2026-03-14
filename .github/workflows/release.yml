@@ -36,11 +36,15 @@ jobs:
             exit 1
           fi
 
+      - name: Install buf CLI
+        uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
       - name: Export protos from Buf registry
+        env:
+          BUF_TOKEN: ${{ secrets.BUF_TOKEN }}
         run: |
-          curl -sSL https://github.com/bufbuild/buf/releases/latest/download/buf-Linux-x86_64 -o buf
-          chmod +x buf
-          sudo mv buf /usr/local/bin/
           mkdir -p proto
           buf export buf.build/angzarr/angzarr -o proto
 
