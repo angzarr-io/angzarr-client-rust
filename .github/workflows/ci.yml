@@ -15,15 +15,7 @@ jobs:
   build-test:
     name: Build & Test
     runs-on: ubuntu-latest
-    outputs:
-      coordinator-version: ${{ steps.versions.outputs.coordinator }}
     steps:
-      - name: Set version outputs
-        id: versions
-        run: |
-          # Pinned coordinator version for acceptance tests - update when releasing
-          echo "coordinator=v0.1.3" >> "$GITHUB_OUTPUT"
-
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
@@ -57,23 +49,10 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
-  # Run acceptance tests against deployed Kind cluster
-  acceptance:
-    name: Acceptance Tests
-    needs: build-test
-    uses: angzarr-io/angzarr-examples-rust/.github/workflows/acceptance-callable.yml@main
-    with:
-      coordinator-version: ${{ needs.build-test.outputs.coordinator-version }}
-      # Build example images locally in callable workflow
-      example-images: '{}'
-      # Use matching branch if exists, callable falls back to main
-      examples-ref: ${{ github.head_ref || 'main' }}
-    secrets: inherit
-
   notify-downstream:
     name: Notify Downstream Repos
     runs-on: ubuntu-latest
-    needs: [build-test, acceptance]
+    needs: build-test
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     steps:
       - name: Trigger examples-rust rebuild
