@@ -296,6 +296,30 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
             {
                 angzarr_client::CommandHandlerRouter::new(#domain, #domain, #handler_name::new(self))
             }
+
+            /// Creates a CommandHandlerRouter using a factory (higher-order function).
+            ///
+            /// Use this for dependency injection - the factory is called to create
+            /// each handler instance, allowing you to inject dependencies.
+            ///
+            /// # Example
+            /// ```rust,ignore
+            /// let db_pool = Arc::new(DbPool::new());
+            /// let router = PlayerAggregate::into_router_factory(move || {
+            ///     PlayerAggregate::new(db_pool.clone())
+            /// });
+            /// ```
+            pub fn into_router_factory<F>(factory: F) -> angzarr_client::CommandHandlerRouter<#state_ty, #handler_name>
+            where
+                F: Fn() -> Self + Send + Sync + 'static,
+                Self: Send + Sync + 'static,
+            {
+                angzarr_client::CommandHandlerRouter::with_factory(
+                    #domain,
+                    #domain,
+                    move || #handler_name::new(factory())
+                )
+            }
         }
     }
 }
@@ -538,6 +562,30 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
                 Self: Send + Sync + 'static,
             {
                 angzarr_client::SagaRouter::new(#name, #input_domain, #handler_name::new(self))
+            }
+
+            /// Creates a SagaRouter using a factory (higher-order function).
+            ///
+            /// Use this for dependency injection - the factory closure captures
+            /// external dependencies and creates handler instances.
+            ///
+            /// # Example
+            /// ```rust,ignore
+            /// let event_bus = Arc::new(EventBus::new());
+            /// let router = OrderSaga::into_router_factory(move || {
+            ///     OrderSaga::new(event_bus.clone())
+            /// });
+            /// ```
+            pub fn into_router_factory<F>(factory: F) -> angzarr_client::SagaRouter<#handler_name>
+            where
+                F: Fn() -> Self + Send + Sync + 'static,
+                Self: Send + Sync + 'static,
+            {
+                angzarr_client::SagaRouter::with_factory(
+                    #name,
+                    #input_domain,
+                    move || #handler_name::new(factory())
+                )
             }
         }
     }
