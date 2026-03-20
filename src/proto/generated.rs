@@ -201,6 +201,14 @@ pub struct EventPage {
     pub header: ::core::option::Option<PageHeader>,
     #[prost(message, optional, tag = "2")]
     pub created_at: ::core::option::Option<::prost_types::Timestamp>,
+    /// Two-phase commit support (Phase 1: 2PC Storage Model)
+    ///
+    /// false = pending 2PC, needs Confirmation; true = immediately committed
+    #[prost(bool, tag = "6")]
+    pub committed: bool,
+    /// Groups related pending events for atomic commit/rollback (null if not in cascade)
+    #[prost(string, optional, tag = "7")]
+    pub cascade_id: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(oneof = "event_page::Payload", tags = "3, 4")]
     pub payload: ::core::option::Option<event_page::Payload>,
 }
@@ -579,8 +587,10 @@ pub struct Notification {
     pub sent_at: ::core::option::Option<::prost_types::Timestamp>,
     /// Optional key-value metadata
     #[prost(map = "string, string", tag = "4")]
-    pub metadata:
-        ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
+    pub metadata: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
 }
 impl ::prost::Name for Notification {
     const NAME: &'static str = "Notification";
@@ -616,6 +626,170 @@ impl ::prost::Name for RejectionNotification {
     }
     fn type_url() -> ::prost::alloc::string::String {
         "/angzarr.RejectionNotification".into()
+    }
+}
+/// docs:start:confirmation
+/// Confirms pending events - makes them visible to business logic.
+/// Written by framework when all sagas in a cascade succeed.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Confirmation {
+    /// Domain + root of aggregate being confirmed
+    #[prost(message, optional, tag = "1")]
+    pub target: ::core::option::Option<Cover>,
+    /// Explicit list of sequences being confirmed
+    #[prost(uint32, repeated, tag = "2")]
+    pub sequences: ::prost::alloc::vec::Vec<u32>,
+    /// Set for cascade commits, empty for general confirmation
+    #[prost(string, tag = "3")]
+    pub cascade_id: ::prost::alloc::string::String,
+}
+impl ::prost::Name for Confirmation {
+    const NAME: &'static str = "Confirmation";
+    const PACKAGE: &'static str = "angzarr";
+    fn full_name() -> ::prost::alloc::string::String {
+        "angzarr.Confirmation".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/angzarr.Confirmation".into()
+    }
+}
+/// docs:start:revocation
+/// Revokes events - marks them as NoOp at read time.
+/// Written by framework on cascade failure, timeout, or explicit revocation API.
+/// Original events become invisible to business logic.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Revocation {
+    /// Domain + root of aggregate being revoked
+    #[prost(message, optional, tag = "1")]
+    pub target: ::core::option::Option<Cover>,
+    /// Sequences being revoked
+    #[prost(uint32, repeated, tag = "2")]
+    pub sequences: ::prost::alloc::vec::Vec<u32>,
+    /// Set for cascade rollbacks, empty for general revocation
+    #[prost(string, tag = "3")]
+    pub cascade_id: ::prost::alloc::string::String,
+    /// "saga_failed", "timeout", "compensation", etc.
+    #[prost(string, tag = "4")]
+    pub reason: ::prost::alloc::string::String,
+}
+impl ::prost::Name for Revocation {
+    const NAME: &'static str = "Revocation";
+    const PACKAGE: &'static str = "angzarr";
+    fn full_name() -> ::prost::alloc::string::String {
+        "angzarr.Revocation".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/angzarr.Revocation".into()
+    }
+}
+/// docs:start:compensate
+/// Routes to client compensation handler - original events remain visible.
+/// Unlike Revocation, this triggers client-implemented inverse logic.
+/// The Compensate marker itself is filtered to NoOp; original events stay visible.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Compensate {
+    /// Domain + root of aggregate
+    #[prost(message, optional, tag = "1")]
+    pub target: ::core::option::Option<Cover>,
+    /// Sequences to compensate
+    #[prost(uint32, repeated, tag = "2")]
+    pub sequences: ::prost::alloc::vec::Vec<u32>,
+    /// Why compensation is needed
+    #[prost(string, tag = "3")]
+    pub reason: ::prost::alloc::string::String,
+}
+impl ::prost::Name for Compensate {
+    const NAME: &'static str = "Compensate";
+    const PACKAGE: &'static str = "angzarr";
+    fn full_name() -> ::prost::alloc::string::String {
+        "angzarr.Compensate".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/angzarr.Compensate".into()
+    }
+}
+/// docs:start:noop
+/// Placeholder returned by coordinator for uncommitted/framework events.
+/// Never persisted - only returned at read time for filtered events.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NoOp {
+    /// Sequence of the filtered event
+    #[prost(uint32, tag = "1")]
+    pub original_sequence: u32,
+    /// Which cascade it belonged to (if pending)
+    #[prost(string, tag = "2")]
+    pub cascade_id: ::prost::alloc::string::String,
+    /// "uncommitted", "revoked", "framework_event"
+    #[prost(string, tag = "3")]
+    pub reason: ::prost::alloc::string::String,
+}
+impl ::prost::Name for NoOp {
+    const NAME: &'static str = "NoOp";
+    const PACKAGE: &'static str = "angzarr";
+    fn full_name() -> ::prost::alloc::string::String {
+        "angzarr.NoOp".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/angzarr.NoOp".into()
+    }
+}
+/// docs:start:cascade_commit
+/// PM/coordinator emits to commit all uncommitted events for a cascade.
+/// Framework distributes Confirmation to all participants.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CascadeCommit {
+    #[prost(string, tag = "1")]
+    pub cascade_id: ::prost::alloc::string::String,
+}
+impl ::prost::Name for CascadeCommit {
+    const NAME: &'static str = "CascadeCommit";
+    const PACKAGE: &'static str = "angzarr";
+    fn full_name() -> ::prost::alloc::string::String {
+        "angzarr.CascadeCommit".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/angzarr.CascadeCommit".into()
+    }
+}
+/// docs:start:cascade_rollback
+/// PM/coordinator emits to rollback all uncommitted events for a cascade.
+/// Framework distributes Revocation to all participants.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CascadeRollback {
+    #[prost(string, tag = "1")]
+    pub cascade_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub reason: ::prost::alloc::string::String,
+}
+impl ::prost::Name for CascadeRollback {
+    const NAME: &'static str = "CascadeRollback";
+    const PACKAGE: &'static str = "angzarr";
+    fn full_name() -> ::prost::alloc::string::String {
+        "angzarr.CascadeRollback".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/angzarr.CascadeRollback".into()
+    }
+}
+/// docs:start:cascade_conflict_detail
+/// Error detail for conflict rejection when overlapping fields are locked.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CascadeConflictDetail {
+    /// Cascades holding locks
+    #[prost(string, repeated, tag = "1")]
+    pub cascade_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Fields that conflict
+    #[prost(string, repeated, tag = "2")]
+    pub overlapping_fields: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+impl ::prost::Name for CascadeConflictDetail {
+    const NAME: &'static str = "CascadeConflictDetail";
+    const PACKAGE: &'static str = "angzarr";
+    fn full_name() -> ::prost::alloc::string::String {
+        "angzarr.CascadeConflictDetail".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/angzarr.CascadeConflictDetail".into()
     }
 }
 /// docs:start:dlq_details
@@ -712,8 +886,10 @@ pub struct AngzarrDeadLetter {
     pub occurred_at: ::core::option::Option<::prost_types::Timestamp>,
     /// Additional context
     #[prost(map = "string, string", tag = "8")]
-    pub metadata:
-        ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
+    pub metadata: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
     /// Which component sent to DLQ
     #[prost(string, tag = "10")]
     pub source_component: ::prost::alloc::string::String,
@@ -1195,10 +1371,10 @@ pub mod command_handler_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     /// CommandHandlerService: client logic that processes commands and emits events
     /// Business logic layer that implements command handling for a domain aggregate
     /// client logic doesn't care about sync - coordinator decides
@@ -1245,8 +1421,9 @@ pub mod command_handler_service_client {
                     <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
-                Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             CommandHandlerServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -1285,13 +1462,22 @@ pub mod command_handler_service_client {
         pub async fn handle(
             &mut self,
             request: impl tonic::IntoRequest<super::ContextualCommand>,
-        ) -> std::result::Result<tonic::Response<super::BusinessResponse>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::BusinessResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/angzarr.CommandHandlerService/Handle");
+            let path = http::uri::PathAndQuery::from_static(
+                "/angzarr.CommandHandlerService/Handle",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("angzarr.CommandHandlerService", "Handle"));
@@ -1303,12 +1489,18 @@ pub mod command_handler_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::ReplayRequest>,
         ) -> std::result::Result<tonic::Response<super::ReplayResponse>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/angzarr.CommandHandlerService/Replay");
+            let path = http::uri::PathAndQuery::from_static(
+                "/angzarr.CommandHandlerService/Replay",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("angzarr.CommandHandlerService", "Replay"));
@@ -1323,10 +1515,10 @@ pub mod command_handler_coordinator_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     /// CommandHandlerCoordinatorService: orchestrates command processing for domain aggregates
     #[derive(Debug, Clone)]
     pub struct CommandHandlerCoordinatorServiceClient<T> {
@@ -1371,10 +1563,13 @@ pub mod command_handler_coordinator_service_client {
                     <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
-                Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
-            CommandHandlerCoordinatorServiceClient::new(InterceptedService::new(inner, interceptor))
+            CommandHandlerCoordinatorServiceClient::new(
+                InterceptedService::new(inner, interceptor),
+            )
         }
         /// Compress requests with the given encoding.
         ///
@@ -1411,19 +1606,30 @@ pub mod command_handler_coordinator_service_client {
         pub async fn handle_command(
             &mut self,
             request: impl tonic::IntoRequest<super::CommandRequest>,
-        ) -> std::result::Result<tonic::Response<super::CommandResponse>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::CommandResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/angzarr.CommandHandlerCoordinatorService/HandleCommand",
             );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "angzarr.CommandHandlerCoordinatorService",
-                "HandleCommand",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "angzarr.CommandHandlerCoordinatorService",
+                        "HandleCommand",
+                    ),
+                );
             self.inner.unary(req, path, codec).await
         }
         /// Inject fact events - external realities that cannot be rejected.
@@ -1432,39 +1638,60 @@ pub mod command_handler_coordinator_service_client {
         pub async fn handle_event(
             &mut self,
             request: impl tonic::IntoRequest<super::EventRequest>,
-        ) -> std::result::Result<tonic::Response<super::FactInjectionResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::FactInjectionResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/angzarr.CommandHandlerCoordinatorService/HandleEvent",
             );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "angzarr.CommandHandlerCoordinatorService",
-                "HandleEvent",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "angzarr.CommandHandlerCoordinatorService",
+                        "HandleEvent",
+                    ),
+                );
             self.inner.unary(req, path, codec).await
         }
         /// Speculative execution - execute against temporal state without persisting
         pub async fn handle_sync_speculative(
             &mut self,
             request: impl tonic::IntoRequest<super::SpeculateCommandHandlerRequest>,
-        ) -> std::result::Result<tonic::Response<super::CommandResponse>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::CommandResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/angzarr.CommandHandlerCoordinatorService/HandleSyncSpeculative",
             );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "angzarr.CommandHandlerCoordinatorService",
-                "HandleSyncSpeculative",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "angzarr.CommandHandlerCoordinatorService",
+                        "HandleSyncSpeculative",
+                    ),
+                );
             self.inner.unary(req, path, codec).await
         }
         /// Compensation flow - returns BusinessResponse for saga compensation handling.
@@ -1472,19 +1699,30 @@ pub mod command_handler_coordinator_service_client {
         pub async fn handle_compensation(
             &mut self,
             request: impl tonic::IntoRequest<super::CommandRequest>,
-        ) -> std::result::Result<tonic::Response<super::BusinessResponse>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::BusinessResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/angzarr.CommandHandlerCoordinatorService/HandleCompensation",
             );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "angzarr.CommandHandlerCoordinatorService",
-                "HandleCompensation",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "angzarr.CommandHandlerCoordinatorService",
+                        "HandleCompensation",
+                    ),
+                );
             self.inner.unary(req, path, codec).await
         }
     }
@@ -1496,7 +1734,7 @@ pub mod command_handler_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with CommandHandlerServiceServer.
@@ -1506,7 +1744,10 @@ pub mod command_handler_service_server {
         async fn handle(
             &self,
             request: tonic::Request<super::ContextualCommand>,
-        ) -> std::result::Result<tonic::Response<super::BusinessResponse>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::BusinessResponse>,
+            tonic::Status,
+        >;
         /// Replay events to compute state (for conflict detection)
         /// Optional: only needed if aggregate supports MERGE_COMMUTATIVE
         async fn replay(
@@ -1538,7 +1779,10 @@ pub mod command_handler_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -1573,7 +1817,8 @@ pub mod command_handler_service_server {
             self
         }
     }
-    impl<T, B> tonic::codegen::Service<http::Request<B>> for CommandHandlerServiceServer<T>
+    impl<T, B> tonic::codegen::Service<http::Request<B>>
+    for CommandHandlerServiceServer<T>
     where
         T: CommandHandlerService,
         B: Body + std::marker::Send + 'static,
@@ -1593,11 +1838,15 @@ pub mod command_handler_service_server {
                 "/angzarr.CommandHandlerService/Handle" => {
                     #[allow(non_camel_case_types)]
                     struct HandleSvc<T: CommandHandlerService>(pub Arc<T>);
-                    impl<T: CommandHandlerService>
-                        tonic::server::UnaryService<super::ContextualCommand> for HandleSvc<T>
-                    {
+                    impl<
+                        T: CommandHandlerService,
+                    > tonic::server::UnaryService<super::ContextualCommand>
+                    for HandleSvc<T> {
                         type Response = super::BusinessResponse;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::ContextualCommand>,
@@ -1634,9 +1883,15 @@ pub mod command_handler_service_server {
                 "/angzarr.CommandHandlerService/Replay" => {
                     #[allow(non_camel_case_types)]
                     struct ReplaySvc<T: CommandHandlerService>(pub Arc<T>);
-                    impl<T: CommandHandlerService> tonic::server::UnaryService<super::ReplayRequest> for ReplaySvc<T> {
+                    impl<
+                        T: CommandHandlerService,
+                    > tonic::server::UnaryService<super::ReplayRequest>
+                    for ReplaySvc<T> {
                         type Response = super::ReplayResponse;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::ReplayRequest>,
@@ -1670,19 +1925,23 @@ pub mod command_handler_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => Box::pin(async move {
-                    let mut response = http::Response::new(empty_body());
-                    let headers = response.headers_mut();
-                    headers.insert(
-                        tonic::Status::GRPC_STATUS,
-                        (tonic::Code::Unimplemented as i32).into(),
-                    );
-                    headers.insert(
-                        http::header::CONTENT_TYPE,
-                        tonic::metadata::GRPC_CONTENT_TYPE,
-                    );
-                    Ok(response)
-                }),
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(empty_body());
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
             }
         }
     }
@@ -1711,14 +1970,12 @@ pub mod command_handler_coordinator_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with CommandHandlerCoordinatorServiceServer.
     #[async_trait]
-    pub trait CommandHandlerCoordinatorService:
-        std::marker::Send + std::marker::Sync + 'static
-    {
+    pub trait CommandHandlerCoordinatorService: std::marker::Send + std::marker::Sync + 'static {
         /// Process command with optional sync mode (default: async fire-and-forget)
         async fn handle_command(
             &self,
@@ -1730,7 +1987,10 @@ pub mod command_handler_coordinator_service_server {
         async fn handle_event(
             &self,
             request: tonic::Request<super::EventRequest>,
-        ) -> std::result::Result<tonic::Response<super::FactInjectionResponse>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::FactInjectionResponse>,
+            tonic::Status,
+        >;
         /// Speculative execution - execute against temporal state without persisting
         async fn handle_sync_speculative(
             &self,
@@ -1741,7 +2001,10 @@ pub mod command_handler_coordinator_service_server {
         async fn handle_compensation(
             &self,
             request: tonic::Request<super::CommandRequest>,
-        ) -> std::result::Result<tonic::Response<super::BusinessResponse>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::BusinessResponse>,
+            tonic::Status,
+        >;
     }
     /// CommandHandlerCoordinatorService: orchestrates command processing for domain aggregates
     #[derive(Debug)]
@@ -1765,7 +2028,10 @@ pub mod command_handler_coordinator_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -1800,7 +2066,8 @@ pub mod command_handler_coordinator_service_server {
             self
         }
     }
-    impl<T, B> tonic::codegen::Service<http::Request<B>> for CommandHandlerCoordinatorServiceServer<T>
+    impl<T, B> tonic::codegen::Service<http::Request<B>>
+    for CommandHandlerCoordinatorServiceServer<T>
     where
         T: CommandHandlerCoordinatorService,
         B: Body + std::marker::Send + 'static,
@@ -1819,12 +2086,18 @@ pub mod command_handler_coordinator_service_server {
             match req.uri().path() {
                 "/angzarr.CommandHandlerCoordinatorService/HandleCommand" => {
                     #[allow(non_camel_case_types)]
-                    struct HandleCommandSvc<T: CommandHandlerCoordinatorService>(pub Arc<T>);
-                    impl<T: CommandHandlerCoordinatorService>
-                        tonic::server::UnaryService<super::CommandRequest> for HandleCommandSvc<T>
-                    {
+                    struct HandleCommandSvc<T: CommandHandlerCoordinatorService>(
+                        pub Arc<T>,
+                    );
+                    impl<
+                        T: CommandHandlerCoordinatorService,
+                    > tonic::server::UnaryService<super::CommandRequest>
+                    for HandleCommandSvc<T> {
                         type Response = super::CommandResponse;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::CommandRequest>,
@@ -1832,9 +2105,10 @@ pub mod command_handler_coordinator_service_server {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 <T as CommandHandlerCoordinatorService>::handle_command(
-                                    &inner, request,
-                                )
-                                .await
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -1863,12 +2137,18 @@ pub mod command_handler_coordinator_service_server {
                 }
                 "/angzarr.CommandHandlerCoordinatorService/HandleEvent" => {
                     #[allow(non_camel_case_types)]
-                    struct HandleEventSvc<T: CommandHandlerCoordinatorService>(pub Arc<T>);
-                    impl<T: CommandHandlerCoordinatorService>
-                        tonic::server::UnaryService<super::EventRequest> for HandleEventSvc<T>
-                    {
+                    struct HandleEventSvc<T: CommandHandlerCoordinatorService>(
+                        pub Arc<T>,
+                    );
+                    impl<
+                        T: CommandHandlerCoordinatorService,
+                    > tonic::server::UnaryService<super::EventRequest>
+                    for HandleEventSvc<T> {
                         type Response = super::FactInjectionResponse;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::EventRequest>,
@@ -1876,9 +2156,10 @@ pub mod command_handler_coordinator_service_server {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 <T as CommandHandlerCoordinatorService>::handle_event(
-                                    &inner, request,
-                                )
-                                .await
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -1910,22 +2191,28 @@ pub mod command_handler_coordinator_service_server {
                     struct HandleSyncSpeculativeSvc<T: CommandHandlerCoordinatorService>(
                         pub Arc<T>,
                     );
-                    impl<T: CommandHandlerCoordinatorService>
-                        tonic::server::UnaryService<super::SpeculateCommandHandlerRequest>
-                        for HandleSyncSpeculativeSvc<T>
-                    {
+                    impl<
+                        T: CommandHandlerCoordinatorService,
+                    > tonic::server::UnaryService<super::SpeculateCommandHandlerRequest>
+                    for HandleSyncSpeculativeSvc<T> {
                         type Response = super::CommandResponse;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::SpeculateCommandHandlerRequest>,
+                            request: tonic::Request<
+                                super::SpeculateCommandHandlerRequest,
+                            >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 <T as CommandHandlerCoordinatorService>::handle_sync_speculative(
-                                    &inner, request,
-                                )
-                                .await
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -1954,13 +2241,18 @@ pub mod command_handler_coordinator_service_server {
                 }
                 "/angzarr.CommandHandlerCoordinatorService/HandleCompensation" => {
                     #[allow(non_camel_case_types)]
-                    struct HandleCompensationSvc<T: CommandHandlerCoordinatorService>(pub Arc<T>);
-                    impl<T: CommandHandlerCoordinatorService>
-                        tonic::server::UnaryService<super::CommandRequest>
-                        for HandleCompensationSvc<T>
-                    {
+                    struct HandleCompensationSvc<T: CommandHandlerCoordinatorService>(
+                        pub Arc<T>,
+                    );
+                    impl<
+                        T: CommandHandlerCoordinatorService,
+                    > tonic::server::UnaryService<super::CommandRequest>
+                    for HandleCompensationSvc<T> {
                         type Response = super::BusinessResponse;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::CommandRequest>,
@@ -1968,9 +2260,10 @@ pub mod command_handler_coordinator_service_server {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 <T as CommandHandlerCoordinatorService>::handle_compensation(
-                                    &inner, request,
-                                )
-                                .await
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -1997,19 +2290,23 @@ pub mod command_handler_coordinator_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => Box::pin(async move {
-                    let mut response = http::Response::new(empty_body());
-                    let headers = response.headers_mut();
-                    headers.insert(
-                        tonic::Status::GRPC_STATUS,
-                        (tonic::Code::Unimplemented as i32).into(),
-                    );
-                    headers.insert(
-                        http::header::CONTENT_TYPE,
-                        tonic::metadata::GRPC_CONTENT_TYPE,
-                    );
-                    Ok(response)
-                }),
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(empty_body());
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
             }
         }
     }
@@ -2054,10 +2351,10 @@ pub mod projector_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     /// ProjectorService: client logic that projects events to read models
     /// client logic doesn't care about sync - coordinator decides
     #[derive(Debug, Clone)]
@@ -2103,8 +2400,9 @@ pub mod projector_service_client {
                     <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
-                Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             ProjectorServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -2144,11 +2442,18 @@ pub mod projector_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::EventBook>,
         ) -> std::result::Result<tonic::Response<super::Projection>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/angzarr.ProjectorService/Handle");
+            let path = http::uri::PathAndQuery::from_static(
+                "/angzarr.ProjectorService/Handle",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("angzarr.ProjectorService", "Handle"));
@@ -2159,17 +2464,23 @@ pub mod projector_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::EventBook>,
         ) -> std::result::Result<tonic::Response<super::Projection>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/angzarr.ProjectorService/HandleSpeculative");
+            let path = http::uri::PathAndQuery::from_static(
+                "/angzarr.ProjectorService/HandleSpeculative",
+            );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "angzarr.ProjectorService",
-                "HandleSpeculative",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("angzarr.ProjectorService", "HandleSpeculative"),
+                );
             self.inner.unary(req, path, codec).await
         }
     }
@@ -2181,10 +2492,10 @@ pub mod projector_coordinator_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     /// ProjectorCoordinatorService: orchestrates projection processing
     #[derive(Debug, Clone)]
     pub struct ProjectorCoordinatorServiceClient<T> {
@@ -2229,10 +2540,13 @@ pub mod projector_coordinator_service_client {
                     <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
-                Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
-            ProjectorCoordinatorServiceClient::new(InterceptedService::new(inner, interceptor))
+            ProjectorCoordinatorServiceClient::new(
+                InterceptedService::new(inner, interceptor),
+            )
         }
         /// Compress requests with the given encoding.
         ///
@@ -2270,18 +2584,23 @@ pub mod projector_coordinator_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::EventRequest>,
         ) -> std::result::Result<tonic::Response<super::Projection>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/angzarr.ProjectorCoordinatorService/HandleSync",
             );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "angzarr.ProjectorCoordinatorService",
-                "HandleSync",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("angzarr.ProjectorCoordinatorService", "HandleSync"),
+                );
             self.inner.unary(req, path, codec).await
         }
         /// Async processing - fire and forget
@@ -2289,17 +2608,23 @@ pub mod projector_coordinator_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::EventBook>,
         ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/angzarr.ProjectorCoordinatorService/Handle");
+            let path = http::uri::PathAndQuery::from_static(
+                "/angzarr.ProjectorCoordinatorService/Handle",
+            );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "angzarr.ProjectorCoordinatorService",
-                "Handle",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("angzarr.ProjectorCoordinatorService", "Handle"),
+                );
             self.inner.unary(req, path, codec).await
         }
         /// Speculative processing - returns projection without side effects
@@ -2307,18 +2632,26 @@ pub mod projector_coordinator_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::SpeculateProjectorRequest>,
         ) -> std::result::Result<tonic::Response<super::Projection>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/angzarr.ProjectorCoordinatorService/HandleSpeculative",
             );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "angzarr.ProjectorCoordinatorService",
-                "HandleSpeculative",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "angzarr.ProjectorCoordinatorService",
+                        "HandleSpeculative",
+                    ),
+                );
             self.inner.unary(req, path, codec).await
         }
     }
@@ -2330,7 +2663,7 @@ pub mod projector_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with ProjectorServiceServer.
@@ -2370,7 +2703,10 @@ pub mod projector_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -2425,9 +2761,14 @@ pub mod projector_service_server {
                 "/angzarr.ProjectorService/Handle" => {
                     #[allow(non_camel_case_types)]
                     struct HandleSvc<T: ProjectorService>(pub Arc<T>);
-                    impl<T: ProjectorService> tonic::server::UnaryService<super::EventBook> for HandleSvc<T> {
+                    impl<
+                        T: ProjectorService,
+                    > tonic::server::UnaryService<super::EventBook> for HandleSvc<T> {
                         type Response = super::Projection;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::EventBook>,
@@ -2464,18 +2805,23 @@ pub mod projector_service_server {
                 "/angzarr.ProjectorService/HandleSpeculative" => {
                     #[allow(non_camel_case_types)]
                     struct HandleSpeculativeSvc<T: ProjectorService>(pub Arc<T>);
-                    impl<T: ProjectorService> tonic::server::UnaryService<super::EventBook>
-                        for HandleSpeculativeSvc<T>
-                    {
+                    impl<
+                        T: ProjectorService,
+                    > tonic::server::UnaryService<super::EventBook>
+                    for HandleSpeculativeSvc<T> {
                         type Response = super::Projection;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::EventBook>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ProjectorService>::handle_speculative(&inner, request).await
+                                <T as ProjectorService>::handle_speculative(&inner, request)
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -2502,19 +2848,23 @@ pub mod projector_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => Box::pin(async move {
-                    let mut response = http::Response::new(empty_body());
-                    let headers = response.headers_mut();
-                    headers.insert(
-                        tonic::Status::GRPC_STATUS,
-                        (tonic::Code::Unimplemented as i32).into(),
-                    );
-                    headers.insert(
-                        http::header::CONTENT_TYPE,
-                        tonic::metadata::GRPC_CONTENT_TYPE,
-                    );
-                    Ok(response)
-                }),
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(empty_body());
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
             }
         }
     }
@@ -2543,7 +2893,7 @@ pub mod projector_coordinator_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with ProjectorCoordinatorServiceServer.
@@ -2587,7 +2937,10 @@ pub mod projector_coordinator_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -2622,7 +2975,8 @@ pub mod projector_coordinator_service_server {
             self
         }
     }
-    impl<T, B> tonic::codegen::Service<http::Request<B>> for ProjectorCoordinatorServiceServer<T>
+    impl<T, B> tonic::codegen::Service<http::Request<B>>
+    for ProjectorCoordinatorServiceServer<T>
     where
         T: ProjectorCoordinatorService,
         B: Body + std::marker::Send + 'static,
@@ -2642,18 +2996,25 @@ pub mod projector_coordinator_service_server {
                 "/angzarr.ProjectorCoordinatorService/HandleSync" => {
                     #[allow(non_camel_case_types)]
                     struct HandleSyncSvc<T: ProjectorCoordinatorService>(pub Arc<T>);
-                    impl<T: ProjectorCoordinatorService>
-                        tonic::server::UnaryService<super::EventRequest> for HandleSyncSvc<T>
-                    {
+                    impl<
+                        T: ProjectorCoordinatorService,
+                    > tonic::server::UnaryService<super::EventRequest>
+                    for HandleSyncSvc<T> {
                         type Response = super::Projection;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::EventRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ProjectorCoordinatorService>::handle_sync(&inner, request)
+                                <T as ProjectorCoordinatorService>::handle_sync(
+                                        &inner,
+                                        request,
+                                    )
                                     .await
                             };
                             Box::pin(fut)
@@ -2684,18 +3045,22 @@ pub mod projector_coordinator_service_server {
                 "/angzarr.ProjectorCoordinatorService/Handle" => {
                     #[allow(non_camel_case_types)]
                     struct HandleSvc<T: ProjectorCoordinatorService>(pub Arc<T>);
-                    impl<T: ProjectorCoordinatorService>
-                        tonic::server::UnaryService<super::EventBook> for HandleSvc<T>
-                    {
+                    impl<
+                        T: ProjectorCoordinatorService,
+                    > tonic::server::UnaryService<super::EventBook> for HandleSvc<T> {
                         type Response = ();
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::EventBook>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ProjectorCoordinatorService>::handle(&inner, request).await
+                                <T as ProjectorCoordinatorService>::handle(&inner, request)
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -2724,13 +3089,18 @@ pub mod projector_coordinator_service_server {
                 }
                 "/angzarr.ProjectorCoordinatorService/HandleSpeculative" => {
                     #[allow(non_camel_case_types)]
-                    struct HandleSpeculativeSvc<T: ProjectorCoordinatorService>(pub Arc<T>);
-                    impl<T: ProjectorCoordinatorService>
-                        tonic::server::UnaryService<super::SpeculateProjectorRequest>
-                        for HandleSpeculativeSvc<T>
-                    {
+                    struct HandleSpeculativeSvc<T: ProjectorCoordinatorService>(
+                        pub Arc<T>,
+                    );
+                    impl<
+                        T: ProjectorCoordinatorService,
+                    > tonic::server::UnaryService<super::SpeculateProjectorRequest>
+                    for HandleSpeculativeSvc<T> {
                         type Response = super::Projection;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::SpeculateProjectorRequest>,
@@ -2738,9 +3108,10 @@ pub mod projector_coordinator_service_server {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 <T as ProjectorCoordinatorService>::handle_speculative(
-                                    &inner, request,
-                                )
-                                .await
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -2767,19 +3138,23 @@ pub mod projector_coordinator_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => Box::pin(async move {
-                    let mut response = http::Response::new(empty_body());
-                    let headers = response.headers_mut();
-                    headers.insert(
-                        tonic::Status::GRPC_STATUS,
-                        (tonic::Code::Unimplemented as i32).into(),
-                    );
-                    headers.insert(
-                        http::header::CONTENT_TYPE,
-                        tonic::metadata::GRPC_CONTENT_TYPE,
-                    );
-                    Ok(response)
-                }),
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(empty_body());
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
             }
         }
     }
@@ -2896,10 +3271,10 @@ pub mod saga_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     /// SagaService: stateless translation from source events to commands.
     /// Sagas receive only source events — framework handles sequence stamping and delivery.
     #[derive(Debug, Clone)]
@@ -2945,8 +3320,9 @@ pub mod saga_service_client {
                     <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
-                Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             SagaServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -2987,11 +3363,18 @@ pub mod saga_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::SagaHandleRequest>,
         ) -> std::result::Result<tonic::Response<super::SagaResponse>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/angzarr.SagaService/Handle");
+            let path = http::uri::PathAndQuery::from_static(
+                "/angzarr.SagaService/Handle",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("angzarr.SagaService", "Handle"));
@@ -3006,10 +3389,10 @@ pub mod saga_coordinator_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     /// SagaCoordinatorService: orchestrates saga execution.
     /// Framework handles sequence stamping and delivery retry.
     #[derive(Debug, Clone)]
@@ -3055,10 +3438,13 @@ pub mod saga_coordinator_service_client {
                     <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
-                Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
-            SagaCoordinatorServiceClient::new(InterceptedService::new(inner, interceptor))
+            SagaCoordinatorServiceClient::new(
+                InterceptedService::new(inner, interceptor),
+            )
         }
         /// Compress requests with the given encoding.
         ///
@@ -3096,12 +3482,18 @@ pub mod saga_coordinator_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::SagaHandleRequest>,
         ) -> std::result::Result<tonic::Response<super::SagaResponse>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/angzarr.SagaCoordinatorService/Execute");
+            let path = http::uri::PathAndQuery::from_static(
+                "/angzarr.SagaCoordinatorService/Execute",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("angzarr.SagaCoordinatorService", "Execute"));
@@ -3112,18 +3504,26 @@ pub mod saga_coordinator_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::SpeculateSagaRequest>,
         ) -> std::result::Result<tonic::Response<super::SagaResponse>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/angzarr.SagaCoordinatorService/ExecuteSpeculative",
             );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "angzarr.SagaCoordinatorService",
-                "ExecuteSpeculative",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "angzarr.SagaCoordinatorService",
+                        "ExecuteSpeculative",
+                    ),
+                );
             self.inner.unary(req, path, codec).await
         }
     }
@@ -3135,7 +3535,7 @@ pub mod saga_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with SagaServiceServer.
@@ -3171,7 +3571,10 @@ pub mod saga_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -3226,16 +3629,23 @@ pub mod saga_service_server {
                 "/angzarr.SagaService/Handle" => {
                     #[allow(non_camel_case_types)]
                     struct HandleSvc<T: SagaService>(pub Arc<T>);
-                    impl<T: SagaService> tonic::server::UnaryService<super::SagaHandleRequest> for HandleSvc<T> {
+                    impl<
+                        T: SagaService,
+                    > tonic::server::UnaryService<super::SagaHandleRequest>
+                    for HandleSvc<T> {
                         type Response = super::SagaResponse;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::SagaHandleRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut =
-                                async move { <T as SagaService>::handle(&inner, request).await };
+                            let fut = async move {
+                                <T as SagaService>::handle(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -3261,19 +3671,23 @@ pub mod saga_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => Box::pin(async move {
-                    let mut response = http::Response::new(empty_body());
-                    let headers = response.headers_mut();
-                    headers.insert(
-                        tonic::Status::GRPC_STATUS,
-                        (tonic::Code::Unimplemented as i32).into(),
-                    );
-                    headers.insert(
-                        http::header::CONTENT_TYPE,
-                        tonic::metadata::GRPC_CONTENT_TYPE,
-                    );
-                    Ok(response)
-                }),
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(empty_body());
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
             }
         }
     }
@@ -3302,7 +3716,7 @@ pub mod saga_coordinator_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with SagaCoordinatorServiceServer.
@@ -3342,7 +3756,10 @@ pub mod saga_coordinator_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -3377,7 +3794,8 @@ pub mod saga_coordinator_service_server {
             self
         }
     }
-    impl<T, B> tonic::codegen::Service<http::Request<B>> for SagaCoordinatorServiceServer<T>
+    impl<T, B> tonic::codegen::Service<http::Request<B>>
+    for SagaCoordinatorServiceServer<T>
     where
         T: SagaCoordinatorService,
         B: Body + std::marker::Send + 'static,
@@ -3397,18 +3815,23 @@ pub mod saga_coordinator_service_server {
                 "/angzarr.SagaCoordinatorService/Execute" => {
                     #[allow(non_camel_case_types)]
                     struct ExecuteSvc<T: SagaCoordinatorService>(pub Arc<T>);
-                    impl<T: SagaCoordinatorService>
-                        tonic::server::UnaryService<super::SagaHandleRequest> for ExecuteSvc<T>
-                    {
+                    impl<
+                        T: SagaCoordinatorService,
+                    > tonic::server::UnaryService<super::SagaHandleRequest>
+                    for ExecuteSvc<T> {
                         type Response = super::SagaResponse;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::SagaHandleRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as SagaCoordinatorService>::execute(&inner, request).await
+                                <T as SagaCoordinatorService>::execute(&inner, request)
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -3438,19 +3861,25 @@ pub mod saga_coordinator_service_server {
                 "/angzarr.SagaCoordinatorService/ExecuteSpeculative" => {
                     #[allow(non_camel_case_types)]
                     struct ExecuteSpeculativeSvc<T: SagaCoordinatorService>(pub Arc<T>);
-                    impl<T: SagaCoordinatorService>
-                        tonic::server::UnaryService<super::SpeculateSagaRequest>
-                        for ExecuteSpeculativeSvc<T>
-                    {
+                    impl<
+                        T: SagaCoordinatorService,
+                    > tonic::server::UnaryService<super::SpeculateSagaRequest>
+                    for ExecuteSpeculativeSvc<T> {
                         type Response = super::SagaResponse;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::SpeculateSagaRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as SagaCoordinatorService>::execute_speculative(&inner, request)
+                                <T as SagaCoordinatorService>::execute_speculative(
+                                        &inner,
+                                        request,
+                                    )
                                     .await
                             };
                             Box::pin(fut)
@@ -3478,19 +3907,23 @@ pub mod saga_coordinator_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => Box::pin(async move {
-                    let mut response = http::Response::new(empty_body());
-                    let headers = response.headers_mut();
-                    headers.insert(
-                        tonic::Status::GRPC_STATUS,
-                        (tonic::Code::Unimplemented as i32).into(),
-                    );
-                    headers.insert(
-                        http::header::CONTENT_TYPE,
-                        tonic::metadata::GRPC_CONTENT_TYPE,
-                    );
-                    Ok(response)
-                }),
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(empty_body());
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
             }
         }
     }
@@ -3646,10 +4079,10 @@ pub mod process_manager_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     /// ProcessManagerService: stateful coordinator for long-running workflows across multiple aggregates.
     ///
     /// WARNING: Only use when saga + queries is insufficient. Consider:
@@ -3708,8 +4141,9 @@ pub mod process_manager_service_client {
                     <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
-                Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             ProcessManagerServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -3749,14 +4183,22 @@ pub mod process_manager_service_client {
         pub async fn prepare(
             &mut self,
             request: impl tonic::IntoRequest<super::ProcessManagerPrepareRequest>,
-        ) -> std::result::Result<tonic::Response<super::ProcessManagerPrepareResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::ProcessManagerPrepareResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/angzarr.ProcessManagerService/Prepare");
+            let path = http::uri::PathAndQuery::from_static(
+                "/angzarr.ProcessManagerService/Prepare",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("angzarr.ProcessManagerService", "Prepare"));
@@ -3767,14 +4209,22 @@ pub mod process_manager_service_client {
         pub async fn handle(
             &mut self,
             request: impl tonic::IntoRequest<super::ProcessManagerHandleRequest>,
-        ) -> std::result::Result<tonic::Response<super::ProcessManagerHandleResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::ProcessManagerHandleResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/angzarr.ProcessManagerService/Handle");
+            let path = http::uri::PathAndQuery::from_static(
+                "/angzarr.ProcessManagerService/Handle",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("angzarr.ProcessManagerService", "Handle"));
@@ -3789,10 +4239,10 @@ pub mod process_manager_coordinator_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     /// ProcessManagerCoordinatorService: orchestrates PM execution
     #[derive(Debug, Clone)]
     pub struct ProcessManagerCoordinatorServiceClient<T> {
@@ -3837,10 +4287,13 @@ pub mod process_manager_coordinator_service_client {
                     <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
-                Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
-            ProcessManagerCoordinatorServiceClient::new(InterceptedService::new(inner, interceptor))
+            ProcessManagerCoordinatorServiceClient::new(
+                InterceptedService::new(inner, interceptor),
+            )
         }
         /// Compress requests with the given encoding.
         ///
@@ -3878,40 +4331,57 @@ pub mod process_manager_coordinator_service_client {
         pub async fn handle(
             &mut self,
             request: impl tonic::IntoRequest<super::ProcessManagerCoordinatorRequest>,
-        ) -> std::result::Result<tonic::Response<super::ProcessManagerHandleResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::ProcessManagerHandleResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/angzarr.ProcessManagerCoordinatorService/Handle",
             );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "angzarr.ProcessManagerCoordinatorService",
-                "Handle",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("angzarr.ProcessManagerCoordinatorService", "Handle"),
+                );
             self.inner.unary(req, path, codec).await
         }
         /// Speculative execution - returns commands and events without persisting
         pub async fn handle_speculative(
             &mut self,
             request: impl tonic::IntoRequest<super::SpeculatePmRequest>,
-        ) -> std::result::Result<tonic::Response<super::ProcessManagerHandleResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::ProcessManagerHandleResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/angzarr.ProcessManagerCoordinatorService/HandleSpeculative",
             );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "angzarr.ProcessManagerCoordinatorService",
-                "HandleSpeculative",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "angzarr.ProcessManagerCoordinatorService",
+                        "HandleSpeculative",
+                    ),
+                );
             self.inner.unary(req, path, codec).await
         }
     }
@@ -3923,7 +4393,7 @@ pub mod process_manager_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with ProcessManagerServiceServer.
@@ -3934,13 +4404,19 @@ pub mod process_manager_service_server {
         async fn prepare(
             &self,
             request: tonic::Request<super::ProcessManagerPrepareRequest>,
-        ) -> std::result::Result<tonic::Response<super::ProcessManagerPrepareResponse>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::ProcessManagerPrepareResponse>,
+            tonic::Status,
+        >;
         /// Phase 2: Handle with trigger + process state + fetched destinations.
         /// Returns commands for other aggregates and events for the PM's own domain.
         async fn handle(
             &self,
             request: tonic::Request<super::ProcessManagerHandleRequest>,
-        ) -> std::result::Result<tonic::Response<super::ProcessManagerHandleResponse>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::ProcessManagerHandleResponse>,
+            tonic::Status,
+        >;
     }
     /// ProcessManagerService: stateful coordinator for long-running workflows across multiple aggregates.
     ///
@@ -3978,7 +4454,10 @@ pub mod process_manager_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -4013,7 +4492,8 @@ pub mod process_manager_service_server {
             self
         }
     }
-    impl<T, B> tonic::codegen::Service<http::Request<B>> for ProcessManagerServiceServer<T>
+    impl<T, B> tonic::codegen::Service<http::Request<B>>
+    for ProcessManagerServiceServer<T>
     where
         T: ProcessManagerService,
         B: Body + std::marker::Send + 'static,
@@ -4033,12 +4513,15 @@ pub mod process_manager_service_server {
                 "/angzarr.ProcessManagerService/Prepare" => {
                     #[allow(non_camel_case_types)]
                     struct PrepareSvc<T: ProcessManagerService>(pub Arc<T>);
-                    impl<T: ProcessManagerService>
-                        tonic::server::UnaryService<super::ProcessManagerPrepareRequest>
-                        for PrepareSvc<T>
-                    {
+                    impl<
+                        T: ProcessManagerService,
+                    > tonic::server::UnaryService<super::ProcessManagerPrepareRequest>
+                    for PrepareSvc<T> {
                         type Response = super::ProcessManagerPrepareResponse;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::ProcessManagerPrepareRequest>,
@@ -4075,12 +4558,15 @@ pub mod process_manager_service_server {
                 "/angzarr.ProcessManagerService/Handle" => {
                     #[allow(non_camel_case_types)]
                     struct HandleSvc<T: ProcessManagerService>(pub Arc<T>);
-                    impl<T: ProcessManagerService>
-                        tonic::server::UnaryService<super::ProcessManagerHandleRequest>
-                        for HandleSvc<T>
-                    {
+                    impl<
+                        T: ProcessManagerService,
+                    > tonic::server::UnaryService<super::ProcessManagerHandleRequest>
+                    for HandleSvc<T> {
                         type Response = super::ProcessManagerHandleResponse;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::ProcessManagerHandleRequest>,
@@ -4114,19 +4600,23 @@ pub mod process_manager_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => Box::pin(async move {
-                    let mut response = http::Response::new(empty_body());
-                    let headers = response.headers_mut();
-                    headers.insert(
-                        tonic::Status::GRPC_STATUS,
-                        (tonic::Code::Unimplemented as i32).into(),
-                    );
-                    headers.insert(
-                        http::header::CONTENT_TYPE,
-                        tonic::metadata::GRPC_CONTENT_TYPE,
-                    );
-                    Ok(response)
-                }),
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(empty_body());
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
             }
         }
     }
@@ -4155,25 +4645,29 @@ pub mod process_manager_coordinator_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with ProcessManagerCoordinatorServiceServer.
     #[async_trait]
-    pub trait ProcessManagerCoordinatorService:
-        std::marker::Send + std::marker::Sync + 'static
-    {
+    pub trait ProcessManagerCoordinatorService: std::marker::Send + std::marker::Sync + 'static {
         /// Full orchestration with sync mode.
         /// Used by CASCADE mode to call PMs synchronously.
         async fn handle(
             &self,
             request: tonic::Request<super::ProcessManagerCoordinatorRequest>,
-        ) -> std::result::Result<tonic::Response<super::ProcessManagerHandleResponse>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::ProcessManagerHandleResponse>,
+            tonic::Status,
+        >;
         /// Speculative execution - returns commands and events without persisting
         async fn handle_speculative(
             &self,
             request: tonic::Request<super::SpeculatePmRequest>,
-        ) -> std::result::Result<tonic::Response<super::ProcessManagerHandleResponse>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::ProcessManagerHandleResponse>,
+            tonic::Status,
+        >;
     }
     /// ProcessManagerCoordinatorService: orchestrates PM execution
     #[derive(Debug)]
@@ -4197,7 +4691,10 @@ pub mod process_manager_coordinator_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -4232,7 +4729,8 @@ pub mod process_manager_coordinator_service_server {
             self
         }
     }
-    impl<T, B> tonic::codegen::Service<http::Request<B>> for ProcessManagerCoordinatorServiceServer<T>
+    impl<T, B> tonic::codegen::Service<http::Request<B>>
+    for ProcessManagerCoordinatorServiceServer<T>
     where
         T: ProcessManagerCoordinatorService,
         B: Body + std::marker::Send + 'static,
@@ -4252,19 +4750,28 @@ pub mod process_manager_coordinator_service_server {
                 "/angzarr.ProcessManagerCoordinatorService/Handle" => {
                     #[allow(non_camel_case_types)]
                     struct HandleSvc<T: ProcessManagerCoordinatorService>(pub Arc<T>);
-                    impl<T: ProcessManagerCoordinatorService>
-                        tonic::server::UnaryService<super::ProcessManagerCoordinatorRequest>
-                        for HandleSvc<T>
-                    {
+                    impl<
+                        T: ProcessManagerCoordinatorService,
+                    > tonic::server::UnaryService<
+                        super::ProcessManagerCoordinatorRequest,
+                    > for HandleSvc<T> {
                         type Response = super::ProcessManagerHandleResponse;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::ProcessManagerCoordinatorRequest>,
+                            request: tonic::Request<
+                                super::ProcessManagerCoordinatorRequest,
+                            >,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ProcessManagerCoordinatorService>::handle(&inner, request)
+                                <T as ProcessManagerCoordinatorService>::handle(
+                                        &inner,
+                                        request,
+                                    )
                                     .await
                             };
                             Box::pin(fut)
@@ -4294,13 +4801,18 @@ pub mod process_manager_coordinator_service_server {
                 }
                 "/angzarr.ProcessManagerCoordinatorService/HandleSpeculative" => {
                     #[allow(non_camel_case_types)]
-                    struct HandleSpeculativeSvc<T: ProcessManagerCoordinatorService>(pub Arc<T>);
-                    impl<T: ProcessManagerCoordinatorService>
-                        tonic::server::UnaryService<super::SpeculatePmRequest>
-                        for HandleSpeculativeSvc<T>
-                    {
+                    struct HandleSpeculativeSvc<T: ProcessManagerCoordinatorService>(
+                        pub Arc<T>,
+                    );
+                    impl<
+                        T: ProcessManagerCoordinatorService,
+                    > tonic::server::UnaryService<super::SpeculatePmRequest>
+                    for HandleSpeculativeSvc<T> {
                         type Response = super::ProcessManagerHandleResponse;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::SpeculatePmRequest>,
@@ -4308,9 +4820,10 @@ pub mod process_manager_coordinator_service_server {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 <T as ProcessManagerCoordinatorService>::handle_speculative(
-                                    &inner, request,
-                                )
-                                .await
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -4337,19 +4850,23 @@ pub mod process_manager_coordinator_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => Box::pin(async move {
-                    let mut response = http::Response::new(empty_body());
-                    let headers = response.headers_mut();
-                    headers.insert(
-                        tonic::Status::GRPC_STATUS,
-                        (tonic::Code::Unimplemented as i32).into(),
-                    );
-                    headers.insert(
-                        http::header::CONTENT_TYPE,
-                        tonic::metadata::GRPC_CONTENT_TYPE,
-                    );
-                    Ok(response)
-                }),
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(empty_body());
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
             }
         }
     }
@@ -4378,10 +4895,10 @@ pub mod event_query_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     /// EventQueryService: query interface for retrieving events
     #[derive(Debug, Clone)]
     pub struct EventQueryServiceClient<T> {
@@ -4426,8 +4943,9 @@ pub mod event_query_service_client {
                     <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
-                Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             EventQueryServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -4467,12 +4985,18 @@ pub mod event_query_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::Query>,
         ) -> std::result::Result<tonic::Response<super::EventBook>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/angzarr.EventQueryService/GetEventBook");
+            let path = http::uri::PathAndQuery::from_static(
+                "/angzarr.EventQueryService/GetEventBook",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("angzarr.EventQueryService", "GetEventBook"));
@@ -4486,11 +5010,18 @@ pub mod event_query_service_client {
             tonic::Response<tonic::codec::Streaming<super::EventBook>>,
             tonic::Status,
         > {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/angzarr.EventQueryService/GetEvents");
+            let path = http::uri::PathAndQuery::from_static(
+                "/angzarr.EventQueryService/GetEvents",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("angzarr.EventQueryService", "GetEvents"));
@@ -4504,12 +5035,18 @@ pub mod event_query_service_client {
             tonic::Response<tonic::codec::Streaming<super::EventBook>>,
             tonic::Status,
         > {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/angzarr.EventQueryService/Synchronize");
+            let path = http::uri::PathAndQuery::from_static(
+                "/angzarr.EventQueryService/Synchronize",
+            );
             let mut req = request.into_streaming_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("angzarr.EventQueryService", "Synchronize"));
@@ -4523,18 +5060,23 @@ pub mod event_query_service_client {
             tonic::Response<tonic::codec::Streaming<super::AggregateRoot>>,
             tonic::Status,
         > {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/angzarr.EventQueryService/GetAggregateRoots",
             );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "angzarr.EventQueryService",
-                "GetAggregateRoots",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("angzarr.EventQueryService", "GetAggregateRoots"),
+                );
             self.inner.server_streaming(req, path, codec).await
         }
     }
@@ -4546,7 +5088,7 @@ pub mod event_query_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with EventQueryServiceServer.
@@ -4560,7 +5102,8 @@ pub mod event_query_service_server {
         /// Server streaming response type for the GetEvents method.
         type GetEventsStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::EventBook, tonic::Status>,
-            > + std::marker::Send
+            >
+            + std::marker::Send
             + 'static;
         /// Stream EventBooks matching query - use for bulk retrieval (SSE)
         async fn get_events(
@@ -4570,23 +5113,31 @@ pub mod event_query_service_server {
         /// Server streaming response type for the Synchronize method.
         type SynchronizeStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::EventBook, tonic::Status>,
-            > + std::marker::Send
+            >
+            + std::marker::Send
             + 'static;
         /// Bidirectional sync - not exposed via REST (use gRPC directly)
         async fn synchronize(
             &self,
             request: tonic::Request<tonic::Streaming<super::Query>>,
-        ) -> std::result::Result<tonic::Response<Self::SynchronizeStream>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<Self::SynchronizeStream>,
+            tonic::Status,
+        >;
         /// Server streaming response type for the GetAggregateRoots method.
         type GetAggregateRootsStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::AggregateRoot, tonic::Status>,
-            > + std::marker::Send
+            >
+            + std::marker::Send
             + 'static;
         /// List all aggregate roots (SSE)
         async fn get_aggregate_roots(
             &self,
             request: tonic::Request<()>,
-        ) -> std::result::Result<tonic::Response<Self::GetAggregateRootsStream>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<Self::GetAggregateRootsStream>,
+            tonic::Status,
+        >;
     }
     /// EventQueryService: query interface for retrieving events
     #[derive(Debug)]
@@ -4610,7 +5161,10 @@ pub mod event_query_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -4665,13 +5219,21 @@ pub mod event_query_service_server {
                 "/angzarr.EventQueryService/GetEventBook" => {
                     #[allow(non_camel_case_types)]
                     struct GetEventBookSvc<T: EventQueryService>(pub Arc<T>);
-                    impl<T: EventQueryService> tonic::server::UnaryService<super::Query> for GetEventBookSvc<T> {
+                    impl<T: EventQueryService> tonic::server::UnaryService<super::Query>
+                    for GetEventBookSvc<T> {
                         type Response = super::EventBook;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
-                        fn call(&mut self, request: tonic::Request<super::Query>) -> Self::Future {
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::Query>,
+                        ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as EventQueryService>::get_event_book(&inner, request).await
+                                <T as EventQueryService>::get_event_book(&inner, request)
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -4701,12 +5263,20 @@ pub mod event_query_service_server {
                 "/angzarr.EventQueryService/GetEvents" => {
                     #[allow(non_camel_case_types)]
                     struct GetEventsSvc<T: EventQueryService>(pub Arc<T>);
-                    impl<T: EventQueryService> tonic::server::ServerStreamingService<super::Query> for GetEventsSvc<T> {
+                    impl<
+                        T: EventQueryService,
+                    > tonic::server::ServerStreamingService<super::Query>
+                    for GetEventsSvc<T> {
                         type Response = super::EventBook;
                         type ResponseStream = T::GetEventsStream;
-                        type Future =
-                            BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
-                        fn call(&mut self, request: tonic::Request<super::Query>) -> Self::Future {
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::Query>,
+                        ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 <T as EventQueryService>::get_events(&inner, request).await
@@ -4739,11 +5309,16 @@ pub mod event_query_service_server {
                 "/angzarr.EventQueryService/Synchronize" => {
                     #[allow(non_camel_case_types)]
                     struct SynchronizeSvc<T: EventQueryService>(pub Arc<T>);
-                    impl<T: EventQueryService> tonic::server::StreamingService<super::Query> for SynchronizeSvc<T> {
+                    impl<
+                        T: EventQueryService,
+                    > tonic::server::StreamingService<super::Query>
+                    for SynchronizeSvc<T> {
                         type Response = super::EventBook;
                         type ResponseStream = T::SynchronizeStream;
-                        type Future =
-                            BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<tonic::Streaming<super::Query>>,
@@ -4780,15 +5355,22 @@ pub mod event_query_service_server {
                 "/angzarr.EventQueryService/GetAggregateRoots" => {
                     #[allow(non_camel_case_types)]
                     struct GetAggregateRootsSvc<T: EventQueryService>(pub Arc<T>);
-                    impl<T: EventQueryService> tonic::server::ServerStreamingService<()> for GetAggregateRootsSvc<T> {
+                    impl<T: EventQueryService> tonic::server::ServerStreamingService<()>
+                    for GetAggregateRootsSvc<T> {
                         type Response = super::AggregateRoot;
                         type ResponseStream = T::GetAggregateRootsStream;
-                        type Future =
-                            BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
                         fn call(&mut self, request: tonic::Request<()>) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as EventQueryService>::get_aggregate_roots(&inner, request).await
+                                <T as EventQueryService>::get_aggregate_roots(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -4815,19 +5397,23 @@ pub mod event_query_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => Box::pin(async move {
-                    let mut response = http::Response::new(empty_body());
-                    let headers = response.headers_mut();
-                    headers.insert(
-                        tonic::Status::GRPC_STATUS,
-                        (tonic::Code::Unimplemented as i32).into(),
-                    );
-                    headers.insert(
-                        http::header::CONTENT_TYPE,
-                        tonic::metadata::GRPC_CONTENT_TYPE,
-                    );
-                    Ok(response)
-                }),
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(empty_body());
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
             }
         }
     }
@@ -4856,10 +5442,10 @@ pub mod event_stream_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     /// docs:start:event_stream_service
     /// EventStreamService: streams events to registered subscribers
     #[derive(Debug, Clone)]
@@ -4905,8 +5491,9 @@ pub mod event_stream_service_client {
                     <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
-                Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             EventStreamServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -4951,12 +5538,18 @@ pub mod event_stream_service_client {
             tonic::Response<tonic::codec::Streaming<super::EventBook>>,
             tonic::Status,
         > {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/angzarr.EventStreamService/Subscribe");
+            let path = http::uri::PathAndQuery::from_static(
+                "/angzarr.EventStreamService/Subscribe",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("angzarr.EventStreamService", "Subscribe"));
@@ -4971,7 +5564,7 @@ pub mod event_stream_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with EventStreamServiceServer.
@@ -4980,7 +5573,8 @@ pub mod event_stream_service_server {
         /// Server streaming response type for the Subscribe method.
         type SubscribeStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::EventBook, tonic::Status>,
-            > + std::marker::Send
+            >
+            + std::marker::Send
             + 'static;
         /// Subscribe to events matching correlation ID (required)
         /// Returns INVALID_ARGUMENT if correlation_id is empty
@@ -5013,7 +5607,10 @@ pub mod event_stream_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -5068,14 +5665,16 @@ pub mod event_stream_service_server {
                 "/angzarr.EventStreamService/Subscribe" => {
                     #[allow(non_camel_case_types)]
                     struct SubscribeSvc<T: EventStreamService>(pub Arc<T>);
-                    impl<T: EventStreamService>
-                        tonic::server::ServerStreamingService<super::EventStreamFilter>
-                        for SubscribeSvc<T>
-                    {
+                    impl<
+                        T: EventStreamService,
+                    > tonic::server::ServerStreamingService<super::EventStreamFilter>
+                    for SubscribeSvc<T> {
                         type Response = super::EventBook;
                         type ResponseStream = T::SubscribeStream;
-                        type Future =
-                            BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::EventStreamFilter>,
@@ -5109,19 +5708,23 @@ pub mod event_stream_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => Box::pin(async move {
-                    let mut response = http::Response::new(empty_body());
-                    let headers = response.headers_mut();
-                    headers.insert(
-                        tonic::Status::GRPC_STATUS,
-                        (tonic::Code::Unimplemented as i32).into(),
-                    );
-                    headers.insert(
-                        http::header::CONTENT_TYPE,
-                        tonic::metadata::GRPC_CONTENT_TYPE,
-                    );
-                    Ok(response)
-                }),
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(empty_body());
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
             }
         }
     }
@@ -5182,10 +5785,10 @@ pub mod upcaster_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     /// UpcasterService: transforms old event versions to current versions
     /// Implemented by the client alongside AggregateService on the same gRPC server.
     /// Optionally can be deployed as a separate binary for testing or complex migrations.
@@ -5232,8 +5835,9 @@ pub mod upcaster_service_client {
                     <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
-                Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             UpcasterServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -5274,11 +5878,18 @@ pub mod upcaster_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::UpcastRequest>,
         ) -> std::result::Result<tonic::Response<super::UpcastResponse>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/angzarr.UpcasterService/Upcast");
+            let path = http::uri::PathAndQuery::from_static(
+                "/angzarr.UpcasterService/Upcast",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("angzarr.UpcasterService", "Upcast"));
@@ -5293,7 +5904,7 @@ pub mod upcaster_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with UpcasterServiceServer.
@@ -5330,7 +5941,10 @@ pub mod upcaster_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -5385,9 +5999,15 @@ pub mod upcaster_service_server {
                 "/angzarr.UpcasterService/Upcast" => {
                     #[allow(non_camel_case_types)]
                     struct UpcastSvc<T: UpcasterService>(pub Arc<T>);
-                    impl<T: UpcasterService> tonic::server::UnaryService<super::UpcastRequest> for UpcastSvc<T> {
+                    impl<
+                        T: UpcasterService,
+                    > tonic::server::UnaryService<super::UpcastRequest>
+                    for UpcastSvc<T> {
                         type Response = super::UpcastResponse;
-                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::UpcastRequest>,
@@ -5421,19 +6041,23 @@ pub mod upcaster_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => Box::pin(async move {
-                    let mut response = http::Response::new(empty_body());
-                    let headers = response.headers_mut();
-                    headers.insert(
-                        tonic::Status::GRPC_STATUS,
-                        (tonic::Code::Unimplemented as i32).into(),
-                    );
-                    headers.insert(
-                        http::header::CONTENT_TYPE,
-                        tonic::metadata::GRPC_CONTENT_TYPE,
-                    );
-                    Ok(response)
-                }),
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(empty_body());
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
             }
         }
     }
@@ -5523,8 +6147,10 @@ pub struct CloudEvent {
     /// Keys should follow CloudEvents naming (lowercase, no dots).
     /// Framework adds correlationid automatically if present in Cover.
     #[prost(map = "string, string", tag = "3")]
-    pub extensions:
-        ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
+    pub extensions: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
     /// Optional overrides. Framework uses Cover/EventPage values if not set.
     ///
     /// Default: {domain}:{root_id}:{sequence}

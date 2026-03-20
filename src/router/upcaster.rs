@@ -236,6 +236,8 @@ impl UpcasterRouter {
                                 payload: Some(event_page::Payload::Event(new_event)),
                                 header: page.header.clone(),
                                 created_at: page.created_at,
+                                committed: page.committed,
+                                cascade_id: page.cascade_id.clone(),
                             }
                         } else {
                             page.clone()

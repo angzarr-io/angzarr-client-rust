@@ -15,6 +15,8 @@ pub fn event_page(seq: u32, event: Any) -> EventPage {
         }),
         created_at: Some(crate::now()),
         payload: Some(event_page::Payload::Event(event)),
+        committed: true,  // Default: immediately committed (no 2PC)
+        cascade_id: None, // Not part of a cascade
     }
 }
 
