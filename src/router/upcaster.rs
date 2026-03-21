@@ -330,6 +330,8 @@ mod tests {
                     sequence_type: Some(SequenceType::Sequence(0)),
                 }),
                 created_at: None,
+                cascade_id: None,
+                committed: true,
             },
             EventPage {
                 payload: Some(event_page::Payload::Event(Any {
@@ -340,6 +342,8 @@ mod tests {
                     sequence_type: Some(SequenceType::Sequence(1)),
                 }),
                 created_at: None,
+                cascade_id: None,
+                committed: true,
             },
         ];
 

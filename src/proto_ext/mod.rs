@@ -151,6 +151,8 @@ mod tests {
             }),
             created_at: None,
             payload: None,
+            cascade_id: None,
+            committed: true,
         };
         assert_eq!(page.sequence_num(), 42);
     }
@@ -169,6 +171,8 @@ mod tests {
                 type_url: "type.googleapis.com/test.Event".to_string(),
                 value: vec![],
             })),
+            cascade_id: None,
+            committed: true,
         };
         assert_eq!(page.type_url(), Some("type.googleapis.com/test.Event"));
     }
@@ -183,6 +187,8 @@ mod tests {
             }),
             created_at: None,
             payload: None,
+            cascade_id: None,
+            committed: true,
         };
         assert_eq!(page.type_url(), None);
     }
@@ -201,6 +207,8 @@ mod tests {
                 type_url: "test".to_string(),
                 value: vec![1, 2, 3],
             })),
+            cascade_id: None,
+            committed: true,
         };
         assert_eq!(page.payload(), Some(&[1u8, 2, 3][..]));
     }
@@ -215,6 +223,8 @@ mod tests {
             }),
             created_at: None,
             payload: None,
+            cascade_id: None,
+            committed: true,
         };
         assert_eq!(page.payload(), None);
     }
@@ -333,6 +343,8 @@ mod tests {
                     }),
                     payload: None,
                     created_at: None,
+                    cascade_id: None,
+                    committed: true,
                 },
                 EventPage {
                     header: Some(PageHeader {
@@ -340,6 +352,8 @@ mod tests {
                     }),
                     payload: None,
                     created_at: None,
+                    cascade_id: None,
+                    committed: true,
                 },
             ],
             snapshot: None,
@@ -362,6 +376,8 @@ mod tests {
                     }),
                     payload: None,
                     created_at: None,
+                    cascade_id: None,
+                    committed: true,
                 },
                 EventPage {
                     header: Some(PageHeader {
@@ -369,6 +385,8 @@ mod tests {
                     }),
                     payload: None,
                     created_at: None,
+                    cascade_id: None,
+                    committed: true,
                 },
             ],
             snapshot: None,
@@ -390,6 +408,8 @@ mod tests {
                 }),
                 payload: None,
                 created_at: None,
+                cascade_id: None,
+                committed: true,
             },
             EventPage {
                 header: Some(PageHeader {
@@ -397,6 +417,8 @@ mod tests {
                 }),
                 payload: None,
                 created_at: None,
+                cascade_id: None,
+                committed: true,
             },
         ];
         assert_eq!(calculate_next_sequence(&pages, None), 7);
@@ -433,6 +455,8 @@ mod tests {
                 }),
                 payload: None,
                 created_at: None,
+                cascade_id: None,
+                committed: true,
             }],
             snapshot: None,
             next_sequence: 0,

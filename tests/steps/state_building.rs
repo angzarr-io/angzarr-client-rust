@@ -64,6 +64,8 @@ fn make_event_page(seq: u32, type_url: &str, data: &str) -> EventPage {
             type_url: type_url.to_string(),
             value: event.encode_to_vec(),
         })),
+        cascade_id: None,
+        committed: true,
     }
 }
 
@@ -81,6 +83,8 @@ fn make_increment_event(seq: u32, increment: i32) -> EventPage {
             type_url: "type.googleapis.com/test.Increment".to_string(),
             value: event.encode_to_vec(),
         })),
+        cascade_id: None,
+        committed: true,
     }
 }
 
@@ -305,6 +309,8 @@ async fn given_corrupted_payload(world: &mut StateBuildingWorld) {
             type_url: "type.googleapis.com/test.Event".to_string(),
             value: vec![0xFF, 0xFF, 0xFF], // Invalid protobuf
         })),
+        cascade_id: None,
+        committed: true,
     }];
     world.event_book = Some(make_event_book("test", events));
 }

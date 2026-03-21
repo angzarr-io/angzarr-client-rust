@@ -37,6 +37,8 @@ fn make_event_page(seq: u32, type_url: &str, value: Vec<u8>) -> EventPage {
             type_url: type_url.to_string(),
             value,
         })),
+        cascade_id: None,
+        committed: true,
     }
 }
 
@@ -153,6 +155,8 @@ async fn given_event_page_with_offloaded(world: &mut EventDecodingWorld) {
                 stored_at: None,
             },
         )),
+        cascade_id: None,
+        committed: true,
     });
 }
 
@@ -225,6 +229,8 @@ async fn given_event_page_no_payload(world: &mut EventDecodingWorld) {
         }),
         created_at: None,
         payload: None,
+        cascade_id: None,
+        committed: true,
     });
 }
 
