@@ -61,7 +61,9 @@ pub use traits::{
     ProcessManagerResponse, ProjectorDomainHandler, RejectionHandlerResponse, SagaDomainHandler,
     SagaHandlerResponse, UnpackAny,
 };
-pub use upcaster::{BoxedUpcasterHandler, UpcasterHandler, UpcasterHandlerHOF, UpcasterMode, UpcasterRouter};
+pub use upcaster::{
+    BoxedUpcasterHandler, UpcasterHandler, UpcasterHandlerHOF, UpcasterMode, UpcasterRouter,
+};
 
 // Factory support for per-request handlers and HOF
 pub use factory::{BoxedHandlerFactory, HandlerFactory, HandlerHOF};

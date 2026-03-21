@@ -157,7 +157,8 @@ impl CloudEventsRouter {
             Ok(event) => handler(&event),
             Err(_) => None,
         });
-        self.handlers.insert(suffix.to_string(), HandlerEntry::Static(boxed));
+        self.handlers
+            .insert(suffix.to_string(), HandlerEntry::Static(boxed));
         self
     }
 
@@ -192,7 +193,8 @@ impl CloudEventsRouter {
                 Err(_) => None,
             })
         });
-        self.handlers.insert(suffix.to_string(), HandlerEntry::Factory(factory_arc));
+        self.handlers
+            .insert(suffix.to_string(), HandlerEntry::Factory(factory_arc));
         self
     }
 

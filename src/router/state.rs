@@ -327,8 +327,7 @@ mod tests {
         // In a real scenario, the factory would capture db_pool, etc.
         let _ = (move || {
             call_count_clone.fetch_add(1, Ordering::SeqCst);
-            Box::new(|_state: &mut u32, _value: u32| {})
-                as Box<dyn Fn(&mut u32, u32) + Send + Sync>
+            Box::new(|_state: &mut u32, _value: u32| {}) as Box<dyn Fn(&mut u32, u32) + Send + Sync>
         })();
 
         // The factory was called once
