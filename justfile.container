@@ -1,6 +1,6 @@
 # Rust client library - container version
 # This file is mounted as 'justfile' inside the container
-# Also used directly in CI container jobs
+# Also used directly in CI
 
 set shell := ["bash", "-c"]
 
@@ -9,39 +9,47 @@ ROOT := `git rev-parse --show-toplevel`
 default:
     @just --list
 
+# Build all workspace crates
 build:
-    cargo build -p angzarr-client --release
+    cargo build --workspace
 
+# Run all tests (lib tests only, no doc tests)
 test:
-    cargo test -p angzarr-client --lib
-    cargo test -p angzarr-client --test features
+    cargo test --workspace --lib
 
-test-verbose:
-    cargo test -p angzarr-client --lib -- --nocapture
-    cargo test -p angzarr-client --test features -- --nocapture
-
-# Run only BDD feature tests
-test-bdd:
-    cargo test -p angzarr-client --test features
-
-# Run only unit tests
-test-unit:
-    cargo test -p angzarr-client --lib
-
+# Run clippy linter
 lint:
-    cargo clippy --all-targets -- -D warnings
+    cargo clippy --workspace -- -D warnings
 
+# Check formatting (use fmt-fix to auto-format)
 fmt:
     cargo fmt --check
 
+# Auto-format code
+fmt-fix:
+    cargo fmt
+
+# Run all checks (build + test + lint + fmt)
+check-all: build test lint fmt
+
+# === Additional Targets ===
+
+# Run tests with verbose output
+test-verbose:
+    cargo test --workspace --lib -- --nocapture
+
+# Run mutation testing
 mutate:
     cargo mutants --jobs 4
 
+# Dry-run mutation testing (show what would be mutated)
 mutate-dry:
     cargo mutants --list
 
+# Dry-run publish to crates.io
 publish-dry:
     cargo publish --dry-run
 
+# Publish to crates.io
 publish:
     cargo publish
