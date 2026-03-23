@@ -2,7 +2,9 @@
 target/
 Cargo.lock
 *.rs.bk
-proto/**/*.rs
+
+# Generated Rust code (run `just gen` to regenerate)
+src/proto/gen/
 
 # IDE
 .idea/

@@ -1,8 +1,10 @@
 version: v2
 inputs:
-  - module: buf.build/angzarr/angzarr
+  - module: buf.build/angzarr/angzarr:0.2.0
 plugins:
-  - remote: buf.build/prost/rust
-    out: proto
-  - remote: buf.build/tonic/rust
-    out: proto
+  - local: protoc-gen-prost
+    out: src/proto/gen
+    opt:
+      - enable_type_names
+  - local: protoc-gen-tonic
+    out: src/proto/gen

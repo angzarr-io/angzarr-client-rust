@@ -8,9 +8,6 @@ license = "MIT OR Apache-2.0"
 [lib]
 proc-macro = true
 
-# Standalone workspace to allow independent building
-[workspace]
-
 [dependencies]
 proc-macro2 = "1.0"
 quote = "1.0"

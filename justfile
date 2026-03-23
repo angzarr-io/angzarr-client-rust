@@ -39,6 +39,10 @@ _container +ARGS:
 default:
     @just --list
 
+# Generate Rust code from protos via buf
+gen:
+    just _container gen
+
 # Build Rust client (release)
 build:
     just _container build

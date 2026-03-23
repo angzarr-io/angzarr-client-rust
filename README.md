@@ -20,4 +20,4 @@ let client = Client::connect("http://localhost:50051").await?;
 
 ## License
 
-BSD-3-Clause
+AGPL-3.0-only

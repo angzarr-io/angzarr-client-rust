@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "angzarr-macros"]
+
 [package]
 name = "angzarr-client"
 version = "0.2.0"
@@ -14,9 +17,9 @@ categories = ["network-programming", "asynchronous"]
 angzarr-macros = { version = "0.1.0", path = "angzarr-macros" }
 
 # gRPC
-tonic = { version = "0.12", features = ["tls"] }
-prost = "0.13"
-prost-types = "0.13"
+tonic = { version = "0.14", features = ["tls-ring", "transport"] }
+prost = "0.14"
+prost-types = "0.14"
 
 # Async
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
@@ -37,10 +40,11 @@ serde = { version = "1", features = ["derive"] }
 
 # Logging
 tracing = "0.1"
+tonic-prost = "0.14.5"
 
 [build-dependencies]
-tonic-build = "0.12"
-prost-build = "0.13"
+tonic-build = "0.14"
+prost-build = "0.14"
 
 [dev-dependencies]
 cucumber = "0.21"
