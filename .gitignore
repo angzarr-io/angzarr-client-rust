@@ -4,7 +4,6 @@ Cargo.lock
 *.rs.bk
 
 # Generated Rust code (run `just gen` to regenerate)
-src/proto/gen/
 
 # IDE
 .idea/
