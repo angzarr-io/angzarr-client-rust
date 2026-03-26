@@ -9,6 +9,7 @@ use std::error::Error;
 use tonic::Status;
 
 use crate::proto::{CommandBook, Cover, EventBook, Notification, Projection};
+use crate::router::state::Destinations;
 use crate::router::StateRouter;
 
 // ============================================================================
@@ -187,8 +188,15 @@ pub trait CommandHandlerDomainHandler: Send + Sync {
 /// Handler for a single domain's events in a saga.
 ///
 /// Sagas are **pure translators**: they receive source events and produce
-/// commands for target domains. They do NOT receive destination state —
-/// the framework handles sequence stamping and delivery retries.
+/// commands for target domains.
+///
+/// # Design Philosophy
+///
+/// Sagas should NOT rebuild destination state to make decisions. Instead:
+/// - Use destination sequences for command stamping via `destinations.stamp_command()`
+/// - Let destination aggregates make business decisions
+/// - Use sync mode for immediate feedback and error handling
+/// - Inject facts if external information is needed
 ///
 /// # Example
 ///
@@ -204,11 +212,16 @@ pub trait CommandHandlerDomainHandler: Send + Sync {
 ///         &self,
 ///         source: &EventBook,
 ///         event: &Any,
+///         destinations: &Destinations,
 ///     ) -> CommandResult<SagaHandlerResponse> {
-///         dispatch_event!(event, source, {
-///             "OrderCompleted" => self.handle_completed,
-///             "OrderCancelled" => self.handle_cancelled,
-///         })
+///         // Create command and stamp with destination sequence
+///         let mut cmd = create_reserve_inventory_command(event);
+///         destinations.stamp_command(&mut cmd, "inventory")
+///             .map_err(|e| CommandRejectedError::new(&e))?;
+///
+///         // Aggregate makes business decisions (e.g., out of stock)
+///         // Saga handles rejection via on_rejected
+///         Ok(SagaHandlerResponse::with_commands(vec![cmd]))
 ///     }
 /// }
 /// ```
@@ -220,12 +233,15 @@ pub trait SagaDomainHandler: Send + Sync {
 
     /// Translate source events into commands for target domains.
     ///
-    /// Commands should have `cover` set to identify the target aggregate.
-    /// The framework will stamp `angzarr_deferred` with source info and
-    /// handle sequence assignment on delivery.
-    ///
-    /// Returns commands to send to other aggregates and events/facts to inject.
-    fn handle(&self, source: &EventBook, event: &Any) -> CommandResult<SagaHandlerResponse>;
+    /// The `destinations` parameter provides destination sequences for command
+    /// stamping. Use `destinations.stamp_command(&mut cmd, "domain")` to stamp
+    /// the correct sequence before returning commands.
+    fn handle(
+        &self,
+        source: &EventBook,
+        event: &Any,
+        destinations: &Destinations,
+    ) -> CommandResult<SagaHandlerResponse>;
 
     /// Handle a rejection notification.
     ///
@@ -253,30 +269,44 @@ pub trait SagaDomainHandler: Send + Sync {
 /// their own state. Each domain gets its own handler, but they all share
 /// the same PM state type.
 ///
+/// # Design Philosophy
+///
+/// PMs should NOT rebuild destination state to make decisions. Instead:
+/// - Use destination sequences for command stamping via `destinations.stamp_command()`
+/// - Let destination aggregates make business decisions
+/// - Use sync mode for immediate feedback and error handling
+/// - Inject facts if external information is needed
+///
 /// # Example
 ///
 /// ```rust,ignore
-/// struct OrderPmHandler;
+/// struct BuyInPmHandler;
 ///
-/// impl ProcessManagerDomainHandler<HandFlowState> for OrderPmHandler {
+/// impl ProcessManagerDomainHandler<BuyInState> for BuyInPmHandler {
 ///     fn event_types(&self) -> Vec<String> {
-///         vec!["OrderCreated".into()]
+///         vec!["BuyInRequested".into()]
 ///     }
 ///
-///     fn prepare(&self, trigger: &EventBook, state: &HandFlowState, event: &Any) -> Vec<Cover> {
-///         // Declare needed destinations
-///         vec![]
+///     fn prepare(&self, trigger: &EventBook, state: &BuyInState, event: &Any) -> Vec<Cover> {
+///         // Declare needed destinations (for sequence fetching)
+///         vec![Cover { domain: "table".into(), .. }]
 ///     }
 ///
 ///     fn handle(
 ///         &self,
 ///         trigger: &EventBook,
-///         state: &HandFlowState,
+///         state: &BuyInState,
 ///         event: &Any,
-///         destinations: &[EventBook],
+///         destinations: &Destinations,
 ///     ) -> CommandResult<ProcessManagerResponse> {
-///         // Process event, emit commands and/or PM events
-///         Ok(ProcessManagerResponse::default())
+///         // Create command and stamp with destination sequence
+///         let mut cmd = create_add_player_command(event);
+///         destinations.stamp_command(&mut cmd, "table")
+///             .map_err(|e| CommandRejectedError::new(&e))?;
+///
+///         // Aggregate makes business decisions (e.g., table full)
+///         // PM handles rejection via on_rejected
+///         Ok(ProcessManagerResponse::with_commands(vec![cmd]))
 ///     }
 /// }
 /// ```
@@ -288,12 +318,16 @@ pub trait ProcessManagerDomainHandler<S>: Send + Sync {
     fn prepare(&self, trigger: &EventBook, state: &S, event: &Any) -> Vec<Cover>;
 
     /// Handle phase — produce commands and PM events.
+    ///
+    /// The `destinations` parameter provides destination sequences for command
+    /// stamping. Use `destinations.stamp_command(&mut cmd, "domain")` to stamp
+    /// the correct sequence before returning commands.
     fn handle(
         &self,
         trigger: &EventBook,
         state: &S,
         event: &Any,
-        destinations: &[EventBook],
+        destinations: &Destinations,
     ) -> CommandResult<ProcessManagerResponse>;
 
     /// Handle a rejection notification.

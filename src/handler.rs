@@ -170,7 +170,7 @@ impl<H: SagaDomainHandler + 'static> SagaService for SagaHandler<H> {
             .as_ref()
             .ok_or_else(|| Status::invalid_argument("Missing source event book"))?;
 
-        let response = self.router.dispatch(source)?;
+        let response = self.router.dispatch(source, &req.destination_sequences)?;
         Ok(Response::new(response))
     }
 }
@@ -303,7 +303,7 @@ impl<S: Default + Send + Sync + 'static> ProcessManagerService for ProcessManage
 
         let response = self
             .router
-            .dispatch(trigger, &process_state, &req.destinations)?;
+            .dispatch(trigger, &process_state, &req.destination_sequences)?;
 
         Ok(Response::new(response))
     }

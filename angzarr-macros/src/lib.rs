@@ -55,9 +55,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{quote, ToTokens};
-use syn::{
-    parse_macro_input, Attribute, Ident, ImplItem, ItemImpl, Meta, Token,
-};
+use syn::{parse_macro_input, Attribute, Ident, ImplItem, ItemImpl, Meta, Token};
 
 /// Marks an impl block as an aggregate with command handlers.
 ///
@@ -1046,7 +1044,9 @@ fn expand_projector(args: ProjectorArgs, mut input: ItemImpl) -> TokenStream2 {
     // Remove our attributes from methods
     for item in &mut input.items {
         if let ImplItem::Fn(method) = item {
-            method.attrs.retain(|attr| !attr.path().is_ident("projects"));
+            method
+                .attrs
+                .retain(|attr| !attr.path().is_ident("projects"));
         }
     }
 

@@ -2,7 +2,11 @@
 //!
 //! `StateRouter` provides fluent registration of event appliers for
 //! rebuilding aggregate/PM state from event streams.
+//!
+//! `Destinations` provides destination sequences for command stamping
+//! in process managers and sagas (no state rebuilding).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use prost_types::Any;
@@ -256,6 +260,109 @@ impl<S: Default + 'static> StateRouter<S> {
 }
 
 // ============================================================================
+// Destination Sequences (Process Managers and Sagas)
+// ============================================================================
+
+use crate::proto::CommandBook;
+
+/// Container for destination domain sequences.
+///
+/// Sagas and Process Managers receive destination sequences for command stamping.
+/// No state rebuilding - aggregates make business decisions.
+///
+/// # Design Philosophy
+///
+/// Sagas/PMs should NOT rebuild destination state to make decisions.
+/// Instead:
+/// - Inject facts if external information is needed
+/// - Let destination aggregates make business decisions
+/// - Use sequences only for command stamping
+/// - Use sync mode for immediate feedback and error handling
+///
+/// # Example
+///
+/// ```rust,ignore
+/// fn handle(
+///     &self,
+///     trigger: &EventBook,
+///     state: &BuyInState,
+///     event: &Any,
+///     destinations: &Destinations,
+/// ) -> CommandResult<ProcessManagerResponse> {
+///     let mut cmd = create_some_command();
+///     destinations.stamp_command(&mut cmd, "inventory")?;
+///     Ok(ProcessManagerResponse::with_commands(vec![cmd]))
+/// }
+/// ```
+pub struct Destinations {
+    sequences: HashMap<String, u32>,
+}
+
+impl Default for Destinations {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Destinations {
+    /// Create empty Destinations.
+    pub fn new() -> Self {
+        Self {
+            sequences: HashMap::new(),
+        }
+    }
+
+    /// Build Destinations from a destination_sequences map.
+    pub fn from_sequences(sequences: HashMap<String, u32>) -> Self {
+        Self { sequences }
+    }
+
+    /// Get the next sequence number for a domain.
+    ///
+    /// Returns `None` if no sequence is available for this domain.
+    /// Check that the domain is in the output_domains config.
+    pub fn sequence_for(&self, domain: &str) -> Option<u32> {
+        self.sequences.get(domain).copied()
+    }
+
+    /// Stamp a command with the correct sequence for the destination domain.
+    ///
+    /// Sets the sequence number on all command pages for the given domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - No sequence is available for this domain (check output_domains config)
+    pub fn stamp_command(&self, cmd: &mut CommandBook, domain: &str) -> Result<(), String> {
+        use crate::proto::page_header::SequenceType;
+
+        let seq = self.sequences.get(domain).ok_or_else(|| {
+            format!(
+                "No sequence for domain '{}' - check output_domains config",
+                domain
+            )
+        })?;
+
+        for page in &mut cmd.pages {
+            let header = page.header.get_or_insert_with(Default::default);
+            header.sequence_type = Some(SequenceType::Sequence(*seq));
+        }
+
+        Ok(())
+    }
+
+    /// Check if a domain has a sequence available.
+    pub fn has_sequence(&self, domain: &str) -> bool {
+        self.sequences.contains_key(domain)
+    }
+
+    /// Get all domain names that have sequences.
+    pub fn domains(&self) -> impl Iterator<Item = &str> {
+        self.sequences.keys().map(|s| s.as_str())
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -335,5 +442,74 @@ mod tests {
 
         // Verify router struct is empty when no handlers registered
         assert!(router.handlers.is_empty());
+    }
+
+    #[test]
+    fn destinations_from_sequences() {
+        let mut seqs = HashMap::new();
+        seqs.insert("order".to_string(), 5u32);
+        seqs.insert("inventory".to_string(), 10u32);
+
+        let destinations = Destinations::from_sequences(seqs);
+
+        assert_eq!(destinations.sequence_for("order"), Some(5));
+        assert_eq!(destinations.sequence_for("inventory"), Some(10));
+        assert_eq!(destinations.sequence_for("unknown"), None);
+    }
+
+    #[test]
+    fn destinations_has_sequence() {
+        let mut seqs = HashMap::new();
+        seqs.insert("order".to_string(), 5u32);
+        let destinations = Destinations::from_sequences(seqs);
+
+        assert!(destinations.has_sequence("order"));
+        assert!(!destinations.has_sequence("inventory"));
+    }
+
+    #[test]
+    fn destinations_domains() {
+        let mut seqs = HashMap::new();
+        seqs.insert("order".to_string(), 5u32);
+        seqs.insert("inventory".to_string(), 10u32);
+        let destinations = Destinations::from_sequences(seqs);
+
+        let domains: Vec<_> = destinations.domains().collect();
+        assert_eq!(domains.len(), 2);
+        assert!(domains.contains(&"order"));
+        assert!(domains.contains(&"inventory"));
+    }
+
+    #[test]
+    fn destinations_stamp_command() {
+        use crate::proto::{page_header::SequenceType, CommandBook, CommandPage, PageHeader};
+
+        let mut seqs = HashMap::new();
+        seqs.insert("order".to_string(), 42u32);
+        let destinations = Destinations::from_sequences(seqs);
+
+        let mut cmd = CommandBook {
+            pages: vec![CommandPage {
+                header: Some(PageHeader::default()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        destinations.stamp_command(&mut cmd, "order").unwrap();
+        assert_eq!(
+            cmd.pages[0].header.as_ref().unwrap().sequence_type,
+            Some(SequenceType::Sequence(42))
+        );
+    }
+
+    #[test]
+    fn destinations_stamp_command_missing_domain() {
+        let destinations = Destinations::new();
+        let mut cmd = CommandBook::default();
+
+        let result = destinations.stamp_command(&mut cmd, "unknown");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown"));
     }
 }

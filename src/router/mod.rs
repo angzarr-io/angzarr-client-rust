@@ -55,7 +55,7 @@ use crate::proto::{
 // Re-export public types
 pub use helpers::{event_book_from, event_page, new_event_book, new_event_book_multi, pack_event};
 pub use saga_context::SagaContext;
-pub use state::{EventApplier, EventApplierHOF, StateFactory, StateRouter};
+pub use state::{Destinations, EventApplier, EventApplierHOF, StateFactory, StateRouter};
 pub use traits::{
     CommandHandlerDomainHandler, CommandRejectedError, CommandResult, ProcessManagerDomainHandler,
     ProcessManagerResponse, ProjectorDomainHandler, RejectionHandlerResponse, SagaDomainHandler,
@@ -418,9 +418,13 @@ impl<H: SagaDomainHandler> SagaRouter<H> {
 
     /// Dispatch an event to the saga handler.
     ///
-    /// Sagas receive only source events — the framework handles sequence
-    /// stamping and delivery retries.
-    pub fn dispatch(&self, source: &EventBook) -> Result<SagaResponse, Status> {
+    /// The `destination_sequences` map provides next sequence numbers for
+    /// each output domain. Use `destinations.stamp_command()` in handlers.
+    pub fn dispatch(
+        &self,
+        source: &EventBook,
+        destination_sequences: &HashMap<String, u32>,
+    ) -> Result<SagaResponse, Status> {
         let event_page = source
             .pages
             .last()
@@ -439,7 +443,10 @@ impl<H: SagaDomainHandler> SagaRouter<H> {
             return dispatch_saga_notification(&*handler, event_any);
         }
 
-        let response = handler.handle(source, event_any)?;
+        // Create destinations from sequences (no state rebuilding)
+        let destinations = state::Destinations::from_sequences(destination_sequences.clone());
+
+        let response = handler.handle(source, event_any, &destinations)?;
 
         Ok(SagaResponse {
             commands: response.commands,
@@ -614,11 +621,14 @@ impl<S: Default + Send + Sync + 'static> ProcessManagerRouter<S> {
     }
 
     /// Dispatch a trigger event to the appropriate handler.
+    ///
+    /// The `destination_sequences` map provides next sequence numbers for
+    /// each output domain. Use `destinations.stamp_command()` in handlers.
     pub fn dispatch(
         &self,
         trigger: &EventBook,
         process_state: &EventBook,
-        destinations: &[EventBook],
+        destination_sequences: &HashMap<String, u32>,
     ) -> Result<ProcessManagerHandleResponse, Status> {
         let trigger_domain = trigger
             .cover
@@ -647,7 +657,10 @@ impl<S: Default + Send + Sync + 'static> ProcessManagerRouter<S> {
             return dispatch_pm_notification(handler.as_ref(), event_any, &state);
         }
 
-        let response = handler.handle(trigger, &state, event_any, destinations)?;
+        // Create destinations from sequences (no state rebuilding)
+        let destinations = state::Destinations::from_sequences(destination_sequences.clone());
+
+        let response = handler.handle(trigger, &state, event_any, &destinations)?;
 
         Ok(ProcessManagerHandleResponse {
             commands: response.commands,

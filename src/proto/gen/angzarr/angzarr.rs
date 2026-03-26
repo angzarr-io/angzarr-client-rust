@@ -1268,9 +1268,10 @@ pub struct ProcessManagerHandleRequest {
     /// Current process manager state (event-sourced).
     #[prost(message, optional, tag = "2")]
     pub process_state: ::core::option::Option<EventBook>,
-    /// Additional destinations fetched per Prepare response.
-    #[prost(message, repeated, tag = "3")]
-    pub destinations: ::prost::alloc::vec::Vec<EventBook>,
+    /// Destination sequences for command stamping (domain → next_sequence).
+    /// PM should NOT rebuild destination state — use facts and let aggregates decide.
+    #[prost(map = "string, uint32", tag = "3")]
+    pub destination_sequences: ::std::collections::HashMap<::prost::alloc::string::String, u32>,
 }
 impl ::prost::Name for ProcessManagerHandleRequest {
 const NAME: &'static str = "ProcessManagerHandleRequest";
@@ -1306,8 +1307,9 @@ impl ::prost::Name for SpeculateProjectorRequest {
 const NAME: &'static str = "SpeculateProjectorRequest";
 const PACKAGE: &'static str = "angzarr";
 fn full_name() -> ::prost::alloc::string::String { "angzarr.SpeculateProjectorRequest".into() }fn type_url() -> ::prost::alloc::string::String { "/angzarr.SpeculateProjectorRequest".into() }}
-/// Request for saga execution - source events only.
-/// Sagas are pure translators: source events → commands with angzarr_deferred.
+/// Request for saga execution.
+/// Sagas are pure translators: source events → commands.
+/// Destination sequences provided for command stamping.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SagaHandleRequest {
     /// Source events that triggered the saga
@@ -1319,6 +1321,9 @@ pub struct SagaHandleRequest {
     /// How to handle errors in CASCADE mode
     #[prost(enumeration = "CascadeErrorMode", tag = "3")]
     pub cascade_error_mode: i32,
+    /// domain → next_sequence for command stamping
+    #[prost(map = "string, uint32", tag = "4")]
+    pub destination_sequences: ::std::collections::HashMap<::prost::alloc::string::String, u32>,
 }
 impl ::prost::Name for SagaHandleRequest {
 const NAME: &'static str = "SagaHandleRequest";

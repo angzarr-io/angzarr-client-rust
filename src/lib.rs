@@ -114,6 +114,7 @@ pub use router::{
     CommandRejectedError,
     CommandResult,
     // State management
+    Destinations,
     EventApplier,
     EventApplierHOF,
     HandlerFactory,
