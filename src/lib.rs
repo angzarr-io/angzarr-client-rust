@@ -61,7 +61,9 @@ pub mod client;
 pub mod convert;
 pub mod error;
 pub mod handler;
+#[path = "proto.rs"]
 pub mod proto;
+#[path = "proto_ext.rs"]
 pub mod proto_ext;
 pub mod router;
 pub mod server;

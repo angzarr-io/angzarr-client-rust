@@ -6,7 +6,4 @@ fn main() {
     println!("cargo:rustc-env=ANGZARR_CLIENT_VERSION={}", version);
     println!("cargo:rerun-if-changed=VERSION");
 
-    // Proto generation handled by buf CLI: just gen
-    // Generated code lives in src/proto/gen/
-    println!("cargo:rerun-if-changed=src/proto/gen");
 }

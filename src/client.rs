@@ -58,7 +58,7 @@ async fn create_channel(endpoint: &str) -> Result<Channel> {
             // We use a dummy URI and override the connector to use UnixStream.
             let path = path.clone();
             Endpoint::try_from("http://[::]:50051")
-                .map_err(|e| ClientError::Connection { msg: e.to_string() })?
+                .map_err(|e| ClientError::Connection(e.to_string()))?
                 .connect_with_connector(tower::service_fn(move |_: Uri| {
                     let path = path.clone();
                     async move {
@@ -74,7 +74,7 @@ async fn create_channel(endpoint: &str) -> Result<Channel> {
                 Ok(ep) => ep.connect().await,
                 Err(e) => {
                     // Invalid URI is not retryable
-                    return Err(ClientError::Connection { msg: e.to_string() });
+                    return Err(ClientError::Connection(e.to_string()));
                 }
             }
         };
@@ -82,16 +82,12 @@ async fn create_channel(endpoint: &str) -> Result<Channel> {
         match result {
             Ok(channel) => return Ok(channel),
             Err(e) => {
-                last_error = Some(ClientError::Connection {
-                    msg: format!("Connection failed: {}", e),
-                });
+                last_error = Some(ClientError::Connection(format!("Connection failed: {}", e)));
             }
         }
     }
 
-    Err(last_error.unwrap_or_else(|| ClientError::Connection {
-        msg: "Connection failed after max retries".to_string(),
-    }))
+    Err(last_error.unwrap_or_else(|| ClientError::Connection("Connection failed after max retries".to_string())))
 }
 
 /// Default event query client using tonic gRPC.

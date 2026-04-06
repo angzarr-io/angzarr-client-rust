@@ -13,6 +13,9 @@ keywords = ["cqrs", "event-sourcing", "grpc", "client"]
 categories = ["network-programming", "asynchronous"]
 
 [dependencies]
+# Core framework (proto types, extension traits, client trait definitions)
+angzarr = { git = "https://github.com/angzarr-io/angzarr.git", tag = "v0.4.0" }
+
 # Macros (re-exported for convenience)
 angzarr-macros = { version = "0.1.0", path = "angzarr-macros" }
 
@@ -41,10 +44,6 @@ serde = { version = "1", features = ["derive"] }
 # Logging
 tracing = "0.1"
 tonic-prost = "0.14.5"
-
-[build-dependencies]
-tonic-build = "0.14"
-prost-build = "0.14"
 
 [dev-dependencies]
 cucumber = "0.21"
