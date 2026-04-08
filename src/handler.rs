@@ -12,9 +12,9 @@ use crate::proto::{
     process_manager_service_server::ProcessManagerService,
     projector_service_server::ProjectorService, saga_service_server::SagaService,
     upcaster_service_server::UpcasterService, BusinessResponse, ContextualCommand, EventBook,
-    ProcessManagerHandleRequest, ProcessManagerHandleResponse, ProcessManagerPrepareRequest,
-    ProcessManagerPrepareResponse, Projection, ReplayRequest, ReplayResponse, SagaHandleRequest,
-    SagaResponse, UpcastRequest, UpcastResponse,
+    FactRequest, ProcessManagerHandleRequest, ProcessManagerHandleResponse,
+    ProcessManagerPrepareRequest, ProcessManagerPrepareResponse, Projection, ReplayRequest,
+    ReplayResponse, SagaHandleRequest, SagaResponse, UpcastRequest, UpcastResponse,
 };
 use crate::router::{
     CloudEventsRouter, CommandHandlerDomainHandler, CommandHandlerRouter, ProcessManagerRouter,
@@ -92,6 +92,20 @@ where
         let cmd = request.into_inner();
         let response = self.router.dispatch(&cmd)?;
         Ok(Response::new(response))
+    }
+
+    async fn handle_fact(
+        &self,
+        request: Request<FactRequest>,
+    ) -> Result<Response<EventBook>, Status> {
+        let req = request.into_inner();
+        let facts = req
+            .facts
+            .ok_or_else(|| Status::invalid_argument("Missing facts event book"))?;
+        let prior_events = req.prior_events.unwrap_or_default();
+
+        let result = self.router.dispatch_fact(&facts, &prior_events)?;
+        Ok(Response::new(result))
     }
 
     async fn replay(

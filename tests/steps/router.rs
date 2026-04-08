@@ -72,7 +72,7 @@ fn make_event_page(seq: u32, type_url: &str, data: &str) -> EventPage {
             value: event.encode_to_vec(),
         })),
         cascade_id: None,
-        committed: true,
+        no_commit: false,
     }
 }
 
@@ -166,7 +166,7 @@ impl CommandHandlerDomainHandler for TestAggregateHandler {
                     value: event.encode_to_vec(),
                 })),
                 cascade_id: None,
-                committed: true,
+                no_commit: false,
             };
             return Ok(make_event_book("orders", vec![page]));
         }
@@ -185,7 +185,7 @@ impl CommandHandlerDomainHandler for TestAggregateHandler {
                     value: event.encode_to_vec(),
                 })),
                 cascade_id: None,
-                committed: true,
+                no_commit: false,
             };
             return Ok(make_event_book("orders", vec![page]));
         }
@@ -430,7 +430,7 @@ async fn given_aggregate_with_events(world: &mut RouterWorld) {
             value: event.encode_to_vec(),
         })),
         cascade_id: None,
-        committed: true,
+        no_commit: false,
     };
     world.event_book = Some(make_event_book("orders", vec![page]));
 }
@@ -452,7 +452,7 @@ async fn given_aggregate_at_sequence(world: &mut RouterWorld, seq: u32) {
                 value: event.encode_to_vec(),
             })),
             cascade_id: None,
-            committed: true,
+            no_commit: false,
         });
     }
     let mut book = make_event_book("orders", pages);

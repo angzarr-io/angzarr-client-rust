@@ -164,6 +164,17 @@ pub trait CommandHandlerDomainHandler: Send + Sync {
         seq: u32,
     ) -> CommandResult<EventBook>;
 
+    /// Handle fact events — update aggregate state based on external realities.
+    ///
+    /// Called when the coordinator routes facts through the aggregate's business logic.
+    /// The handler receives the facts plus prior events (for state reconstruction) and
+    /// returns an EventBook with events to persist.
+    ///
+    /// Default implementation returns the facts as-is (pass-through).
+    fn handle_fact(&self, facts: &EventBook, _state: &Self::State) -> CommandResult<EventBook> {
+        Ok(facts.clone())
+    }
+
     /// Handle a rejection notification.
     ///
     /// Called when a command issued by a saga/PM targeting this aggregate's

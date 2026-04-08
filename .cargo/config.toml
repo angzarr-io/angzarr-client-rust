@@ -1,0 +1,3 @@
+# Resolve angzarr core dependency to local git submodule
+[patch."https://github.com/angzarr-io/angzarr.git"]
+angzarr = { path = "angzarr" }

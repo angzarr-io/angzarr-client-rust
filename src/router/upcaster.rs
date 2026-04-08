@@ -236,7 +236,7 @@ impl UpcasterRouter {
                                 payload: Some(event_page::Payload::Event(new_event)),
                                 header: page.header.clone(),
                                 created_at: page.created_at,
-                                committed: page.committed,
+                                no_commit: page.no_commit,
                                 cascade_id: page.cascade_id.clone(),
                             }
                         } else {
@@ -331,7 +331,7 @@ mod tests {
                 }),
                 created_at: None,
                 cascade_id: None,
-                committed: true,
+                no_commit: false,
             },
             EventPage {
                 payload: Some(event_page::Payload::Event(Any {
@@ -343,7 +343,7 @@ mod tests {
                 }),
                 created_at: None,
                 cascade_id: None,
-                committed: true,
+                no_commit: false,
             },
         ];
 

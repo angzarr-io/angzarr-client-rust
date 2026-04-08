@@ -233,6 +233,22 @@ impl<S: Default + Send + Sync + 'static, H: CommandHandlerDomainHandler<State = 
         self.storage.get().rebuild(events)
     }
 
+    /// Dispatch facts through the handler for optional processing.
+    ///
+    /// Rebuilds state from prior events, then lets the handler process the facts.
+    /// Default handler implementation returns facts as-is (pass-through).
+    pub fn dispatch_fact(
+        &self,
+        facts: &EventBook,
+        prior_events: &EventBook,
+    ) -> Result<EventBook, Status> {
+        let handler = self.storage.get();
+        let state = handler.rebuild(prior_events);
+        handler
+            .handle_fact(facts, &state)
+            .map_err(|e| Status::failed_precondition(e.reason))
+    }
+
     /// Dispatch a contextual command to the handler.
     pub fn dispatch(&self, cmd: &ContextualCommand) -> Result<BusinessResponse, Status> {
         let command_book = cmd

@@ -65,7 +65,7 @@ fn make_event_page(seq: u32, type_url: &str, data: &str) -> EventPage {
             value: event.encode_to_vec(),
         })),
         cascade_id: None,
-        committed: true,
+        no_commit: false,
     }
 }
 
@@ -84,7 +84,7 @@ fn make_increment_event(seq: u32, increment: i32) -> EventPage {
             value: event.encode_to_vec(),
         })),
         cascade_id: None,
-        committed: true,
+        no_commit: false,
     }
 }
 
@@ -310,7 +310,7 @@ async fn given_corrupted_payload(world: &mut StateBuildingWorld) {
             value: vec![0xFF, 0xFF, 0xFF], // Invalid protobuf
         })),
         cascade_id: None,
-        committed: true,
+        no_commit: false,
     }];
     world.event_book = Some(make_event_book("test", events));
 }

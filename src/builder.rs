@@ -646,7 +646,7 @@ mod tests {
                 value: msg.encode_to_vec(),
             })),
             cascade_id: None,
-            committed: true,
+            no_commit: false,
         };
 
         let decoded: Option<prost_types::Duration> = decode_event(&event, "Duration");
@@ -672,7 +672,7 @@ mod tests {
                 value: msg.encode_to_vec(),
             })),
             cascade_id: None,
-            committed: true,
+            no_commit: false,
         };
 
         let decoded: Option<prost_types::Duration> = decode_event(&event, "Timestamp");
@@ -688,7 +688,7 @@ mod tests {
             created_at: None,
             payload: None,
             cascade_id: None,
-            committed: true,
+            no_commit: false,
         };
 
         let decoded: Option<prost_types::Duration> = decode_event(&event, "Duration");
@@ -709,7 +709,7 @@ mod tests {
                 value: vec![0xFF, 0xFF, 0xFF], // garbage
             })),
             cascade_id: None,
-            committed: true,
+            no_commit: false,
         };
 
         let decoded: Option<prost_types::Duration> = decode_event(&event, "Duration");
