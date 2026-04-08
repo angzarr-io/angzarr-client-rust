@@ -67,9 +67,15 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
 
     /// Build the CommandBook without executing.
     pub fn build(self) -> Result<CommandBook> {
-        let type_url = self.type_url.ok_or_else(|| ClientError::InvalidArgument("command type_url not set".to_string()))?;
-        let payload = self.payload.ok_or_else(|| ClientError::InvalidArgument("command payload not set".to_string()))?;
-        let sequence = self.sequence.ok_or_else(|| ClientError::InvalidArgument("command sequence not set".to_string()))?;
+        let type_url = self
+            .type_url
+            .ok_or_else(|| ClientError::InvalidArgument("command type_url not set".to_string()))?;
+        let payload = self
+            .payload
+            .ok_or_else(|| ClientError::InvalidArgument("command payload not set".to_string()))?;
+        let sequence = self
+            .sequence
+            .ok_or_else(|| ClientError::InvalidArgument("command sequence not set".to_string()))?;
         let correlation_id = self
             .correlation_id
             .unwrap_or_else(|| Uuid::new_v4().to_string());

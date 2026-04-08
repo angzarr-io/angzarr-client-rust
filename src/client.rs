@@ -87,7 +87,9 @@ async fn create_channel(endpoint: &str) -> Result<Channel> {
         }
     }
 
-    Err(last_error.unwrap_or_else(|| ClientError::Connection("Connection failed after max retries".to_string())))
+    Err(last_error.unwrap_or_else(|| {
+        ClientError::Connection("Connection failed after max retries".to_string())
+    }))
 }
 
 /// Default event query client using tonic gRPC.

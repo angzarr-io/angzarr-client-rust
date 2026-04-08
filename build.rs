@@ -5,5 +5,4 @@ fn main() {
         .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string());
     println!("cargo:rustc-env=ANGZARR_CLIENT_VERSION={}", version);
     println!("cargo:rerun-if-changed=VERSION");
-
 }
