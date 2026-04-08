@@ -1,8 +1,7 @@
 version: v2
 inputs:
-  # Use local proto from core during development
-  # For release: module: buf.build/angzarr/angzarr:VERSION
-  - directory: /home/babbitt/workspace/angzarr/core/main/proto
+  # Proto source from angzarr core submodule
+  - directory: angzarr/proto
 plugins:
   - local: protoc-gen-prost
     out: src/proto/gen
