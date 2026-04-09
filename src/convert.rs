@@ -8,7 +8,7 @@ use prost_types::{Any, Timestamp};
 use uuid::Uuid;
 
 /// Default type URL prefix for protocol buffer messages.
-pub const TYPE_URL_PREFIX: &str = "type.googleapis.com";
+pub const TYPE_URL_PREFIX: &str = "type.googleapis.com/";
 
 /// Build a fully-qualified type URL from a message type name.
 ///
@@ -18,7 +18,7 @@ pub const TYPE_URL_PREFIX: &str = "type.googleapis.com";
 /// assert_eq!(type_url("examples.AddItemToCart"), "type.googleapis.com/examples.AddItemToCart");
 /// ```
 pub fn type_url(type_name: &str) -> String {
-    format!("{}/{}", TYPE_URL_PREFIX, type_name)
+    format!("{}{}", TYPE_URL_PREFIX, type_name)
 }
 
 /// Extract the fully-qualified type name from a type URL.
@@ -39,7 +39,7 @@ pub fn type_name_from_url(type_url: &str) -> &str {
 /// ));
 /// ```
 pub fn type_url_matches_exact(type_url: &str, full_type_name: &str) -> bool {
-    type_url == format!("{}/{}", TYPE_URL_PREFIX, full_type_name)
+    type_url == format!("{}{}", TYPE_URL_PREFIX, full_type_name)
 }
 
 // Type-safe reflection helpers using prost::Name
@@ -59,7 +59,7 @@ pub fn type_url_matches_exact(type_url: &str, full_type_name: &str) -> bool {
 /// }
 /// ```
 pub fn type_matches<T: prost::Message + Name>(any: &Any) -> bool {
-    let expected = format!("{}/{}", TYPE_URL_PREFIX, T::full_name());
+    let expected = format!("{}{}", TYPE_URL_PREFIX, T::full_name());
     any.type_url == expected
 }
 
@@ -76,7 +76,7 @@ pub fn try_unpack<T: prost::Message + Default + Name>(any: &Any) -> Option<T> {
 
 /// Unpack an Any to type T, returning an error if type doesn't match or decode fails.
 pub fn unpack<T: prost::Message + Default + Name>(any: &Any) -> Result<T> {
-    let expected = format!("{}/{}", TYPE_URL_PREFIX, T::full_name());
+    let expected = format!("{}{}", TYPE_URL_PREFIX, T::full_name());
     if any.type_url != expected {
         return Err(ClientError::InvalidArgument(format!(
             "type mismatch: expected {}, got {}",
@@ -100,7 +100,7 @@ pub fn unpack<T: prost::Message + Default + Name>(any: &Any) -> Result<T> {
 /// );
 /// ```
 pub fn full_type_url<T: Name>() -> String {
-    format!("{}/{}", TYPE_URL_PREFIX, T::full_name())
+    format!("{}{}", TYPE_URL_PREFIX, T::full_name())
 }
 
 /// Get the fully-qualified type name for message type T (without URL prefix).
