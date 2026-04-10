@@ -20,12 +20,23 @@ use crate::router::StateRouter;
 #[derive(Debug, Clone)]
 pub struct CommandRejectedError {
     pub reason: String,
+    pub status_code: String,
 }
 
 impl CommandRejectedError {
+    /// Create a FAILED_PRECONDITION error (default for guard failures).
     pub fn new(reason: impl Into<String>) -> Self {
         Self {
             reason: reason.into(),
+            status_code: "FAILED_PRECONDITION".to_string(),
+        }
+    }
+
+    /// Create an INVALID_ARGUMENT error for input validation failures.
+    pub fn invalid_argument(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            status_code: "INVALID_ARGUMENT".to_string(),
         }
     }
 }
