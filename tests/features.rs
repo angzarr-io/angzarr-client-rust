@@ -31,97 +31,97 @@ async fn main() {
     println!("\n=== Running Connection Tests ===\n");
     ConnectionWorld::cucumber()
         .fail_on_skipped()
-        .run("../features/connection.feature")
+        .run("angzarr-core/features/client/connection.feature")
         .await;
 
     // Run DomainClient tests
     println!("\n=== Running DomainClient Tests ===\n");
     DomainClientWorld::cucumber()
         .fail_on_skipped()
-        .run("../features/domain-client.feature")
+        .run("angzarr-core/features/client/domain-client.feature")
         .await;
 
     // Run AggregateClient tests
     println!("\n=== Running AggregateClient Tests ===\n");
     AggregateClientWorld::cucumber()
         .fail_on_skipped()
-        .run("../features/aggregate_client.feature")
+        .run("angzarr-core/features/client/aggregate_client.feature")
         .await;
 
     // Run QueryClient tests
     println!("\n=== Running QueryClient Tests ===\n");
     QueryClientWorld::cucumber()
         .fail_on_skipped()
-        .run("../features/query_client.feature")
+        .run("angzarr-core/features/client/query_client.feature")
         .await;
 
     // Run SpeculativeClient tests
     println!("\n=== Running SpeculativeClient Tests ===\n");
     SpeculativeClientWorld::cucumber()
         .fail_on_skipped()
-        .run("../features/speculative_client.feature")
+        .run("angzarr-core/features/client/speculative_client.feature")
         .await;
 
     // Run FactFlow tests
     println!("\n=== Running FactFlow Tests ===\n");
     FactFlowWorld::cucumber()
         .fail_on_skipped()
-        .run("../features/fact_flow.feature")
+        .run("angzarr-core/features/client/fact_flow.feature")
         .await;
 
     // Run MergeStrategy tests
     println!("\n=== Running MergeStrategy Tests ===\n");
     MergeStrategyWorld::cucumber()
         .fail_on_skipped()
-        .run("../features/merge_strategy.feature")
+        .run("angzarr-core/features/client/merge_strategy.feature")
         .await;
 
     // Run CommandBuilder tests
     println!("\n=== Running CommandBuilder Tests ===\n");
     CommandBuilderWorld::cucumber()
         .fail_on_skipped()
-        .run("../features/command_builder.feature")
+        .run("angzarr-core/features/client/command_builder.feature")
         .await;
 
     // Run QueryBuilder tests
     println!("\n=== Running QueryBuilder Tests ===\n");
     QueryBuilderWorld::cucumber()
         .fail_on_skipped()
-        .run("../features/query_builder.feature")
+        .run("angzarr-core/features/client/query_builder.feature")
         .await;
 
     // Run ErrorHandling tests
     println!("\n=== Running ErrorHandling Tests ===\n");
     ErrorHandlingWorld::cucumber()
         .fail_on_skipped()
-        .run("../features/error_handling.feature")
+        .run("angzarr-core/features/client/error_handling.feature")
         .await;
 
     // Run Router tests
     println!("\n=== Running Router Tests ===\n");
     RouterWorld::cucumber()
         .fail_on_skipped()
-        .run("../features/router.feature")
+        .run("angzarr-core/features/client/router.feature")
         .await;
 
     // Run StateBuildingWorld tests
     println!("\n=== Running StateBuilding Tests ===\n");
     StateBuildingWorld::cucumber()
         .fail_on_skipped()
-        .run("../features/state_building.feature")
+        .run("angzarr-core/features/client/state_building.feature")
         .await;
 
     // Run EventDecoding tests
     println!("\n=== Running EventDecoding Tests ===\n");
     EventDecodingWorld::cucumber()
         .fail_on_skipped()
-        .run("../features/event_decoding.feature")
+        .run("angzarr-core/features/client/event_decoding.feature")
         .await;
 
     // Run Compensation tests
     println!("\n=== Running Compensation Tests ===\n");
     CompensationWorld::cucumber()
         .fail_on_skipped()
-        .run("../features/compensation.feature")
+        .run("angzarr-core/features/client/compensation.feature")
         .await;
 }
