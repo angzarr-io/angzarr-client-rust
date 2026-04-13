@@ -1,7 +1,7 @@
 version: v2
 inputs:
   # Proto source from angzarr core submodule
-  - directory: angzarr/proto
+  - directory: angzarr-core/proto
 plugins:
   - local: protoc-gen-prost
     out: src/proto/gen
