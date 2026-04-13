@@ -1,6 +1,6 @@
 [workspace]
 members = [".", "angzarr-macros"]
-exclude = ["angzarr"]
+exclude = ["angzarr-core"]
 resolver = "2"
 
 [package]
