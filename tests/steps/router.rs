@@ -483,7 +483,7 @@ async fn given_saga_router_two_handlers(
         world.handler_invoked.clone(),
         world.other_handler_invoked.clone(),
     );
-    world.saga_router = Some(SagaRouter::new("test-saga", "orders", handler));
+    world.saga_router = Some(SagaRouter::new("test-saga", "orders", "target", handler));
 }
 
 #[given("a saga router")]
@@ -494,7 +494,7 @@ async fn given_saga_router(world: &mut RouterWorld) {
         world.handler_invoked.clone(),
         world.other_handler_invoked.clone(),
     );
-    world.saga_router = Some(SagaRouter::new("test-saga", "orders", handler));
+    world.saga_router = Some(SagaRouter::new("test-saga", "orders", "target", handler));
 }
 
 #[given("a saga router with a rejected command")]
@@ -506,7 +506,7 @@ async fn given_saga_router_rejected(world: &mut RouterWorld) {
         world.handler_invoked.clone(),
         world.other_handler_invoked.clone(),
     );
-    world.saga_router = Some(SagaRouter::new("test-saga", "orders", handler));
+    world.saga_router = Some(SagaRouter::new("test-saga", "orders", "target", handler));
 }
 
 #[given(expr = "a projector router with handlers for {string}")]
