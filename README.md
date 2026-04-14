@@ -114,3 +114,25 @@ let router = ProcessManagerRouter::new("pmg-buy-in", "pmg-buy-in", |_| BuyInStat
 ## License
 
 AGPL-3.0-only
+
+## Development
+
+### Setup
+
+Install git hooks (requires [lefthook](https://github.com/evilmartians/lefthook)):
+
+```bash
+lefthook install
+```
+
+This configures a pre-commit hook that auto-formats code before each commit.
+
+### Recipes
+
+```bash
+just -l              # List all available recipes
+just build           # Build the library
+just test            # Run tests
+just fmt             # Check formatting
+just fmt-fix         # Auto-format code
+```
