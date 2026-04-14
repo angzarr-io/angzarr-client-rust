@@ -40,8 +40,8 @@ default:
     @just --list
 
 # Generate Rust code from protos via buf
-gen:
-    just _container gen
+proto:
+    just _container proto
 
 # Build Rust client (release)
 build:

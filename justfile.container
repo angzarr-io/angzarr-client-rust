@@ -10,18 +10,18 @@ default:
     @just --list
 
 # Generate Rust code from protos via buf
-gen:
+proto:
     @echo "Generating Rust code from buf.build/angzarr/angzarr..."
     rm -rf src/proto/gen
     buf generate
     @echo "Generated to src/proto/gen/"
 
 # Build all workspace crates (generates protos first)
-build: gen
+build: proto
     cargo build --workspace
 
 # Run all tests (lib tests only, no doc tests)
-test: gen
+test: proto
     cargo test --workspace --lib
 
 # Run clippy linter
