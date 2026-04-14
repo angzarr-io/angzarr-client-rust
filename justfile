@@ -82,3 +82,7 @@ publish-dry:
 # Publish to crates.io
 publish:
     just _container publish
+
+# Auto-format code
+fmt-fix:
+    just _container fmt-fix
