@@ -38,17 +38,11 @@ jobs:
             exit 1
           fi
 
-      - name: Install buf CLI
-        uses: bufbuild/buf-action@v1
-        with:
-          setup_only: true
-
-      - name: Export protos from Buf registry
-        env:
-          BUF_TOKEN: ${{ secrets.BUF_TOKEN }}
+      - name: Export protos from submodule
         run: |
           mkdir -p proto
-          buf export buf.build/angzarr/angzarr -o proto
+          cp -r angzarr-project/proto/angzarr proto/
+          cp -r angzarr-project/proto/google proto/
 
       - name: Build
         run: |
