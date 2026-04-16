@@ -67,13 +67,13 @@ lint:
 fmt:
     just _container fmt
 
-# Run mutation testing with cargo-mutants
-mutate:
-    just _container mutate
+# Run mutation testing with cargo-mutants (70% kill rate threshold)
+mutation-test:
+    just _container mutation-test
 
 # Dry-run mutation testing (show what would be mutated)
-mutate-dry:
-    just _container mutate-dry
+mutation-test-dry:
+    just _container mutation-test-dry
 
 # Dry-run publish to crates.io
 publish-dry:
