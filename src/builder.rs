@@ -194,8 +194,8 @@ impl<'a, C: traits::QueryClient> QueryBuilder<'a, C> {
         }
     }
 
-    /// Execute the query and return the EventBook.
-    pub async fn get_events(self) -> Result<EventBook> {
+    /// Execute the query and return a single EventBook (unary RPC).
+    pub async fn get_event_book(self) -> Result<EventBook> {
         let client = self.client;
         let query = self.build_inner();
         client.get_events(query).await
@@ -203,18 +203,21 @@ impl<'a, C: traits::QueryClient> QueryBuilder<'a, C> {
 
     /// Execute the query and return just the event pages.
     pub async fn get_pages(self) -> Result<Vec<EventPage>> {
-        let client = self.client;
-        let query = self.build_inner();
-        let event_book = client.get_events(query).await?;
+        let event_book = self.get_event_book().await?;
         Ok(event_book.pages)
     }
 }
 
 /// Extension trait for creating command builders.
 pub trait CommandBuilderExt: traits::GatewayClient + Sized {
-    /// Start building a command for the given domain and root.
+    /// Start building a command for an existing aggregate.
     fn command(&self, domain: impl Into<String>, root: Uuid) -> CommandBuilder<'_, Self> {
         CommandBuilder::new(self, domain, root)
+    }
+
+    /// Start building a command for a new aggregate (random root UUID).
+    fn command_new(&self, domain: impl Into<String>) -> CommandBuilder<'_, Self> {
+        CommandBuilder::new(self, domain, Uuid::new_v4())
     }
 }
 

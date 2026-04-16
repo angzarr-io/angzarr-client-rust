@@ -120,17 +120,30 @@ impl QueryClient {
         }
     }
 
-    /// Query events for an aggregate.
-    pub async fn get_events(&self, query: Query) -> Result<EventBook> {
+    /// Query events for an aggregate (unary RPC, returns single EventBook).
+    pub async fn get_event_book(&self, query: Query) -> Result<EventBook> {
         let response = self.inner.clone().get_event_book(query).await?;
         Ok(response.into_inner())
+    }
+
+    /// Query events for an aggregate (streaming RPC, returns all matching EventBooks).
+    ///
+    /// Uses the streaming `GetEvents` RPC to fetch multiple EventBooks.
+    /// For a single EventBook, use `get_event_book()` instead.
+    pub async fn get_events(&self, query: Query) -> Result<Vec<EventBook>> {
+        let mut stream = self.inner.clone().get_events(query).await?.into_inner();
+        let mut results = Vec::new();
+        while let Some(book) = stream.message().await? {
+            results.push(book);
+        }
+        Ok(results)
     }
 }
 
 #[async_trait]
 impl traits::QueryClient for QueryClient {
     async fn get_events(&self, query: Query) -> Result<EventBook> {
-        self.get_events(query).await
+        self.get_event_book(query).await
     }
 }
 
@@ -271,8 +284,13 @@ impl DomainClient {
             .await
     }
 
-    /// Query events (delegates to query client).
-    pub async fn get_events(&self, query: Query) -> Result<EventBook> {
+    /// Query events — unary RPC returning single EventBook (delegates to query client).
+    pub async fn get_event_book(&self, query: Query) -> Result<EventBook> {
+        self.query.get_event_book(query).await
+    }
+
+    /// Query events — streaming RPC returning all matching EventBooks (delegates to query client).
+    pub async fn get_events(&self, query: Query) -> Result<Vec<EventBook>> {
         self.query.get_events(query).await
     }
 }
@@ -287,7 +305,7 @@ impl traits::GatewayClient for DomainClient {
 #[async_trait]
 impl traits::QueryClient for DomainClient {
     async fn get_events(&self, query: Query) -> Result<EventBook> {
-        self.get_events(query).await
+        self.get_event_book(query).await
     }
 }
 

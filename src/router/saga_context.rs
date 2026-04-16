@@ -1,7 +1,9 @@
 //! SagaContext for splitter pattern support.
 //!
-//! Provides access to destination aggregate state when one event triggers
-//! commands to multiple aggregates.
+//! **Deprecated:** Use [`Destinations`](crate::Destinations) instead.
+//! SagaContext stores full EventBooks which violates the design principle
+//! that sagas should not rebuild destination state. Destinations provides
+//! only sequence numbers for command stamping.
 
 use std::collections::HashMap;
 
@@ -9,6 +11,10 @@ use crate::proto::EventBook;
 use crate::proto_ext::EventPageExt;
 
 /// Context for saga handlers, providing access to destination aggregate state.
+///
+/// **Deprecated:** Use [`Destinations`](crate::Destinations) instead.
+/// Destinations provides sequence-only access which enforces the design
+/// principle that sagas are translators, not decision makers.
 ///
 /// Used in the splitter pattern where one event triggers commands to multiple aggregates.
 /// Provides sequence number lookup for optimistic concurrency control.

@@ -58,6 +58,7 @@ pub const VERSION: &str = env!("ANGZARR_CLIENT_VERSION");
 
 pub mod builder;
 pub mod client;
+pub mod compensation;
 pub mod convert;
 pub mod error;
 pub mod handler;
@@ -76,6 +77,13 @@ pub use error::{ClientError, Result};
 
 // Re-export builder extension traits for fluent API
 pub use builder::{CommandBuilderExt, QueryBuilderExt};
+
+// Re-export compensation helpers
+pub use compensation::{
+    delegate_to_framework, delegate_to_framework_with_options, emit_compensation_events,
+    is_notification, pm_delegate_to_framework, pm_emit_compensation_events, CompensationContext,
+    PMRevocationResponse,
+};
 
 // Re-export helpers
 pub use builder::{decode_event, events_from_response, root_from_cover};

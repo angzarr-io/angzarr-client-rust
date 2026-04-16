@@ -1,52 +1,27 @@
 //! Dispatch helpers for routing events/commands by type URL.
+//!
+//! Uses exact full-URL matching for type safety: `type_url == TYPE_URL_PREFIX + full_name`.
+//! Pass fully-qualified proto names (e.g., `"examples.player.RegisterPlayer"`).
 
-/// Helper macro for dispatching events by type URL suffix.
+/// Helper macro for dispatching events by fully-qualified proto type name.
 ///
-/// Simplifies the common pattern of matching event type URLs and delegating
-/// to handler methods.
+/// Uses exact matching: `type_url == "type.googleapis.com/" + name`.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// use angzarr_client::dispatch_event;
-///
-/// impl SagaDomainHandler for OrderSagaHandler {
-///     fn execute(
-///         &self,
-///         source: &EventBook,
-///         event: &Any,
-///         destinations: &[EventBook],
-///     ) -> CommandResult<Vec<CommandBook>> {
-///         dispatch_event!(event, source, destinations, {
-///             "OrderCompleted" => self.handle_completed,
-///             "OrderCancelled" => self.handle_cancelled,
-///         })
-///     }
-/// }
-/// ```
-///
-/// # Variants
-///
-/// ## For saga execute (source + destinations)
-/// ```rust,ignore
 /// dispatch_event!(event, source, destinations, {
-///     "Suffix" => handler_method,
-/// })
-/// ```
-///
-/// ## For saga prepare (source only, returns Vec<Cover>)
-/// ```rust,ignore
-/// dispatch_event!(event, source, {
-///     "Suffix" => prepare_method,
+///     "examples.order.OrderCompleted" => self.handle_completed,
+///     "examples.order.OrderCancelled" => self.handle_cancelled,
 /// })
 /// ```
 #[macro_export]
 macro_rules! dispatch_event {
     // Saga execute variant: (event, source, destinations, handlers)
-    ($event:expr, $source:expr, $destinations:expr, { $($suffix:literal => $handler:expr),* $(,)? }) => {{
+    ($event:expr, $source:expr, $destinations:expr, { $($name:literal => $handler:expr),* $(,)? }) => {{
         let type_url = &$event.type_url;
         $(
-            if type_url.ends_with($suffix) {
+            if *type_url == format!("{}{}", $crate::TYPE_URL_PREFIX, $name) {
                 return $handler($source, $event, $destinations);
             }
         )*
@@ -54,10 +29,10 @@ macro_rules! dispatch_event {
     }};
 
     // Saga prepare variant: (event, source, handlers) -> Vec<Cover>
-    ($event:expr, $source:expr, { $($suffix:literal => $handler:expr),* $(,)? }) => {{
+    ($event:expr, $source:expr, { $($name:literal => $handler:expr),* $(,)? }) => {{
         let type_url = &$event.type_url;
         $(
-            if type_url.ends_with($suffix) {
+            if *type_url == format!("{}{}", $crate::TYPE_URL_PREFIX, $name) {
                 return $handler($source, $event);
             }
         )*
@@ -65,42 +40,27 @@ macro_rules! dispatch_event {
     }};
 }
 
-/// Helper macro for dispatching commands by type URL suffix.
+/// Helper macro for dispatching commands by fully-qualified proto type name.
 ///
-/// Similar to `dispatch_event!` but for command handler handlers.
+/// Uses exact matching: `type_url == "type.googleapis.com/" + name`.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// use angzarr_client::dispatch_command;
-///
-/// impl CommandHandlerDomainHandler for PlayerHandler {
-///     fn handle(
-///         &self,
-///         cmd: &CommandBook,
-///         payload: &Any,
-///         state: &PlayerState,
-///         seq: u32,
-///     ) -> CommandResult<EventBook> {
-///         dispatch_command!(payload, cmd, state, seq, {
-///             "RegisterPlayer" => self.handle_register,
-///             "DepositFunds" => self.handle_deposit,
-///         })
-///     }
-/// }
+/// dispatch_command!(payload, cmd, state, seq, {
+///     "examples.player.RegisterPlayer" => self.handle_register,
+///     "examples.player.DepositFunds" => self.handle_deposit,
+/// })
 /// ```
 #[macro_export]
 macro_rules! dispatch_command {
-    ($payload:expr, $cmd:expr, $state:expr, $seq:expr, { $($suffix:literal => $handler:expr),* $(,)? }) => {{
+    ($payload:expr, $cmd:expr, $state:expr, $seq:expr, { $($name:literal => $handler:expr),* $(,)? }) => {{
         let type_url = &$payload.type_url;
         $(
-            if type_url.ends_with($suffix) {
+            if *type_url == format!("{}{}", $crate::TYPE_URL_PREFIX, $name) {
                 return $handler($cmd, $payload, $state, $seq);
             }
         )*
         Err($crate::CommandRejectedError::new(format!("Unknown command type: {}", type_url)))
     }};
 }
-
-// Macros are exported at crate level via #[macro_export]
-// Re-exported from router module for documentation purposes
