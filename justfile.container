@@ -45,12 +45,28 @@ check-all: build test lint fmt
 test-verbose:
     cargo test --workspace --lib -- --nocapture
 
-# Run mutation testing
-mutate:
-    cargo mutants --jobs 4
+# Run mutation testing (70% kill rate threshold)
+mutation-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    output=$(cargo mutants --jobs 4 2>&1) || true
+    echo "$output"
+    total=$(echo "$output" | grep -oP '(\d+) mutants tested' | grep -oP '^\d+' || echo "0")
+    killed=$(echo "$output" | grep -oP '(\d+) killed' | grep -oP '^\d+' || echo "0")
+    if [ "$total" -eq 0 ]; then
+        echo "ERROR: No mutants were tested"
+        exit 1
+    fi
+    rate=$((killed * 100 / total))
+    echo "Mutation kill rate: ${rate}% (${killed}/${total})"
+    if [ "$rate" -lt 70 ]; then
+        echo "FAIL: Kill rate ${rate}% is below 70% threshold"
+        exit 1
+    fi
+    echo "PASS: Kill rate meets 70% threshold"
 
 # Dry-run mutation testing (show what would be mutated)
-mutate-dry:
+mutation-test-dry:
     cargo mutants --list
 
 # Dry-run publish to crates.io
