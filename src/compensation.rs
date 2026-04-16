@@ -233,9 +233,7 @@ pub fn is_notification(type_url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{
-        AngzarrDeferredSequence, CommandPage, PageHeader, Uuid as ProtoUuid,
-    };
+    use crate::proto::{AngzarrDeferredSequence, CommandPage, PageHeader, Uuid as ProtoUuid};
     use prost::Message;
     use prost_types::Any;
 
@@ -278,10 +276,7 @@ mod tests {
 
         Notification {
             payload: Some(Any {
-                type_url: format!(
-                    "{}angzarr.RejectionNotification",
-                    TYPE_URL_PREFIX
-                ),
+                type_url: format!("{}angzarr.RejectionNotification", TYPE_URL_PREFIX),
                 value: buf,
             }),
             ..Default::default()
@@ -290,16 +285,22 @@ mod tests {
 
     #[test]
     fn from_notification_extracts_rejection_reason() {
-        let notification =
-            make_rejection_notification("insufficient_funds", "payments", "type.googleapis.com/examples.ChargeCard");
+        let notification = make_rejection_notification(
+            "insufficient_funds",
+            "payments",
+            "type.googleapis.com/examples.ChargeCard",
+        );
         let ctx = CompensationContext::from_notification(&notification);
         assert_eq!(ctx.rejection_reason, "insufficient_funds");
     }
 
     #[test]
     fn from_notification_extracts_source_info() {
-        let notification =
-            make_rejection_notification("out_of_stock", "inventory", "type.googleapis.com/examples.ReserveStock");
+        let notification = make_rejection_notification(
+            "out_of_stock",
+            "inventory",
+            "type.googleapis.com/examples.ReserveStock",
+        );
         let ctx = CompensationContext::from_notification(&notification);
         assert_eq!(ctx.source_event_sequence, 42);
         assert_eq!(
@@ -366,8 +367,7 @@ mod tests {
 
     #[test]
     fn delegate_to_framework_with_options_sets_all_flags() {
-        let response =
-            delegate_to_framework_with_options("escalated", true, true, true, true);
+        let response = delegate_to_framework_with_options("escalated", true, true, true, true);
         match response.result {
             Some(business_response::Result::Revocation(r)) => {
                 assert!(r.emit_system_revocation);
@@ -417,9 +417,7 @@ mod tests {
 
     #[test]
     fn is_notification_matches_correct_type_url() {
-        assert!(is_notification(
-            "type.googleapis.com/angzarr.Notification"
-        ));
+        assert!(is_notification("type.googleapis.com/angzarr.Notification"));
     }
 
     #[test]
