@@ -10,18 +10,14 @@ use tonic::transport::Server;
 use tracing::info;
 
 use crate::handler::{
-    CloudEventsGrpcHandler, CommandHandlerGrpc, ProcessManagerGrpcHandler, ProjectorHandler,
-    SagaHandler, UpcasterGrpcHandler,
+    CommandHandlerGrpc, ProcessManagerGrpcHandler, ProjectorHandler, SagaHandler, UpcasterGrpcHandler,
 };
 use crate::proto::command_handler_service_server::CommandHandlerServiceServer;
 use crate::proto::process_manager_service_server::ProcessManagerServiceServer;
 use crate::proto::projector_service_server::ProjectorServiceServer;
 use crate::proto::saga_service_server::SagaServiceServer;
 use crate::proto::upcaster_service_server::UpcasterServiceServer;
-use crate::router::{
-    CloudEventsRouter, CommandHandlerDomainHandler, CommandHandlerRouter, ProcessManagerRouter,
-    SagaDomainHandler, SagaRouter,
-};
+use crate::router::runtime::{CommandHandlerRouter, ProcessManagerRouter, SagaRouter};
 
 /// Configuration for a gRPC server.
 pub struct ServerConfig {
@@ -88,15 +84,11 @@ impl ServerConfig {
 ///     run_command_handler_server("player", 50001, router).await;
 /// }
 /// ```
-pub async fn run_command_handler_server<S, H>(
+pub async fn run_command_handler_server(
     domain: &str,
     default_port: u16,
-    router: CommandHandlerRouter<S, H>,
-) -> Result<(), tonic::transport::Error>
-where
-    S: Default + Send + Sync + 'static,
-    H: CommandHandlerDomainHandler<State = S> + 'static,
-{
+    router: CommandHandlerRouter,
+) -> Result<(), tonic::transport::Error> {
     let config = ServerConfig::from_env(default_port);
     let handler = CommandHandlerGrpc::new(router);
     let service = CommandHandlerServiceServer::new(handler);
@@ -149,14 +141,11 @@ where
 ///     run_saga_server("saga-order-fulfillment", 50010, router).await;
 /// }
 /// ```
-pub async fn run_saga_server<H>(
+pub async fn run_saga_server(
     name: &str,
     default_port: u16,
-    router: SagaRouter<H>,
-) -> Result<(), tonic::transport::Error>
-where
-    H: SagaDomainHandler + 'static,
-{
+    router: SagaRouter,
+) -> Result<(), tonic::transport::Error> {
     let config = ServerConfig::from_env(default_port);
     let handler = SagaHandler::new(router);
     let service = SagaServiceServer::new(handler);
@@ -256,10 +245,10 @@ pub async fn run_projector_server(
 ///     run_process_manager_server("hand-flow", 9091, router).await;
 /// }
 /// ```
-pub async fn run_process_manager_server<S: Default + Send + Sync + 'static>(
+pub async fn run_process_manager_server(
     name: &str,
     default_port: u16,
-    router: ProcessManagerRouter<S>,
+    router: ProcessManagerRouter,
 ) -> Result<(), tonic::transport::Error> {
     let config = ServerConfig::from_env(default_port);
     let handler = ProcessManagerGrpcHandler::new(router);
@@ -357,71 +346,3 @@ pub async fn run_upcaster_server(
     }
 }
 
-/// Run a CloudEvents projector service with the given router.
-///
-/// CloudEvents projectors transform domain events into CloudEvents 1.0 format
-/// for external consumption via HTTP webhooks or Kafka.
-///
-/// Supports both TCP and Unix domain socket (UDS) transport.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use angzarr_client::{run_cloudevents_projector, CloudEventsRouter};
-/// use angzarr_client::proto::angzarr::CloudEvent;
-/// use angzarr_client::proto::examples::PlayerRegistered;
-///
-/// fn handle_player_registered(event: &PlayerRegistered) -> Option<CloudEvent> {
-///     Some(CloudEvent {
-///         r#type: "com.poker.player.registered".into(),
-///         ..Default::default()
-///     })
-/// }
-///
-/// #[tokio::main]
-/// async fn main() {
-///     let router = CloudEventsRouter::new("prj-player-cloudevents", "player")
-///         .on::<PlayerRegistered>(handle_player_registered);
-///
-///     run_cloudevents_projector("prj-player-cloudevents", 50091, router).await;
-/// }
-/// ```
-pub async fn run_cloudevents_projector(
-    name: &str,
-    default_port: u16,
-    router: CloudEventsRouter,
-) -> Result<(), tonic::transport::Error> {
-    let config = ServerConfig::from_env(default_port);
-    let handler = CloudEventsGrpcHandler::new(router);
-    let service = ProjectorServiceServer::new(handler);
-
-    if let Some(uds_path) = &config.uds_path {
-        // UDS mode
-        info!(
-            name = name,
-            path = %uds_path.display(),
-            "Starting CloudEvents projector server (UDS)"
-        );
-
-        let _ = std::fs::remove_file(uds_path);
-
-        let uds = tokio::net::UnixListener::bind(uds_path).expect("Failed to bind UDS socket");
-        let incoming = tokio_stream::wrappers::UnixListenerStream::new(uds);
-
-        Server::builder()
-            .add_service(service)
-            .serve_with_incoming(incoming)
-            .await
-    } else {
-        // TCP mode
-        let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse().unwrap();
-
-        info!(
-            name = name,
-            port = config.port,
-            "Starting CloudEvents projector server"
-        );
-
-        Server::builder().add_service(service).serve(addr).await
-    }
-}

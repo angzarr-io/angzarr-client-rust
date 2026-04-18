@@ -1,0 +1,7 @@
+error: targets is required
+ --> tests/router/ui/process_manager_without_targets.rs:9:1
+  |
+9 | #[process_manager(name = "pm", pm_domain = "d", sources = ["a"], state = State)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `process_manager` (in Nightly builds, run with -Z macro-backtrace for more info)

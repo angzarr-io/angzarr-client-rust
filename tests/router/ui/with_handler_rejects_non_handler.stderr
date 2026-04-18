@@ -1,0 +1,39 @@
+error[E0277]: the trait bound `Plain: Handler` is not satisfied
+ --> tests/router/ui/with_handler_rejects_non_handler.rs:8:30
+  |
+8 |     let _ = Router::new("x").with_handler(|| Plain);
+  |                              ^^^^^^^^^^^^ unsatisfied trait bound
+  |
+help: the trait `Handler` is not implemented for `Plain`
+ --> tests/router/ui/with_handler_rejects_non_handler.rs:5:1
+  |
+5 | struct Plain;
+  | ^^^^^^^^^^^^
+note: required by a bound in `Router::with_handler`
+ --> src/router/builder.rs
+  |
+  |     pub fn with_handler<H, F>(mut self, factory: F) -> Self
+  |            ------------ required by a bound in this associated function
+  |     where
+  |         H: Handler + HandlerKind + 'static,
+  |            ^^^^^^^ required by this bound in `Router::with_handler`
+
+error[E0277]: the trait bound `Plain: HandlerKind` is not satisfied
+ --> tests/router/ui/with_handler_rejects_non_handler.rs:8:30
+  |
+8 |     let _ = Router::new("x").with_handler(|| Plain);
+  |                              ^^^^^^^^^^^^ unsatisfied trait bound
+  |
+help: the trait `HandlerKind` is not implemented for `Plain`
+ --> tests/router/ui/with_handler_rejects_non_handler.rs:5:1
+  |
+5 | struct Plain;
+  | ^^^^^^^^^^^^
+note: required by a bound in `Router::with_handler`
+ --> src/router/builder.rs
+  |
+  |     pub fn with_handler<H, F>(mut self, factory: F) -> Self
+  |            ------------ required by a bound in this associated function
+  |     where
+  |         H: Handler + HandlerKind + 'static,
+  |                      ^^^^^^^^^^^ required by this bound in `Router::with_handler`

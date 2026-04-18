@@ -161,7 +161,7 @@ async fn when_set_edition(world: &mut QueryBuilderWorld, edition: String) {
     let query = world
         .mock_client
         .query(&world.domain, root)
-        .edition(&edition)
+        .with_edition(&edition)
         .build();
     world.built_query = Some(query);
 }
@@ -176,7 +176,7 @@ async fn when_build_fluent_chaining(world: &mut QueryBuilderWorld) {
     let query = world
         .mock_client
         .query("orders", root)
-        .edition("test-branch")
+        .with_edition("test-branch")
         .range(10)
         .build();
     world.built_query = Some(query);

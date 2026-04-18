@@ -1,0 +1,15 @@
+error: #[aggregate] cannot coexist with #[projector] on the same impl; exactly one of #[aggregate] / #[saga] / #[process_manager] / #[projector] is allowed
+ --> tests/router/ui/stack_aggregate_projector.rs:7:1
+  |
+7 | #[aggregate(domain = "x", state = State)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `aggregate` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused import: `projector`
+ --> tests/router/ui/stack_aggregate_projector.rs:1:33
+  |
+1 | use angzarr_client::{aggregate, projector};
+  |                                 ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

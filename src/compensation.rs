@@ -1,29 +1,21 @@
 //! Compensation flow helpers for saga/PM revocation handling.
 //!
-//! When a saga/PM command is rejected by a target aggregate, the framework sends
-//! a Notification with RejectionNotification payload to the triggering aggregate.
-//! These helpers make it easy to implement compensation logic.
+//! When a saga/PM command is rejected by a target aggregate, the framework
+//! sends a `Notification` with `RejectionNotification` payload to the
+//! triggering aggregate. These helpers make it easy to implement compensation
+//! logic from inside a `#[rejected(domain, command)]` method.
 //!
 //! # Example in aggregate
 //!
 //! ```rust,ignore
-//! fn handle_revocation(
-//!     notification: &Notification,
-//!     state: &OrderState,
-//!     _target_domain: &str,
-//!     _target_command: &str,
-//! ) -> CommandResult<RejectionHandlerResponse> {
+//! #[rejected(domain = "inventory", command = "ReserveStock")]
+//! fn on_reserve_rejected(&self, notification: &Notification, state: &OrderState)
+//!     -> CommandResult<BusinessResponse>
+//! {
 //!     let ctx = CompensationContext::from_notification(notification);
-//!
-//!     // Option 1: Emit compensation events
-//!     let event = OrderCancelled {
-//!         order_id: state.order_id.clone(),
-//!         reason: format!("Fulfillment failed: {}", ctx.rejection_reason),
-//!     };
-//!     // ... pack and return
-//!
-//!     // Option 2: Delegate to framework
-//!     // return Ok(delegate_to_framework("No custom compensation"));
+//!     // Emit compensation events or delegate to the framework via the helpers
+//!     // re-exported from this module.
+//!     Ok(delegate_to_framework("No custom compensation"))
 //! }
 //! ```
 

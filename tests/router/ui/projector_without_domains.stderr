@@ -1,0 +1,7 @@
+error: domains is required
+ --> tests/router/ui/projector_without_domains.rs:7:1
+  |
+7 | #[projector(name = "p")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `projector` (in Nightly builds, run with -Z macro-backtrace for more info)

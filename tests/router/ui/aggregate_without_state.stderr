@@ -1,0 +1,7 @@
+error: state is required
+ --> tests/router/ui/aggregate_without_state.rs:7:1
+  |
+7 | #[aggregate(domain = "x")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `aggregate` (in Nightly builds, run with -Z macro-backtrace for more info)

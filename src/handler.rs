@@ -1,10 +1,10 @@
-//! gRPC service handlers for aggregates, sagas, and process managers.
+//! gRPC service adapters wrapping Tier 5 unified runtime routers.
 //!
-//! This module provides gRPC service implementations that wrap routers.
+//! Each wrapper takes the matching `router::runtime::*Router` produced by
+//! `Router::build().into_*()?` and exposes it as a `tonic` service.
 
 use std::sync::Arc;
 
-use prost_types::Any;
 use tonic::{Request, Response, Status};
 
 use crate::proto::{
@@ -12,249 +12,157 @@ use crate::proto::{
     process_manager_service_server::ProcessManagerService,
     projector_service_server::ProjectorService, saga_service_server::SagaService,
     upcaster_service_server::UpcasterService, BusinessResponse, ContextualCommand, EventBook,
-    FactRequest, ProcessManagerHandleRequest, ProcessManagerHandleResponse,
-    ProcessManagerPrepareRequest, ProcessManagerPrepareResponse, Projection, ReplayRequest,
-    ReplayResponse, SagaHandleRequest, SagaResponse, UpcastRequest, UpcastResponse,
+    ProcessManagerHandleRequest, ProcessManagerHandleResponse, ProcessManagerPrepareRequest,
+    ProcessManagerPrepareResponse, Projection, SagaHandleRequest, SagaResponse, UpcastRequest,
+    UpcastResponse,
 };
-use crate::router::{
-    CloudEventsRouter, CommandHandlerDomainHandler, CommandHandlerRouter, ProcessManagerRouter,
-    SagaDomainHandler, SagaRouter,
+use crate::router::runtime::{
+    CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter,
 };
+use crate::ClientError;
 
-/// Function type for packing state into protobuf Any.
-///
-/// Used by Replay RPC to return state as a serializable message.
-pub type StatePacker<S> = fn(&S) -> Result<Any, Status>;
-
-/// gRPC command handler service implementation.
-///
-/// Wraps a `CommandHandlerRouter` to handle commands.
-/// Optionally supports Replay RPC for MERGE_COMMUTATIVE conflict detection.
-pub struct CommandHandlerGrpc<S, H>
-where
-    S: Default + Send + Sync + 'static,
-    H: CommandHandlerDomainHandler<State = S> + 'static,
-{
-    router: Arc<CommandHandlerRouter<S, H>>,
-    /// Optional state packer for Replay RPC support.
-    state_packer: Option<StatePacker<S>>,
+/// gRPC command-handler service wrapping a [`CommandHandlerRouter`].
+pub struct CommandHandlerGrpc {
+    router: Arc<CommandHandlerRouter>,
 }
 
-// Clone doesn't require H: Clone because router is Arc
-impl<S, H> Clone for CommandHandlerGrpc<S, H>
-where
-    S: Default + Send + Sync + 'static,
-    H: CommandHandlerDomainHandler<State = S> + 'static,
-{
-    fn clone(&self) -> Self {
-        Self {
-            router: self.router.clone(),
-            state_packer: self.state_packer,
-        }
-    }
-}
-
-impl<S, H> CommandHandlerGrpc<S, H>
-where
-    S: Default + Send + Sync + 'static,
-    H: CommandHandlerDomainHandler<State = S> + 'static,
-{
-    /// Create a new command handler from a router.
-    pub fn new(router: CommandHandlerRouter<S, H>) -> Self {
+impl CommandHandlerGrpc {
+    pub fn new(router: CommandHandlerRouter) -> Self {
         Self {
             router: Arc::new(router),
-            state_packer: None,
         }
     }
+}
 
-    /// Enable Replay RPC support by providing a state packer.
-    pub fn with_replay(mut self, packer: StatePacker<S>) -> Self {
-        self.state_packer = Some(packer);
-        self
-    }
-
-    /// Get the underlying router.
-    pub fn router(&self) -> &CommandHandlerRouter<S, H> {
-        &self.router
+impl Clone for CommandHandlerGrpc {
+    fn clone(&self) -> Self {
+        Self {
+            router: Arc::clone(&self.router),
+        }
     }
 }
 
 #[tonic::async_trait]
-impl<S, H> CommandHandlerService for CommandHandlerGrpc<S, H>
-where
-    S: Default + Send + Sync + 'static,
-    H: CommandHandlerDomainHandler<State = S> + 'static,
-{
+impl CommandHandlerService for CommandHandlerGrpc {
     async fn handle(
         &self,
         request: Request<ContextualCommand>,
     ) -> Result<Response<BusinessResponse>, Status> {
         let cmd = request.into_inner();
-        let response = self.router.dispatch(&cmd)?;
+        let response = self.router.dispatch(cmd).map_err(client_error_to_status)?;
         Ok(Response::new(response))
     }
 
     async fn handle_fact(
         &self,
-        request: Request<FactRequest>,
+        _request: Request<crate::proto::FactRequest>,
     ) -> Result<Response<EventBook>, Status> {
-        let req = request.into_inner();
-        let facts = req
-            .facts
-            .ok_or_else(|| Status::invalid_argument("Missing facts event book"))?;
-        let prior_events = req.prior_events.unwrap_or_default();
-
-        let result = self.router.dispatch_fact(&facts, &prior_events)?;
-        Ok(Response::new(result))
+        // Fact handling is out of scope for the Tier 5 MVP.
+        Err(Status::unimplemented(
+            "handle_fact not implemented in Tier 5 runtime",
+        ))
     }
 
     async fn replay(
         &self,
-        request: Request<ReplayRequest>,
-    ) -> Result<Response<ReplayResponse>, Status> {
-        let packer = self.state_packer.ok_or_else(|| {
-            Status::unimplemented(
-                "Replay not implemented. Call with_replay() to enable for MERGE_COMMUTATIVE strategy.",
-            )
-        })?;
-
-        let req = request.into_inner();
-        let event_book = build_event_book_for_replay(&req);
-        let state = self.router.rebuild_state(&event_book);
-        let state_any = packer(&state)?;
-
-        Ok(Response::new(ReplayResponse {
-            state: Some(state_any),
-        }))
+        _request: Request<crate::proto::ReplayRequest>,
+    ) -> Result<Response<crate::proto::ReplayResponse>, Status> {
+        // Replay support requires state packing hooks — deferred.
+        Err(Status::unimplemented(
+            "replay not implemented in Tier 5 runtime",
+        ))
     }
 }
 
-/// Build an EventBook from a ReplayRequest for state reconstruction.
-fn build_event_book_for_replay(req: &ReplayRequest) -> EventBook {
-    EventBook {
-        cover: None,
-        pages: req.events.clone(),
-        snapshot: req.base_snapshot.clone(),
-        next_sequence: 0,
-    }
+/// gRPC saga service wrapping a [`SagaRouter`].
+pub struct SagaHandler {
+    router: Arc<SagaRouter>,
 }
 
-/// gRPC saga service implementation.
-///
-/// Wraps a `SagaRouter` to handle saga events.
-pub struct SagaHandler<H>
-where
-    H: SagaDomainHandler + 'static,
-{
-    router: Arc<SagaRouter<H>>,
-}
-
-// Clone doesn't require H: Clone because router is Arc
-impl<H: SagaDomainHandler + 'static> Clone for SagaHandler<H> {
-    fn clone(&self) -> Self {
-        Self {
-            router: self.router.clone(),
-        }
-    }
-}
-
-impl<H: SagaDomainHandler + 'static> SagaHandler<H> {
-    /// Create a new saga handler from a router.
-    pub fn new(router: SagaRouter<H>) -> Self {
+impl SagaHandler {
+    pub fn new(router: SagaRouter) -> Self {
         Self {
             router: Arc::new(router),
         }
     }
+}
 
-    /// Get the underlying router.
-    pub fn router(&self) -> &SagaRouter<H> {
-        &self.router
+impl Clone for SagaHandler {
+    fn clone(&self) -> Self {
+        Self {
+            router: Arc::clone(&self.router),
+        }
     }
 }
 
 #[tonic::async_trait]
-impl<H: SagaDomainHandler + 'static> SagaService for SagaHandler<H> {
+impl SagaService for SagaHandler {
     async fn handle(
         &self,
         request: Request<SagaHandleRequest>,
     ) -> Result<Response<SagaResponse>, Status> {
         let req = request.into_inner();
-        let source = req
-            .source
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("Missing source event book"))?;
-
-        let response = self.router.dispatch(source, &req.destination_sequences)?;
+        let response = self.router.dispatch(req).map_err(client_error_to_status)?;
         Ok(Response::new(response))
     }
 }
 
-/// Handle function type for projectors (function pointer).
-pub type ProjectorHandleFn = fn(&EventBook) -> Result<Projection, Status>;
-
-/// Handle closure type for projectors.
-pub type ProjectorHandleClosureFn =
-    Arc<dyn Fn(&EventBook) -> Result<Projection, Status> + Send + Sync>;
-
-/// Internal handle type - either fn pointer or closure.
-enum ProjectorHandleType {
-    Fn(ProjectorHandleFn),
-    Closure(ProjectorHandleClosureFn),
+/// gRPC process-manager service wrapping a [`ProcessManagerRouter`].
+pub struct ProcessManagerGrpcHandler {
+    router: Arc<ProcessManagerRouter>,
 }
 
-/// gRPC projector service implementation.
-///
-/// Wraps a handle function to process events and produce projections.
+impl ProcessManagerGrpcHandler {
+    pub fn new(router: ProcessManagerRouter) -> Self {
+        Self {
+            router: Arc::new(router),
+        }
+    }
+}
+
+#[tonic::async_trait]
+impl ProcessManagerService for ProcessManagerGrpcHandler {
+    async fn prepare(
+        &self,
+        _request: Request<ProcessManagerPrepareRequest>,
+    ) -> Result<Response<ProcessManagerPrepareResponse>, Status> {
+        Err(Status::unimplemented(
+            "PM prepare not implemented in Tier 5 runtime",
+        ))
+    }
+
+    async fn handle(
+        &self,
+        request: Request<ProcessManagerHandleRequest>,
+    ) -> Result<Response<ProcessManagerHandleResponse>, Status> {
+        let req = request.into_inner();
+        let response = self.router.dispatch(req).map_err(client_error_to_status)?;
+        Ok(Response::new(response))
+    }
+}
+
+/// gRPC projector service wrapping a [`ProjectorRouter`].
 pub struct ProjectorHandler {
-    name: String,
-    handle_type: Option<ProjectorHandleType>,
+    router: Arc<ProjectorRouter>,
 }
 
 impl ProjectorHandler {
-    /// Create a new projector handler.
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new(router: ProjectorRouter) -> Self {
         Self {
-            name: name.into(),
-            handle_type: None,
+            router: Arc::new(router),
         }
-    }
-
-    /// Set the handle function (function pointer).
-    pub fn with_handle(mut self, handle_fn: ProjectorHandleFn) -> Self {
-        self.handle_type = Some(ProjectorHandleType::Fn(handle_fn));
-        self
-    }
-
-    /// Set the handle function (closure).
-    pub fn with_handle_fn<H>(mut self, handle_fn: H) -> Self
-    where
-        H: Fn(&EventBook) -> Result<Projection, Status> + Send + Sync + 'static,
-    {
-        self.handle_type = Some(ProjectorHandleType::Closure(Arc::new(handle_fn)));
-        self
-    }
-
-    /// Get the projector name.
-    pub fn name(&self) -> &str {
-        &self.name
     }
 }
 
 #[tonic::async_trait]
 impl ProjectorService for ProjectorHandler {
-    async fn handle(&self, request: Request<EventBook>) -> Result<Response<Projection>, Status> {
-        let event_book = request.into_inner();
-        match &self.handle_type {
-            Some(ProjectorHandleType::Fn(handle_fn)) => {
-                let projection = handle_fn(&event_book)?;
-                Ok(Response::new(projection))
-            }
-            Some(ProjectorHandleType::Closure(handle_fn)) => {
-                let projection = handle_fn(&event_book)?;
-                Ok(Response::new(projection))
-            }
-            None => Ok(Response::new(Projection::default())),
-        }
+    async fn handle(
+        &self,
+        request: Request<EventBook>,
+    ) -> Result<Response<Projection>, Status> {
+        let book = request.into_inner();
+        let projection = self.router.dispatch(book).map_err(client_error_to_status)?;
+        Ok(Response::new(projection))
     }
 
     async fn handle_speculative(
@@ -265,80 +173,31 @@ impl ProjectorService for ProjectorHandler {
     }
 }
 
-/// gRPC process manager service implementation.
-///
-/// Wraps a `ProcessManagerRouter` to handle PM events.
-pub struct ProcessManagerGrpcHandler<S: Default + Send + Sync + 'static> {
-    router: Arc<ProcessManagerRouter<S>>,
-}
-
-impl<S: Default + Send + Sync + 'static> ProcessManagerGrpcHandler<S> {
-    /// Create a new process manager handler from a router.
-    pub fn new(router: ProcessManagerRouter<S>) -> Self {
-        Self {
-            router: Arc::new(router),
-        }
-    }
-
-    /// Get the underlying router.
-    pub fn router(&self) -> &ProcessManagerRouter<S> {
-        &self.router
+fn client_error_to_status(err: ClientError) -> Status {
+    match err {
+        ClientError::InvalidArgument(msg) => Status::invalid_argument(msg),
+        ClientError::Connection(msg) => Status::unavailable(msg),
+        ClientError::Transport(e) => Status::unavailable(e.to_string()),
+        ClientError::Grpc(s) => *s,
+        ClientError::InvalidTimestamp(msg) => Status::invalid_argument(msg),
     }
 }
 
-#[tonic::async_trait]
-impl<S: Default + Send + Sync + 'static> ProcessManagerService for ProcessManagerGrpcHandler<S> {
-    async fn prepare(
-        &self,
-        request: Request<ProcessManagerPrepareRequest>,
-    ) -> Result<Response<ProcessManagerPrepareResponse>, Status> {
-        let req = request.into_inner();
-        let destinations = self
-            .router
-            .prepare_destinations(&req.trigger, &req.process_state);
+// ---------------------------------------------------------------------------
+// Upcaster wrappers — unchanged Tier 5 semantics.
+// Upcaster stays outside the unified Router (plan: "separate system").
+// ---------------------------------------------------------------------------
 
-        Ok(Response::new(ProcessManagerPrepareResponse {
-            destinations,
-        }))
-    }
-
-    async fn handle(
-        &self,
-        request: Request<ProcessManagerHandleRequest>,
-    ) -> Result<Response<ProcessManagerHandleResponse>, Status> {
-        let req = request.into_inner();
-
-        let trigger = req
-            .trigger
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("Missing trigger event book"))?;
-
-        let process_state = req.process_state.as_ref().cloned().unwrap_or_default();
-
-        let response = self
-            .router
-            .dispatch(trigger, &process_state, &req.destination_sequences)?;
-
-        Ok(Response::new(response))
-    }
-}
-
-/// Handle function type for upcasters (function pointer).
 pub type UpcasterHandleFn = fn(&[crate::proto::EventPage]) -> Vec<crate::proto::EventPage>;
 
-/// Handle closure type for upcasters.
 pub type UpcasterHandleClosureFn =
     Arc<dyn Fn(&[crate::proto::EventPage]) -> Vec<crate::proto::EventPage> + Send + Sync>;
 
-/// Internal handle type - either fn pointer or closure.
 enum UpcasterHandleType {
     Fn(UpcasterHandleFn),
     Closure(UpcasterHandleClosureFn),
 }
 
-/// gRPC upcaster service implementation.
-///
-/// Wraps a handle function to transform events to current versions.
 pub struct UpcasterGrpcHandler {
     name: String,
     domain: String,
@@ -346,7 +205,6 @@ pub struct UpcasterGrpcHandler {
 }
 
 impl UpcasterGrpcHandler {
-    /// Create a new upcaster handler.
     pub fn new(name: impl Into<String>, domain: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -355,13 +213,11 @@ impl UpcasterGrpcHandler {
         }
     }
 
-    /// Set the handle function (function pointer).
     pub fn with_handle(mut self, handle_fn: UpcasterHandleFn) -> Self {
         self.handle_type = Some(UpcasterHandleType::Fn(handle_fn));
         self
     }
 
-    /// Set the handle function (closure).
     pub fn with_handle_fn<H>(mut self, handle_fn: H) -> Self
     where
         H: Fn(&[crate::proto::EventPage]) -> Vec<crate::proto::EventPage> + Send + Sync + 'static,
@@ -370,12 +226,10 @@ impl UpcasterGrpcHandler {
         self
     }
 
-    /// Get the upcaster name.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Get the domain this upcaster handles.
     pub fn domain(&self) -> &str {
         &self.domain
     }
@@ -388,63 +242,14 @@ impl UpcasterService for UpcasterGrpcHandler {
         request: Request<UpcastRequest>,
     ) -> Result<Response<UpcastResponse>, Status> {
         let req = request.into_inner();
-        let events = req.events;
-
         let result = match &self.handle_type {
-            Some(UpcasterHandleType::Fn(handle_fn)) => handle_fn(&events),
-            Some(UpcasterHandleType::Closure(handle_fn)) => handle_fn(&events),
-            None => events, // Passthrough if no handler
+            Some(UpcasterHandleType::Fn(handle_fn)) => handle_fn(&req.events),
+            Some(UpcasterHandleType::Closure(handle_fn)) => handle_fn(&req.events),
+            None => req.events,
         };
-
         Ok(Response::new(UpcastResponse { events: result }))
     }
 }
 
-/// gRPC CloudEvents projector service implementation.
-///
-/// Wraps a `CloudEventsRouter` to transform events into CloudEvents.
-/// Uses the standard ProjectorService protocol but returns CloudEventsResponse
-/// packed into Projection.projection.
-pub struct CloudEventsGrpcHandler {
-    router: Arc<CloudEventsRouter>,
-}
-
-impl CloudEventsGrpcHandler {
-    /// Create a new CloudEvents handler from a router.
-    pub fn new(router: CloudEventsRouter) -> Self {
-        Self {
-            router: Arc::new(router),
-        }
-    }
-
-    /// Get the underlying router.
-    pub fn router(&self) -> &CloudEventsRouter {
-        &self.router
-    }
-}
-
-#[tonic::async_trait]
-impl ProjectorService for CloudEventsGrpcHandler {
-    async fn handle(&self, request: Request<EventBook>) -> Result<Response<Projection>, Status> {
-        let event_book = request.into_inner();
-        let response = self.router.project(&event_book);
-
-        // Pack CloudEventsResponse into Projection.projection
-        let projection_any =
-            Any::from_msg(&response).map_err(|e| Status::internal(format!("Pack error: {}", e)))?;
-
-        Ok(Response::new(Projection {
-            cover: event_book.cover,
-            projector: self.router.name().to_string(),
-            sequence: event_book.next_sequence,
-            projection: Some(projection_any),
-        }))
-    }
-
-    async fn handle_speculative(
-        &self,
-        request: Request<EventBook>,
-    ) -> Result<Response<Projection>, Status> {
-        self.handle(request).await
-    }
-}
+/// Re-export retained for back-compat in callers that might use it.
+pub type StatePacker<S> = fn(&S) -> Result<prost_types::Any, Status>;
