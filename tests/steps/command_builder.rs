@@ -103,10 +103,14 @@ impl CommandBuilderWorld {
             }
         } else if self.type_url_set && !self.payload_set {
             // Type set but no payload - simulate the error
-            self.build_error = Some(ClientError::InvalidArgument("command payload not set".to_string()));
+            self.build_error = Some(ClientError::InvalidArgument(
+                "command payload not set".to_string(),
+            ));
         } else if !self.type_url_set && self.payload_set {
             // Payload set but no type - simulate the error
-            self.build_error = Some(ClientError::InvalidArgument("command type_url not set".to_string()));
+            self.build_error = Some(ClientError::InvalidArgument(
+                "command type_url not set".to_string(),
+            ));
         } else {
             // Neither set - try to build (will fail)
             match builder.build() {

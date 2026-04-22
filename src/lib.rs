@@ -111,13 +111,11 @@ pub use router::{
     pack_event,
     // Upcaster types (separate system, retained)
     BoxedUpcasterHandler,
-    UpcasterHandler,
-    UpcasterHandlerHOF,
-    UpcasterMode,
-    UpcasterRouter,
     // Tier 5 unified Handler contract
     BuildError,
     Built,
+    // Destination-sequence stamping for saga/PM outbound commands
+    Destinations,
     Handler,
     HandlerConfig,
     HandlerKind,
@@ -126,8 +124,10 @@ pub use router::{
     Kind,
     // Builder
     Router,
-    // Destination-sequence stamping for saga/PM outbound commands
-    Destinations,
+    UpcasterHandler,
+    UpcasterHandlerHOF,
+    UpcasterMode,
+    UpcasterRouter,
 };
 
 // Re-export handler types
@@ -138,8 +138,8 @@ pub use handler::{
 
 // Re-export server utilities
 pub use server::{
-    run_command_handler_server, run_process_manager_server, run_projector_server,
-    run_saga_server, run_upcaster_server, ServerConfig,
+    run_command_handler_server, run_process_manager_server, run_projector_server, run_saga_server,
+    run_upcaster_server, ServerConfig,
 };
 
 // Re-export validation helpers

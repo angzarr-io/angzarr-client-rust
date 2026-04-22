@@ -179,12 +179,15 @@ impl CommandHandlerWorld {
     }
 }
 
-fn build_router(world: &CommandHandlerWorld) -> angzarr_client::router::runtime::CommandHandlerRouter
-{
+fn build_router(
+    world: &CommandHandlerWorld,
+) -> angzarr_client::router::runtime::CommandHandlerRouter {
     let built = match world.variant {
         Variant::Default => Router::new("order").with_handler(|| OrderDefault).build(),
         Variant::Empty => Router::new("order").with_handler(|| OrderEmpty).build(),
-        Variant::WithFactory => Router::new("order").with_handler(|| OrderWithFactory).build(),
+        Variant::WithFactory => Router::new("order")
+            .with_handler(|| OrderWithFactory)
+            .build(),
     }
     .expect("build");
     let Built::CommandHandler(ch) = built else {

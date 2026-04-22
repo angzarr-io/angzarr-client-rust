@@ -16,7 +16,10 @@ fn test_for_type() {
         for_type("angzarr_client.proto.examples.OrderCreated"),
         "type.angzarr.io/examples.OrderCreated"
     );
-    assert_eq!(for_type("angzarr_client.proto.angzarr.Notification"), NOTIFICATION);
+    assert_eq!(
+        for_type("angzarr_client.proto.angzarr.Notification"),
+        NOTIFICATION
+    );
 }
 
 /// strip_prefix() removes the angzarr prefix, passes through unknown URLs.
@@ -26,7 +29,10 @@ fn test_strip_prefix() {
         strip_prefix("type.angzarr.io/examples.OrderCreated"),
         "angzarr_client.proto.examples.OrderCreated"
     );
-    assert_eq!(strip_prefix(NOTIFICATION), "angzarr_client.proto.angzarr.Notification");
+    assert_eq!(
+        strip_prefix(NOTIFICATION),
+        "angzarr_client.proto.angzarr.Notification"
+    );
     // Unknown prefix passes through
     assert_eq!(strip_prefix("unknown/Type"), "unknown/Type");
 }

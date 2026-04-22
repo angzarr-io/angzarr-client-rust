@@ -10,7 +10,8 @@ use tonic::transport::Server;
 use tracing::info;
 
 use crate::handler::{
-    CommandHandlerGrpc, ProcessManagerGrpcHandler, ProjectorHandler, SagaHandler, UpcasterGrpcHandler,
+    CommandHandlerGrpc, ProcessManagerGrpcHandler, ProjectorHandler, SagaHandler,
+    UpcasterGrpcHandler,
 };
 use crate::proto::command_handler_service_server::CommandHandlerServiceServer;
 use crate::proto::process_manager_service_server::ProcessManagerServiceServer;
@@ -345,4 +346,3 @@ pub async fn run_upcaster_server(
         Server::builder().add_service(service).serve(addr).await
     }
 }
-

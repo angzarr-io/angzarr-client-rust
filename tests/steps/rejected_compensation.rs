@@ -176,11 +176,16 @@ impl RejectedCompensationWorld {
     }
 }
 
-fn build(world: &RejectedCompensationWorld) -> angzarr_client::router::runtime::CommandHandlerRouter
-{
+fn build(
+    world: &RejectedCompensationWorld,
+) -> angzarr_client::router::runtime::CommandHandlerRouter {
     let built = match world.variant {
-        Variant::Single => Router::new("payment").with_handler(|| PaymentSingle).build(),
-        Variant::Double => Router::new("payment").with_handler(|| PaymentDouble).build(),
+        Variant::Single => Router::new("payment")
+            .with_handler(|| PaymentSingle)
+            .build(),
+        Variant::Double => Router::new("payment")
+            .with_handler(|| PaymentDouble)
+            .build(),
         Variant::TwoEvents => Router::new("payment")
             .with_handler(|| PaymentTwoEvents)
             .build(),
@@ -243,11 +248,7 @@ fn notification_for<T: prost::Message + prost::Name>(domain: &str, cmd: T) -> Co
 // ---------------------------------------------------------------------------
 
 #[given(expr = "a command handler {string} for domain {string} with stateful rejection")]
-async fn given_handler_stateful(
-    world: &mut RejectedCompensationWorld,
-    _name: String,
-    _d: String,
-) {
+async fn given_handler_stateful(world: &mut RejectedCompensationWorld, _name: String, _d: String) {
     world.variant = Variant::Single;
 }
 
@@ -269,17 +270,11 @@ async fn given_handler_two_rejected(
 }
 
 #[given(expr = "a command handler {string} for domain {string} with no rejection handlers")]
-async fn given_handler_none(
-    world: &mut RejectedCompensationWorld,
-    _name: String,
-    _d: String,
-) {
+async fn given_handler_none(world: &mut RejectedCompensationWorld, _name: String, _d: String) {
     world.variant = Variant::None;
 }
 
-#[given(
-    "Payment has a @rejected(\"inventory\", \"ReserveStock\") handler emitting FundsReleased"
-)]
+#[given("Payment has a @rejected(\"inventory\", \"ReserveStock\") handler emitting FundsReleased")]
 async fn given_rejected_funds(_world: &mut RejectedCompensationWorld) {}
 
 #[given("Payment has a @rejected(\"payment\", \"ProcessPayment\") handler emitting WorkflowFailed")]
@@ -321,9 +316,7 @@ async fn given_prior_next_seq(world: &mut RejectedCompensationWorld, n: u32) {
 // When steps.
 // ---------------------------------------------------------------------------
 
-#[when(
-    expr = "a Notification wrapping a rejected ReserveStock in domain {string} is dispatched"
-)]
+#[when(expr = "a Notification wrapping a rejected ReserveStock in domain {string} is dispatched")]
 async fn when_dispatch_reserve(world: &mut RejectedCompensationWorld, domain: String) {
     let ch = build(world);
     let mut ctx = notification_for(&domain, ReserveStock {});
@@ -333,9 +326,7 @@ async fn when_dispatch_reserve(world: &mut RejectedCompensationWorld, domain: St
     world.response = Some(ch.dispatch(ctx).expect("dispatch"));
 }
 
-#[when(
-    expr = "a Notification wrapping a rejected ProcessPayment in domain {string} is dispatched"
-)]
+#[when(expr = "a Notification wrapping a rejected ProcessPayment in domain {string} is dispatched")]
 async fn when_dispatch_pp(world: &mut RejectedCompensationWorld, domain: String) {
     let ch = build(world);
     let mut ctx = notification_for(&domain, ProcessPayment {});
@@ -345,9 +336,7 @@ async fn when_dispatch_pp(world: &mut RejectedCompensationWorld, domain: String)
     world.response = Some(ch.dispatch(ctx).expect("dispatch"));
 }
 
-#[when(
-    expr = "a Notification wrapping a rejected CreateShipment in domain {string} is dispatched"
-)]
+#[when(expr = "a Notification wrapping a rejected CreateShipment in domain {string} is dispatched")]
 async fn when_dispatch_cs(world: &mut RejectedCompensationWorld, domain: String) {
     let ch = build(world);
     let ctx = notification_for(&domain, CreateShipment {});

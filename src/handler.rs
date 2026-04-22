@@ -156,10 +156,7 @@ impl ProjectorHandler {
 
 #[tonic::async_trait]
 impl ProjectorService for ProjectorHandler {
-    async fn handle(
-        &self,
-        request: Request<EventBook>,
-    ) -> Result<Response<Projection>, Status> {
+    async fn handle(&self, request: Request<EventBook>) -> Result<Response<Projection>, Status> {
         let book = request.into_inner();
         let projection = self.router.dispatch(book).map_err(client_error_to_status)?;
         Ok(Response::new(projection))

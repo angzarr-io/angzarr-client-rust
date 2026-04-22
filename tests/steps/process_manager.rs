@@ -162,10 +162,7 @@ async fn given_pm_built(_world: &mut ProcessManagerWorld) {}
 #[given("process state events: OrderCompleted, OrderCompleted")]
 async fn given_state_events(world: &mut ProcessManagerWorld) {
     world.process_state = EventBook {
-        pages: vec![
-            event_page(OrderCompleted {}),
-            event_page(OrderCompleted {}),
-        ],
+        pages: vec![event_page(OrderCompleted {}), event_page(OrderCompleted {})],
         ..Default::default()
     };
 }

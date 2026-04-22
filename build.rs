@@ -33,10 +33,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".angzarr_client.proto.angzarr.BusinessResponse.result",
             "#[allow(clippy::large_enum_variant)]",
         )
-        .compile_with_config(
-            prost_config,
-            &proto_files,
-            &["angzarr-project/proto"],
-        )?;
+        .compile_with_config(prost_config, &proto_files, &["angzarr-project/proto"])?;
     Ok(())
 }

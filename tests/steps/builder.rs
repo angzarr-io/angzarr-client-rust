@@ -113,10 +113,7 @@ struct FulfillmentSaga;
 impl FulfillmentSaga {
     #[handles(OrderCreated)]
     #[allow(unused_variables, dead_code)]
-    fn on_placed(
-        &self,
-        event: OrderCreated,
-    ) -> CommandResult<angzarr_client::proto::SagaResponse> {
+    fn on_placed(&self, event: OrderCreated) -> CommandResult<angzarr_client::proto::SagaResponse> {
         Ok(angzarr_client::proto::SagaResponse::default())
     }
 }
@@ -220,12 +217,7 @@ async fn given_another_handler(
 }
 
 #[given(expr = "a saga {string} translating from {string} to {string}")]
-async fn given_a_saga(
-    world: &mut BuilderWorld,
-    _name: String,
-    _source: String,
-    _target: String,
-) {
+async fn given_a_saga(world: &mut BuilderWorld, _name: String, _source: String, _target: String) {
     world.has_saga_handler = true;
 }
 

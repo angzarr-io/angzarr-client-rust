@@ -417,7 +417,9 @@ mod tests {
         assert!(!is_notification(
             "type.googleapis.com/angzarr.RejectionNotification"
         ));
-        assert!(!is_notification("angzarr_client.proto.angzarr.Notification"));
+        assert!(!is_notification(
+            "angzarr_client.proto.angzarr.Notification"
+        ));
         assert!(!is_notification(""));
     }
 }

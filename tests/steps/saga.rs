@@ -113,9 +113,7 @@ impl SagaWorld {
 
 fn build_saga(world: &SagaWorld) -> angzarr_client::router::runtime::SagaRouter {
     let built = match world.variant {
-        SagaVariant::Fulfillment => {
-            Router::new("s").with_handler(|| OrderFulfillment).build()
-        }
+        SagaVariant::Fulfillment => Router::new("s").with_handler(|| OrderFulfillment).build(),
         SagaVariant::Split => Router::new("s").with_handler(|| OrderSplit).build(),
     }
     .expect("build");
@@ -152,13 +150,15 @@ async fn given_saga_built(_world: &mut SagaWorld) {}
 
 #[given(expr = "destination sequences inventory={int} and fulfillment={int}")]
 async fn given_dest_seqs(world: &mut SagaWorld, inv: u32, ful: u32) {
-    world.destination_sequences.insert("inventory".to_string(), inv);
-    world.destination_sequences.insert("fulfillment".to_string(), ful);
+    world
+        .destination_sequences
+        .insert("inventory".to_string(), inv);
+    world
+        .destination_sequences
+        .insert("fulfillment".to_string(), ful);
 }
 
-#[given(
-    expr = "a saga {string} translating from {string} to {string} and {string}"
-)]
+#[given(expr = "a saga {string} translating from {string} to {string} and {string}")]
 async fn given_saga_two_targets(
     world: &mut SagaWorld,
     _name: String,
@@ -232,7 +232,10 @@ async fn then_targets(world: &mut SagaWorld, d: String) {
 
 #[then(expr = "the saga observed destination inventory = {int}")]
 async fn then_saga_observed_inv(world: &mut SagaWorld, n: u32) {
-    assert_eq!(world.destination_sequences.get("inventory").copied(), Some(n));
+    assert_eq!(
+        world.destination_sequences.get("inventory").copied(),
+        Some(n)
+    );
 }
 #[then(expr = "the saga observed destination fulfillment = {int}")]
 async fn then_saga_observed_ful(world: &mut SagaWorld, n: u32) {

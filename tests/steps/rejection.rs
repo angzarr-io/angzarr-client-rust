@@ -182,9 +182,7 @@ fn notification_for<T: prost::Message + prost::Name>(domain: &str, cmd: T) -> Co
 #[given(expr = "a command handler {string} for domain {string} with state {word}")]
 async fn given_handler(_world: &mut RejectionWorld, _name: String, _d: String, _s: String) {}
 
-#[given(
-    expr = "Payment has a @rejected\\({string}, {string}\\) handler emitting FundsReleased"
-)]
+#[given(expr = "Payment has a @rejected\\({string}, {string}\\) handler emitting FundsReleased")]
 async fn given_rejected_handler(_world: &mut RejectionWorld, _d: String, _c: String) {}
 
 #[given("the router is built with the Payment handler")]
@@ -206,27 +204,21 @@ async fn given_built_double(world: &mut RejectionWorld) {
 // When steps.
 // ---------------------------------------------------------------------------
 
-#[when(
-    expr = "a Notification wrapping a rejected ReserveStock in domain {string} is dispatched"
-)]
+#[when(expr = "a Notification wrapping a rejected ReserveStock in domain {string} is dispatched")]
 async fn when_dispatch_reserve_stock(world: &mut RejectionWorld, domain: String) {
     let ch = build(world);
     let ctx = notification_for(&domain, ReserveStock {});
     world.response = Some(ch.dispatch(ctx).expect("dispatch"));
 }
 
-#[when(
-    expr = "a Notification wrapping a rejected ProcessPayment in domain {string} is dispatched"
-)]
+#[when(expr = "a Notification wrapping a rejected ProcessPayment in domain {string} is dispatched")]
 async fn when_dispatch_process_payment(world: &mut RejectionWorld, domain: String) {
     let ch = build(world);
     let ctx = notification_for(&domain, ProcessPayment {});
     world.response = Some(ch.dispatch(ctx).expect("dispatch"));
 }
 
-#[when(
-    expr = "a Notification wrapping a rejected CreateShipment in domain {string} is dispatched"
-)]
+#[when(expr = "a Notification wrapping a rejected CreateShipment in domain {string} is dispatched")]
 async fn when_dispatch_create_shipment(world: &mut RejectionWorld, domain: String) {
     let ch = build(world);
     let ctx = notification_for(&domain, CreateShipment {});

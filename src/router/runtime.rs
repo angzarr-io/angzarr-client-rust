@@ -13,8 +13,8 @@
 
 use crate::proto::{
     business_response, BusinessResponse, ContextualCommand, EventBook, Notification,
-    ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection,
-    RejectionNotification, SagaHandleRequest, SagaResponse,
+    ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, RejectionNotification,
+    SagaHandleRequest, SagaResponse,
 };
 use crate::router::builder::Factory;
 use crate::router::{Handler, HandlerConfig, HandlerRequest, HandlerResponse};
@@ -51,11 +51,7 @@ impl CommandHandlerRouter {
 
         // Threaded sequence — starts at the prior-events' next_sequence and
         // advances by each handler's emitted page count.
-        let initial_next_seq = cmd
-            .events
-            .as_ref()
-            .map(|eb| eb.next_sequence)
-            .unwrap_or(0);
+        let initial_next_seq = cmd.events.as_ref().map(|eb| eb.next_sequence).unwrap_or(0);
         let mut running_seq = initial_next_seq;
 
         let mut merged = EventBook {
@@ -116,17 +112,10 @@ impl CommandHandlerRouter {
     /// Notification path: fan out to every handler whose `#[rejected]` set
     /// includes the rejection key `(target_domain, target_command_suffix)`.
     /// Compensation events concatenate across matched handlers.
-    fn dispatch_rejection(
-        &self,
-        cmd: ContextualCommand,
-    ) -> Result<BusinessResponse, ClientError> {
+    fn dispatch_rejection(&self, cmd: ContextualCommand) -> Result<BusinessResponse, ClientError> {
         let (target_domain, target_command_suffix) = extract_rejection_key(&cmd)?;
 
-        let initial_next_seq = cmd
-            .events
-            .as_ref()
-            .map(|eb| eb.next_sequence)
-            .unwrap_or(0);
+        let initial_next_seq = cmd.events.as_ref().map(|eb| eb.next_sequence).unwrap_or(0);
         let mut running_seq = initial_next_seq;
         let mut merged = EventBook {
             next_sequence: initial_next_seq,
@@ -311,9 +300,7 @@ fn extract_saga_event_type_url(request: &SagaHandleRequest) -> Result<String, Cl
     let payload = match &page.payload {
         Some(crate::proto::event_page::Payload::Event(e)) => e,
         _ => {
-            return Err(ClientError::InvalidArgument(
-                "missing event payload".into(),
-            ));
+            return Err(ClientError::InvalidArgument("missing event payload".into()));
         }
     };
     Ok(payload.type_url.clone())
@@ -377,9 +364,7 @@ impl ProcessManagerRouter {
     }
 }
 
-fn extract_pm_event_type_url(
-    request: &ProcessManagerHandleRequest,
-) -> Result<String, ClientError> {
+fn extract_pm_event_type_url(request: &ProcessManagerHandleRequest) -> Result<String, ClientError> {
     let book = request
         .trigger
         .as_ref()

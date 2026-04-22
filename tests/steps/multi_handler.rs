@@ -334,9 +334,7 @@ async fn given_beta_incr_b(_world: &mut MultiHandlerWorld) {}
 #[given("a prior EventBook with [OrderCreated, OrderCreated, OrderCompleted]")]
 async fn given_prior_book_mixed(_world: &mut MultiHandlerWorld) {}
 
-#[given(
-    expr = "two sagas SagaA and SagaB both listening to source {string} for OrderCreated"
-)]
+#[given(expr = "two sagas SagaA and SagaB both listening to source {string} for OrderCreated")]
 async fn given_two_sagas(world: &mut MultiHandlerWorld, _src: String) {
     world.mode = Mode::Sagas;
 }
