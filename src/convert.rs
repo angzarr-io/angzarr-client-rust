@@ -33,16 +33,13 @@ pub fn type_url(type_name: &str) -> String {
     format!("{}{}", TYPE_URL_PREFIX, wire_name(type_name))
 }
 
-/// Extract the fully-qualified type name from a type URL.
+/// Extract the wire-format type name from a type URL.
 ///
-/// Returns the Rust-internal full name (e.g., "angzarr_client.proto.examples.PlayerRegistered").
-/// Input without a `/` is returned unchanged.
-pub fn type_name_from_url(type_url: &str) -> String {
-    match type_url.rsplit_once('/') {
-        None => type_url.to_string(),
-        Some((_, wire)) if wire.starts_with(INTERNAL_PACKAGE_PREFIX) => wire.to_string(),
-        Some((_, wire)) => format!("{}{}", INTERNAL_PACKAGE_PREFIX, wire),
-    }
+/// Returns the part after the last `/` (e.g., "examples.PlayerRegistered").
+/// Callers that need the Rust-internal name can prepend
+/// [`INTERNAL_PACKAGE_PREFIX`] or use [`wire_name`]'s inverse.
+pub fn type_name_from_url(type_url: &str) -> &str {
+    type_url.rsplit('/').next().unwrap_or(type_url)
 }
 
 /// Check if a type URL matches the given fully-qualified type name exactly.
@@ -184,7 +181,7 @@ mod tests {
     fn test_type_name_from_url() {
         assert_eq!(
             type_name_from_url("type.googleapis.com/examples.AddItemToCart"),
-            "angzarr_client.proto.examples.AddItemToCart"
+            "examples.AddItemToCart"
         );
         assert_eq!(type_name_from_url("AddItemToCart"), "AddItemToCart");
     }
