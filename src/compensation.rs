@@ -19,7 +19,7 @@
 //! }
 //! ```
 
-use crate::convert::TYPE_URL_PREFIX;
+use crate::convert::{wire_name, TYPE_URL_PREFIX};
 use crate::proto::{
     business_response, command_page, page_header, BusinessResponse, CommandBook, Cover, EventBook,
     Notification, RejectionNotification, RevocationResponse,
@@ -219,7 +219,7 @@ pub fn pm_emit_compensation_events(
 
 /// Check if a type URL refers to a rejection Notification.
 pub fn is_notification(type_url: &str) -> bool {
-    type_url == format!("{}{}", TYPE_URL_PREFIX, NOTIFICATION_TYPE_NAME)
+    type_url == format!("{}{}", TYPE_URL_PREFIX, wire_name(NOTIFICATION_TYPE_NAME))
 }
 
 #[cfg(test)]
