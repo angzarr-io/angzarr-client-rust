@@ -12,7 +12,7 @@ pub const UNKNOWN_DOMAIN: &str = "unknown";
 pub const PROJECTION_DOMAIN_PREFIX: &str = "_projection";
 
 /// Protobuf type URL for serialized Projection messages in synthetic event books.
-pub const PROJECTION_TYPE_URL: &str = "angzarr.Projection";
+pub const PROJECTION_TYPE_URL: &str = "angzarr_client.proto.angzarr.Projection";
 
 /// Wildcard domain for catch-all routing (matches any domain).
 pub const WILDCARD_DOMAIN: &str = "*";
@@ -22,9 +22,10 @@ pub const META_ANGZARR_DOMAIN: &str = "_angzarr";
 
 /// Default edition name for the main timeline.
 ///
-/// The canonical timeline is named "angzarr". Empty edition names are treated
-/// as equivalent to this value.
-pub const DEFAULT_EDITION: &str = "angzarr";
+/// The main timeline is represented by an empty string — no "angzarr"
+/// sentinel taking space in every row. Named editions use their own
+/// non-empty identifier.
+pub const DEFAULT_EDITION: &str = "";
 
 /// Type URL prefix for googleapis.com protobuf Any messages.
 ///

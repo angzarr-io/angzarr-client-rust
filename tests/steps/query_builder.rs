@@ -16,7 +16,7 @@ pub struct MockQueryClient {
 
 #[async_trait]
 impl QueryClientTrait for MockQueryClient {
-    async fn get_events(&self, query: Query) -> Result<EventBook> {
+    async fn get_event_book(&self, query: Query) -> Result<EventBook> {
         *self.last_query.lock().unwrap() = Some(query);
         Ok(EventBook::default())
     }
@@ -201,7 +201,7 @@ async fn when_build_query_last_wins(world: &mut QueryBuilderWorld) {
 #[when(expr = "I build and get_events for domain {string} root {string}")]
 async fn when_build_and_get_events(world: &mut QueryBuilderWorld, domain: String, root: String) {
     let uuid = Uuid::parse_str(&root).unwrap_or_else(|_| Uuid::new_v4());
-    let result = world.mock_client.query(&domain, uuid).get_events().await;
+    let result = world.mock_client.query(&domain, uuid).get_event_book().await;
     match result {
         Ok(book) => world.get_events_result = Some(book),
         Err(e) => world.build_error = Some(e),

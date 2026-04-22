@@ -27,7 +27,7 @@ use crate::proto::{
 use prost::Message;
 
 /// Fully-qualified proto type name for Notification.
-const NOTIFICATION_TYPE_NAME: &str = "angzarr.Notification";
+const NOTIFICATION_TYPE_NAME: &str = "angzarr_client.proto.angzarr.Notification";
 
 /// Parsed context from a rejection notification.
 ///
@@ -417,7 +417,7 @@ mod tests {
         assert!(!is_notification(
             "type.googleapis.com/angzarr.RejectionNotification"
         ));
-        assert!(!is_notification("angzarr.Notification"));
+        assert!(!is_notification("angzarr_client.proto.angzarr.Notification"));
         assert!(!is_notification(""));
     }
 }

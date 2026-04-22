@@ -25,17 +25,13 @@ impl ErrorHandlingWorld {
 
 #[given("the server is unreachable")]
 async fn given_server_unreachable(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::Connection {
-        msg: "connection refused".to_string(),
-    });
+    world.current_error = Some(ClientError::Connection("connection refused".to_string()));
 }
 
 #[given("the connection drops mid-request")]
 async fn given_connection_drops(world: &mut ErrorHandlingWorld) {
     // Simulate transport error with a mock error
-    world.current_error = Some(ClientError::Connection {
-        msg: "connection reset".to_string(),
-    });
+    world.current_error = Some(ClientError::Connection("connection reset".to_string()));
 }
 
 #[given("the server returns a gRPC error")]
@@ -83,9 +79,7 @@ async fn given_operation_timeout(world: &mut ErrorHandlingWorld) {
 
 #[given("any client error")]
 async fn given_any_client_error(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::Connection {
-        msg: "test error".to_string(),
-    });
+    world.current_error = Some(ClientError::Connection("test error".to_string()));
 }
 
 #[given(expr = "a gRPC error with status NOT_FOUND")]
@@ -96,9 +90,7 @@ async fn given_grpc_not_found(world: &mut ErrorHandlingWorld) {
 
 #[given("a connection error")]
 async fn given_connection_error(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::Connection {
-        msg: "connection failed".to_string(),
-    });
+    world.current_error = Some(ClientError::Connection("connection failed".to_string()));
 }
 
 #[given("a gRPC error with detailed status")]
@@ -109,9 +101,7 @@ async fn given_grpc_detailed_status(world: &mut ErrorHandlingWorld) {
 
 #[given("an invalid argument error")]
 async fn given_invalid_argument_error(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::InvalidArgument {
-        msg: "missing field".to_string(),
-    });
+    world.current_error = Some(ClientError::InvalidArgument("missing field".to_string()));
 }
 
 #[given("different error types")]
@@ -121,21 +111,15 @@ async fn given_different_error_types(world: &mut ErrorHandlingWorld) {
         ClientError::from(Status::failed_precondition("precondition failed")),
         ClientError::from(Status::invalid_argument("invalid")),
         ClientError::from(Status::internal("internal")),
-        ClientError::Connection {
-            msg: "connection".to_string(),
-        },
-        ClientError::InvalidArgument {
-            msg: "invalid arg".to_string(),
-        },
+        ClientError::Connection("connection".to_string()),
+        ClientError::InvalidArgument("invalid arg".to_string()),
     ];
 }
 
 #[given("various error types")]
 async fn given_various_error_types(world: &mut ErrorHandlingWorld) {
     world.error_variants = vec![
-        ClientError::Connection {
-            msg: "connection failed".to_string(),
-        },
+        ClientError::Connection("connection failed".to_string()),
         ClientError::from(Status::unavailable("service unavailable")),
         ClientError::from(Status::resource_exhausted("rate limited")),
         ClientError::from(Status::invalid_argument("bad input")),
@@ -173,16 +157,12 @@ async fn when_execute_mock_at_sequence(_world: &mut ErrorHandlingWorld, _seq: u3
 
 #[when("I build a command without required fields")]
 async fn when_build_without_required(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::InvalidArgument {
-        msg: "type_url not set".to_string(),
-    });
+    world.current_error = Some(ClientError::InvalidArgument("type_url not set".to_string()));
 }
 
 #[when("I build a query with invalid timestamp format")]
 async fn when_build_invalid_timestamp(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::InvalidTimestamp {
-        msg: "invalid format".to_string(),
-    });
+    world.current_error = Some(ClientError::InvalidTimestamp("invalid format".to_string()));
 }
 
 #[when("I send a malformed request to the server")]
@@ -231,7 +211,7 @@ async fn when_debug_format(_world: &mut ErrorHandlingWorld) {
 #[then("the error should be a connection error")]
 async fn then_is_connection_error(world: &mut ErrorHandlingWorld) {
     let err = world.current_error.as_ref().expect("no error");
-    assert!(matches!(err, ClientError::Connection { .. }));
+    assert!(matches!(err, ClientError::Connection(..)));
 }
 
 #[then("is_connection_error should return true")]
@@ -288,7 +268,7 @@ async fn then_message_describes_missing(world: &mut ErrorHandlingWorld) {
 #[then("the error should be an invalid timestamp error")]
 async fn then_is_invalid_timestamp(world: &mut ErrorHandlingWorld) {
     let err = world.current_error.as_ref().expect("no error");
-    assert!(matches!(err, ClientError::InvalidTimestamp { .. }));
+    assert!(matches!(err, ClientError::InvalidTimestamp(..)));
 }
 
 #[then("the error message should indicate the format problem")]
@@ -389,7 +369,7 @@ async fn then_get_none(world: &mut ErrorHandlingWorld) {
     // For connection errors, code() returns None
     if matches!(
         err,
-        ClientError::Connection { .. } | ClientError::InvalidArgument { .. }
+        ClientError::Connection(..) | ClientError::InvalidArgument(..)
     ) {
         assert!(err.code().is_none());
     }
@@ -424,7 +404,7 @@ async fn then_connection_has_is_not_found_false(world: &mut ErrorHandlingWorld) 
     let conn = world
         .error_variants
         .iter()
-        .find(|e| matches!(e, ClientError::Connection { .. }))
+        .find(|e| matches!(e, ClientError::Connection(..)))
         .expect("connection variant missing");
     assert!(!conn.is_not_found());
 }
@@ -464,7 +444,7 @@ async fn then_connection_precondition_false(world: &mut ErrorHandlingWorld) {
     let conn = world
         .error_variants
         .iter()
-        .find(|e| matches!(e, ClientError::Connection { .. }))
+        .find(|e| matches!(e, ClientError::Connection(..)))
         .expect("connection variant missing");
     assert!(!conn.is_precondition_failed());
 }
@@ -484,7 +464,7 @@ async fn then_client_error_invalid_argument_true(world: &mut ErrorHandlingWorld)
     let ia = world
         .error_variants
         .iter()
-        .find(|e| matches!(e, ClientError::InvalidArgument { .. }))
+        .find(|e| matches!(e, ClientError::InvalidArgument(..)))
         .expect("InvalidArgument variant missing");
     assert!(ia.is_invalid_argument());
 }
@@ -504,7 +484,7 @@ async fn then_connection_is_connection_true(world: &mut ErrorHandlingWorld) {
     let conn = world
         .error_variants
         .iter()
-        .find(|e| matches!(e, ClientError::Connection { .. }))
+        .find(|e| matches!(e, ClientError::Connection(..)))
         .expect("connection variant missing");
     assert!(conn.is_connection_error());
 }
@@ -515,7 +495,7 @@ async fn then_transport_is_connection_true(world: &mut ErrorHandlingWorld) {
     let conn = world
         .error_variants
         .iter()
-        .find(|e| matches!(e, ClientError::Connection { .. }))
+        .find(|e| matches!(e, ClientError::Connection(..)))
         .expect("connection variant missing");
     assert!(conn.is_connection_error());
 }
@@ -535,7 +515,7 @@ async fn then_connection_retryable(world: &mut ErrorHandlingWorld) {
     let conn = world
         .error_variants
         .iter()
-        .find(|e| matches!(e, ClientError::Connection { .. }))
+        .find(|e| matches!(e, ClientError::Connection(..)))
         .expect("connection variant missing");
     // Connection errors are typically retryable
     assert!(conn.is_connection_error());

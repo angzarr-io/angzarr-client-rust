@@ -1,0 +1,15 @@
+error[E0061]: this function takes 4 arguments but 2 arguments were supplied
+  --> tests/router/ui/method_stack_handles_applies.rs:20:1
+   |
+20 | #[aggregate(domain = "x", state = State)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | |
+   | argument #1 of type `&T` is missing
+   | argument #4 of type `u32` is missing
+   |
+note: method defined here
+  --> tests/router/ui/method_stack_handles_applies.rs:24:8
+   |
+24 |     fn handle_create(&self, _cmd: Cmd, _state: &State, _seq: u32) -> CommandResult<EventBook> {
+   |        ^^^^^^^^^^^^^ -----                             ---------
+   = note: this error originates in the attribute macro `aggregate` (in Nightly builds, run with -Z macro-backtrace for more info)

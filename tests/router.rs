@@ -1,34 +1,19 @@
 //! Integration tests for the Tier 5 unified `Router`.
-
-#[path = "router/builder.rs"]
-mod builder;
+//!
+//! Runtime behavior (builder, dispatch, state rebuild, multi-handler, sequence,
+//! rejection) is covered by the gherkin acceptance tier in `tests/features.rs`
+//! against `angzarr-project/features/client/*.feature`. The modules below cover
+//! what gherkin cannot:
+//!
+//! - `decorators` — proc-macro expansion metadata (declaration order, config
+//!   shape). Language-specific; not a cross-language contract.
+//! - `stacking` — compile-fail assertions for kind-macro stacking and
+//!   non-`Handler` `with_handler` arguments. trybuild-driven.
+//! - `validation` — compile-fail assertions for macros missing required
+//!   attributes. trybuild-driven.
 
 #[path = "router/decorators.rs"]
 mod decorators;
-
-#[path = "router/dispatch_command_handler.rs"]
-mod dispatch_command_handler;
-
-#[path = "router/state_rebuild.rs"]
-mod state_rebuild;
-
-#[path = "router/multi_handler.rs"]
-mod multi_handler;
-
-#[path = "router/sequence.rs"]
-mod sequence;
-
-#[path = "router/rejection.rs"]
-mod rejection;
-
-#[path = "router/dispatch_saga.rs"]
-mod dispatch_saga;
-
-#[path = "router/dispatch_pm.rs"]
-mod dispatch_pm;
-
-#[path = "router/dispatch_projector.rs"]
-mod dispatch_projector;
 
 #[path = "router/stacking.rs"]
 mod stacking;

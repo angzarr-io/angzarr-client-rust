@@ -4,4 +4,4 @@
 //! `tonic_prost_build` during `cargo build`. Includes message types
 //! (Cover, EventBook, CommandBook, etc.) and gRPC client/server stubs.
 
-tonic::include_proto!("angzarr");
+tonic::include_proto!("angzarr_client.proto.angzarr");

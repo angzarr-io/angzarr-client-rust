@@ -15,7 +15,7 @@ pub const TYPE_URL_PREFIX: &str = "type.googleapis.com/";
 /// # Examples
 /// ```
 /// use angzarr_client::convert::type_url;
-/// assert_eq!(type_url("examples.AddItemToCart"), "type.googleapis.com/examples.AddItemToCart");
+/// assert_eq!(type_url("angzarr_client.proto.examples.AddItemToCart"), "type.googleapis.com/examples.AddItemToCart");
 /// ```
 pub fn type_url(type_name: &str) -> String {
     format!("{}{}", TYPE_URL_PREFIX, type_name)
@@ -23,7 +23,7 @@ pub fn type_url(type_name: &str) -> String {
 
 /// Extract the fully-qualified type name from a type URL.
 ///
-/// Returns the part after the last `/` (e.g., "examples.PlayerRegistered").
+/// Returns the part after the last `/` (e.g., "angzarr_client.proto.examples.PlayerRegistered").
 pub fn type_name_from_url(type_url: &str) -> &str {
     type_url.rsplit('/').next().unwrap_or(type_url)
 }
@@ -35,7 +35,7 @@ pub fn type_name_from_url(type_url: &str) -> &str {
 /// use angzarr_client::convert::type_url_matches_exact;
 /// assert!(type_url_matches_exact(
 ///     "type.googleapis.com/examples.PlayerRegistered",
-///     "examples.PlayerRegistered"
+///     "angzarr_client.proto.examples.PlayerRegistered"
 /// ));
 /// ```
 pub fn type_url_matches_exact(type_url: &str, full_type_name: &str) -> bool {
@@ -159,7 +159,7 @@ mod tests {
     #[test]
     fn test_type_url() {
         assert_eq!(
-            type_url("examples.AddItemToCart"),
+            type_url("angzarr_client.proto.examples.AddItemToCart"),
             "type.googleapis.com/examples.AddItemToCart"
         );
     }
@@ -168,7 +168,7 @@ mod tests {
     fn test_type_name_from_url() {
         assert_eq!(
             type_name_from_url("type.googleapis.com/examples.AddItemToCart"),
-            "examples.AddItemToCart"
+            "angzarr_client.proto.examples.AddItemToCart"
         );
         assert_eq!(type_name_from_url("AddItemToCart"), "AddItemToCart");
     }
@@ -177,11 +177,11 @@ mod tests {
     fn test_type_url_matches_exact() {
         assert!(type_url_matches_exact(
             "type.googleapis.com/examples.AddItemToCart",
-            "examples.AddItemToCart"
+            "angzarr_client.proto.examples.AddItemToCart"
         ));
         assert!(!type_url_matches_exact(
             "type.googleapis.com/examples.AddItemToCart",
-            "examples.RemoveItem"
+            "angzarr_client.proto.examples.RemoveItem"
         ));
         // Suffix matching should NOT work with exact matching
         assert!(!type_url_matches_exact(

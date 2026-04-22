@@ -8,16 +8,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Proto generation from angzarr-project submodule
     let proto_files = [
-        "angzarr-project/proto/angzarr/types.proto",
-        "angzarr-project/proto/angzarr/command_handler.proto",
-        "angzarr-project/proto/angzarr/projector.proto",
-        "angzarr-project/proto/angzarr/saga.proto",
-        "angzarr-project/proto/angzarr/process_manager.proto",
-        "angzarr-project/proto/angzarr/query.proto",
-        "angzarr-project/proto/angzarr/stream.proto",
-        "angzarr-project/proto/angzarr/upcaster.proto",
-        "angzarr-project/proto/angzarr/meta.proto",
-        "angzarr-project/proto/angzarr/cloudevents.proto",
+        "angzarr-project/proto/angzarr_client/proto/angzarr/types.proto",
+        "angzarr-project/proto/angzarr_client/proto/angzarr/command_handler.proto",
+        "angzarr-project/proto/angzarr_client/proto/angzarr/projector.proto",
+        "angzarr-project/proto/angzarr_client/proto/angzarr/saga.proto",
+        "angzarr-project/proto/angzarr_client/proto/angzarr/process_manager.proto",
+        "angzarr-project/proto/angzarr_client/proto/angzarr/query.proto",
+        "angzarr-project/proto/angzarr_client/proto/angzarr/stream.proto",
+        "angzarr-project/proto/angzarr_client/proto/angzarr/upcaster.proto",
+        "angzarr-project/proto/angzarr_client/proto/angzarr/meta.proto",
+        "angzarr-project/proto/angzarr_client/proto/angzarr/cloudevents.proto",
     ];
     for file in &proto_files {
         println!("cargo:rerun-if-changed={}", file);
@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_server(true)
         .build_client(true)
         .type_attribute(
-            ".angzarr.BusinessResponse.result",
+            ".angzarr_client.proto.angzarr.BusinessResponse.result",
             "#[allow(clippy::large_enum_variant)]",
         )
         .compile_with_config(
