@@ -37,7 +37,7 @@ pub const NOOP: &str = "type.angzarr.io/angzarr.NoOp";
 ///
 /// # Example
 /// ```
-/// use angzarr::proto_ext::type_url;
+/// use angzarr_client::proto_ext::type_url;
 /// assert_eq!(type_url::for_type("angzarr_client.proto.examples.OrderCreated"), "type.angzarr.io/examples.OrderCreated");
 /// ```
 pub fn for_type(message_type: &str) -> String {
@@ -49,7 +49,7 @@ pub fn for_type(message_type: &str) -> String {
 ///
 /// # Example
 /// ```
-/// use angzarr::proto_ext::type_url;
+/// use angzarr_client::proto_ext::type_url;
 /// assert_eq!(type_url::strip_prefix("type.angzarr.io/examples.OrderCreated"), "angzarr_client.proto.examples.OrderCreated");
 /// ```
 pub fn strip_prefix(type_url: &str) -> String {
