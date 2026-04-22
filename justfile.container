@@ -9,19 +9,12 @@ ROOT := `git rev-parse --show-toplevel`
 default:
     @just --list
 
-# Generate Rust code from protos via buf
-gen:
-    @echo "Generating Rust code from buf.build/angzarr/angzarr..."
-    rm -rf src/proto/gen
-    buf generate
-    @echo "Generated to src/proto/gen/"
-
-# Build all workspace crates (generates protos first)
-build: gen
+# Build all workspace crates (build.rs generates protos via prost/tonic)
+build:
     cargo build --workspace
 
 # Run all tests (lib tests only, no doc tests)
-test: gen
+test:
     cargo test --workspace --lib
 
 # Run clippy linter
@@ -38,6 +31,8 @@ fmt-fix:
 
 # Run all checks (build + test + lint + fmt)
 check-all: build test lint fmt
+
+
 
 # === Additional Targets ===
 
