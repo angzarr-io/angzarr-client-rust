@@ -1,0 +1,53 @@
+name: Mutation Test
+
+on:
+  schedule:
+    # Weekly, Monday 06:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  mutation-test:
+    name: Mutation Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install buf CLI
+        uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
+      - name: Install protoc plugins
+        run: cargo install protoc-gen-prost protoc-gen-tonic
+
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Mutation test
+        run: just -f justfile.container mutation-test
