@@ -137,7 +137,7 @@ pub async fn run_command_handler_server(
 ///
 /// #[tokio::main]
 /// async fn main() {
-///     let router = SagaRouter::new("saga-order-fulfillment", "order", OrderHandler::new());
+///     let router = SagaRouter::new("saga-order-fulfillment", "order", "fulfillment", OrderHandler::new());
 ///
 ///     run_saga_server("saga-order-fulfillment", 50010, router).await;
 /// }
