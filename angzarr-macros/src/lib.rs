@@ -42,7 +42,7 @@
 //! ```rust,ignore
 //! use angzarr_macros::{saga, handles};
 //!
-//! #[saga(name = "saga-order-fulfillment", input = "order")]
+//! #[saga(name = "saga-order-fulfillment", input = "order", output = "fulfillment")]
 //! impl OrderFulfillmentSaga {
 //!     #[handles(OrderCompleted)]
 //!     fn handle_completed(&self, event: OrderCompleted, source: &EventBook)
@@ -403,7 +403,7 @@ pub fn applies(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Example
 /// ```rust,ignore
-/// #[saga(name = "saga-order-fulfillment", input = "order")]
+/// #[saga(name = "saga-order-fulfillment", input = "order", output = "fulfillment")]
 /// impl OrderFulfillmentSaga {
 ///     #[handles(OrderCompleted)]
 ///     fn handle_completed(&self, event: OrderCompleted, source: &EventBook)
@@ -425,12 +425,14 @@ pub fn saga(attr: TokenStream, item: TokenStream) -> TokenStream {
 struct SagaArgs {
     name: String,
     input: String,
+    output: String,
 }
 
 impl syn::parse::Parse for SagaArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut name = None;
         let mut input_domain = None;
+        let mut output_domain = None;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -440,6 +442,7 @@ impl syn::parse::Parse for SagaArgs {
             match ident.to_string().as_str() {
                 "name" => name = Some(value.value()),
                 "input" => input_domain = Some(value.value()),
+                "output" => output_domain = Some(value.value()),
                 _ => return Err(syn::Error::new(ident.span(), "unknown attribute")),
             }
 
@@ -455,6 +458,9 @@ impl syn::parse::Parse for SagaArgs {
             input: input_domain.ok_or_else(|| {
                 syn::Error::new(proc_macro2::Span::call_site(), "input is required")
             })?,
+            output: output_domain.ok_or_else(|| {
+                syn::Error::new(proc_macro2::Span::call_site(), "output is required")
+            })?,
         })
     }
 }
@@ -462,6 +468,7 @@ impl syn::parse::Parse for SagaArgs {
 fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
     let name = &args.name;
     let input_domain = &args.input;
+    let output_domain = &args.output;
     let self_ty = &input.self_ty;
 
     // Collect handler methods
@@ -559,7 +566,7 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
             where
                 Self: Send + Sync + 'static,
             {
-                angzarr_client::SagaRouter::new(#name, #input_domain, #handler_name::new(self))
+                angzarr_client::SagaRouter::new(#name, #input_domain, #output_domain, #handler_name::new(self))
             }
 
             /// Creates a SagaRouter using a factory (higher-order function).
@@ -582,6 +589,7 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
                 angzarr_client::SagaRouter::with_factory(
                     #name,
                     #input_domain,
+                    #output_domain,
                     move || #handler_name::new(factory())
                 )
             }

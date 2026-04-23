@@ -40,8 +40,8 @@ default:
     @just --list
 
 # Generate Rust code from protos via buf
-gen:
-    just _container gen
+proto:
+    just _container proto
 
 # Build Rust client (release)
 build:
@@ -82,3 +82,7 @@ publish-dry:
 # Publish to crates.io
 publish:
     just _container publish
+
+# Auto-format code
+fmt-fix:
+    just _container fmt-fix

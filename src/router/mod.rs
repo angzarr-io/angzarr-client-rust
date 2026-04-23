@@ -357,6 +357,7 @@ fn dispatch_command_handler_notification<S: Default + 'static>(
 /// let router = SagaRouter::with_factory(
 ///     "saga-order-fulfillment",
 ///     "order",
+///     "fulfillment",
 ///     move || OrderFulfillmentHandler::new(message_bus.clone())
 /// );
 /// ```
@@ -366,6 +367,7 @@ where
 {
     name: String,
     domain: String,
+    target_domain: String,
     storage: HandlerStorage<H>,
 }
 
@@ -375,10 +377,16 @@ impl<H: SagaDomainHandler + Clone> SagaRouter<H> {
     ///
     /// Sagas translate events from one domain to commands for another.
     /// Single domain enforced at construction. Requires `Clone` on the handler type.
-    pub fn new(name: impl Into<String>, domain: impl Into<String>, handler: H) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        domain: impl Into<String>,
+        target_domain: impl Into<String>,
+        handler: H,
+    ) -> Self {
         Self {
             name: name.into(),
             domain: domain.into(),
+            target_domain: target_domain.into(),
             storage: HandlerStorage::Static(handler),
         }
     }
@@ -398,16 +406,23 @@ impl<H: SagaDomainHandler> SagaRouter<H> {
     /// let router = SagaRouter::with_factory(
     ///     "saga-order-fulfillment",
     ///     "order",
+    ///     "fulfillment",
     ///     move || OrderFulfillmentHandler::new(message_bus.clone())
     /// );
     /// ```
-    pub fn with_factory<F>(name: impl Into<String>, domain: impl Into<String>, factory: F) -> Self
+    pub fn with_factory<F>(
+        name: impl Into<String>,
+        domain: impl Into<String>,
+        target_domain: impl Into<String>,
+        factory: F,
+    ) -> Self
     where
         F: Fn() -> H + Send + Sync + 'static,
     {
         Self {
             name: name.into(),
             domain: domain.into(),
+            target_domain: target_domain.into(),
             storage: HandlerStorage::Factory(Arc::new(factory)),
         }
     }
@@ -420,6 +435,11 @@ impl<H: SagaDomainHandler> SagaRouter<H> {
     /// Get the input domain.
     pub fn input_domain(&self) -> &str {
         &self.domain
+    }
+
+    /// Get the target domain (where commands are sent).
+    pub fn target_domain(&self) -> &str {
+        &self.target_domain
     }
 
     /// Get event types from the handler.
