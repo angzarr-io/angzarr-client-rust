@@ -1,0 +1,7 @@
+error: target is required
+ --> tests/router/ui/saga_without_target.rs:7:1
+  |
+7 | #[saga(name = "s", source = "a")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `saga` (in Nightly builds, run with -Z macro-backtrace for more info)

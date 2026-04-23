@@ -13,7 +13,9 @@ use crate::proto::{
     ProcessManagerHandleResponse, Projection, Query, SagaResponse, SpeculateCommandHandlerRequest,
     SpeculatePmRequest, SpeculateProjectorRequest, SpeculateSagaRequest, SyncMode,
 };
+use crate::retry::RetryPolicy;
 use crate::traits;
+use crate::transport::{resolve_ch_endpoint, TransportMode};
 use async_trait::async_trait;
 use backon::{BackoffBuilder, ExponentialBuilder};
 use tonic::transport::{Channel, Endpoint, Uri};
@@ -24,20 +26,22 @@ use tracing::warn;
 /// Supports both TCP (host:port or http://host:port) and Unix Domain Sockets.
 /// UDS paths are detected by leading '/' or './' and use a custom connector.
 ///
-/// Retries connection with exponential backoff (100ms-5s, 10 attempts) on failure.
-async fn create_channel(endpoint: &str) -> Result<Channel> {
+/// Retries connection with the provided `RetryPolicy` on failure.
+async fn create_channel(endpoint: &str, retry: &RetryPolicy) -> Result<Channel> {
     let uds_path = if endpoint.starts_with('/') || endpoint.starts_with("./") {
         Some(endpoint.to_string())
     } else {
         endpoint.strip_prefix("unix://").map(str::to_string)
     };
 
-    let backoff = ExponentialBuilder::default()
-        .with_min_delay(Duration::from_millis(100))
-        .with_max_delay(Duration::from_secs(5))
-        .with_max_times(10)
-        .with_jitter()
-        .build();
+    let mut builder = ExponentialBuilder::default()
+        .with_min_delay(retry.min_delay)
+        .with_max_delay(retry.max_delay)
+        .with_max_times(retry.max_attempts.saturating_sub(1) as usize);
+    if retry.jitter {
+        builder = builder.with_jitter();
+    }
+    let backoff = builder.build();
 
     let mut last_error: Option<ClientError> = None;
 
@@ -103,7 +107,12 @@ impl QueryClient {
     ///
     /// Supports both TCP (host:port) and Unix Domain Sockets (file paths).
     pub async fn connect(endpoint: &str) -> Result<Self> {
-        let channel = create_channel(endpoint).await?;
+        Self::connect_with_retry(endpoint, &RetryPolicy::default()).await
+    }
+
+    /// Connect with a custom retry policy.
+    pub async fn connect_with_retry(endpoint: &str, retry: &RetryPolicy) -> Result<Self> {
+        let channel = create_channel(endpoint, retry).await?;
         Ok(Self::from_channel(channel))
     }
 
@@ -120,17 +129,53 @@ impl QueryClient {
         }
     }
 
-    /// Query events for an aggregate.
-    pub async fn get_events(&self, query: Query) -> Result<EventBook> {
+    /// Explicitly release this client's channel handle.
+    ///
+    /// Equivalent to letting the client drop; provided for symmetry with the
+    /// synchronous client libraries (Java/C#/Python/C++/Go) where explicit
+    /// close is idiomatic. If other clones hold the same channel, the
+    /// connection stays open until the last reference drops.
+    pub fn close(self) {
+        drop(self);
+    }
+
+    /// Query events for an aggregate (unary RPC, returns single EventBook).
+    ///
+    /// # Cancellation
+    /// This is an `async fn`; cancel by dropping the returned future (e.g. via
+    /// `tokio::select!`, `tokio::time::timeout`, or letting a higher-level
+    /// `CancellationToken` abort the task). There is no explicit cancellation
+    /// parameter — dropping the future releases the RPC slot. This matches the
+    /// per-call cancellation APIs exposed by the other clients:
+    ///
+    /// - Go: `context.Context` argument
+    /// - Java: `Duration timeout` overload via `stub.withDeadlineAfter(...)`
+    /// - C#: `CancellationToken` parameter
+    /// - C++: `std::chrono::milliseconds deadline` parameter
+    /// - Python: `timeout: float | None` kwarg
+    pub async fn get_event_book(&self, query: Query) -> Result<EventBook> {
         let response = self.inner.clone().get_event_book(query).await?;
         Ok(response.into_inner())
+    }
+
+    /// Query events for an aggregate (streaming RPC, returns all matching EventBooks).
+    ///
+    /// Uses the streaming `GetEvents` RPC to fetch multiple EventBooks.
+    /// For a single EventBook, use `get_event_book()` instead.
+    pub async fn get_events(&self, query: Query) -> Result<Vec<EventBook>> {
+        let mut stream = self.inner.clone().get_events(query).await?.into_inner();
+        let mut results = Vec::new();
+        while let Some(book) = stream.message().await? {
+            results.push(book);
+        }
+        Ok(results)
     }
 }
 
 #[async_trait]
 impl traits::QueryClient for QueryClient {
-    async fn get_events(&self, query: Query) -> Result<EventBook> {
-        self.get_events(query).await
+    async fn get_event_book(&self, query: Query) -> Result<EventBook> {
+        self.get_event_book(query).await
     }
 }
 
@@ -145,7 +190,12 @@ impl CommandHandlerClient {
     ///
     /// Supports both TCP (host:port) and Unix Domain Sockets (file paths).
     pub async fn connect(endpoint: &str) -> Result<Self> {
-        let channel = create_channel(endpoint).await?;
+        Self::connect_with_retry(endpoint, &RetryPolicy::default()).await
+    }
+
+    /// Connect with a custom retry policy.
+    pub async fn connect_with_retry(endpoint: &str, retry: &RetryPolicy) -> Result<Self> {
+        let channel = create_channel(endpoint, retry).await?;
         Ok(Self::from_channel(channel))
     }
 
@@ -160,6 +210,15 @@ impl CommandHandlerClient {
         Self {
             inner: TonicCommandHandlerClient::new(channel),
         }
+    }
+
+    /// Explicitly release this client's channel handle.
+    ///
+    /// Equivalent to letting the client drop; provided for symmetry with the
+    /// synchronous client libraries. If other clones hold the same channel,
+    /// the connection stays open until the last reference drops.
+    pub fn close(self) {
+        drop(self);
     }
 
     /// Execute a command with specified sync mode.
@@ -225,7 +284,12 @@ impl DomainClient {
     ///
     /// Supports both TCP (host:port) and Unix Domain Sockets (file paths).
     pub async fn connect(endpoint: &str) -> Result<Self> {
-        let channel = create_channel(endpoint).await?;
+        Self::connect_with_retry(endpoint, &RetryPolicy::default()).await
+    }
+
+    /// Connect with a custom retry policy.
+    pub async fn connect_with_retry(endpoint: &str, retry: &RetryPolicy) -> Result<Self> {
+        let channel = create_channel(endpoint, retry).await?;
         Ok(Self::from_channel(channel))
     }
 
@@ -235,6 +299,25 @@ impl DomainClient {
         Self::connect(&endpoint).await
     }
 
+    /// Connect to a domain's coordinator by name.
+    ///
+    /// Resolves `domain` to an endpoint via `resolve_ch_endpoint(domain, mode)`
+    /// and connects. Pass `None` for `mode` to auto-detect from the
+    /// `ANGZARR_MODE` env var.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// // Auto-detect from ANGZARR_MODE
+    /// let player = DomainClient::for_domain("player", None).await?;
+    ///
+    /// // Explicit mode
+    /// let player = DomainClient::for_domain("player", Some(TransportMode::Standalone)).await?;
+    /// ```
+    pub async fn for_domain(domain: &str, mode: Option<TransportMode>) -> Result<Self> {
+        Self::connect(&resolve_ch_endpoint(domain, mode)).await
+    }
+
     /// Create a client from an existing channel.
     pub fn from_channel(channel: Channel) -> Self {
         Self {
@@ -242,6 +325,14 @@ impl DomainClient {
             query: QueryClient::from_channel(channel.clone()),
             speculative: SpeculativeClient::from_channel(channel),
         }
+    }
+
+    /// Explicitly release this client's channel handle.
+    ///
+    /// Equivalent to letting the client drop; provided for symmetry with the
+    /// synchronous client libraries.
+    pub fn close(self) {
+        drop(self);
     }
 
     /// Execute a command asynchronously (fire-and-forget).
@@ -271,8 +362,13 @@ impl DomainClient {
             .await
     }
 
-    /// Query events (delegates to query client).
-    pub async fn get_events(&self, query: Query) -> Result<EventBook> {
+    /// Query events — unary RPC returning single EventBook (delegates to query client).
+    pub async fn get_event_book(&self, query: Query) -> Result<EventBook> {
+        self.query.get_event_book(query).await
+    }
+
+    /// Query events — streaming RPC returning all matching EventBooks (delegates to query client).
+    pub async fn get_events(&self, query: Query) -> Result<Vec<EventBook>> {
         self.query.get_events(query).await
     }
 }
@@ -286,8 +382,8 @@ impl traits::GatewayClient for DomainClient {
 
 #[async_trait]
 impl traits::QueryClient for DomainClient {
-    async fn get_events(&self, query: Query) -> Result<EventBook> {
-        self.get_events(query).await
+    async fn get_event_book(&self, query: Query) -> Result<EventBook> {
+        self.get_event_book(query).await
     }
 }
 
@@ -308,7 +404,12 @@ impl SpeculativeClient {
     ///
     /// Supports both TCP (host:port) and Unix Domain Sockets (file paths).
     pub async fn connect(endpoint: &str) -> Result<Self> {
-        let channel = create_channel(endpoint).await?;
+        Self::connect_with_retry(endpoint, &RetryPolicy::default()).await
+    }
+
+    /// Connect with a custom retry policy.
+    pub async fn connect_with_retry(endpoint: &str, retry: &RetryPolicy) -> Result<Self> {
+        let channel = create_channel(endpoint, retry).await?;
         Ok(Self::from_channel(channel))
     }
 
@@ -326,6 +427,14 @@ impl SpeculativeClient {
             saga: TonicSagaClient::new(channel.clone()),
             pm: TonicPmClient::new(channel),
         }
+    }
+
+    /// Explicitly release this client's channel handle.
+    ///
+    /// Equivalent to letting the client drop; provided for symmetry with the
+    /// synchronous client libraries.
+    pub fn close(self) {
+        drop(self);
     }
 }
 

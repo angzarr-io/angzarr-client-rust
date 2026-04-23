@@ -1,6 +1,5 @@
 [workspace]
 members = [".", "angzarr-macros"]
-exclude = ["angzarr-core"]
 resolver = "2"
 
 [package]
@@ -15,10 +14,6 @@ keywords = ["cqrs", "event-sourcing", "grpc", "client"]
 categories = ["network-programming", "asynchronous"]
 
 [dependencies]
-# Core framework (proto types, extension traits, client trait definitions)
-# Resolved to local submodule via [patch] in .cargo/config.toml
-angzarr = { git = "https://github.com/angzarr-io/angzarr.git", tag = "v0.5.0" }
-
 # Macros (re-exported for convenience)
 angzarr-macros = { version = "0.1.0", path = "angzarr-macros" }
 
@@ -48,9 +43,14 @@ serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 tonic-prost = "0.14.5"
 
+[build-dependencies]
+tonic-prost-build = "0.14"
+prost-build = "0.14"
+
 [dev-dependencies]
 cucumber = "0.21"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+trybuild = "1"
 
 [[test]]
 name = "features"

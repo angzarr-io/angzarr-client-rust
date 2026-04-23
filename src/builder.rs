@@ -140,7 +140,7 @@ impl<'a, C: traits::QueryClient> QueryBuilder<'a, C> {
     }
 
     /// Query events from a specific edition (diverged timeline).
-    pub fn edition(mut self, edition: impl Into<String>) -> Self {
+    pub fn with_edition(mut self, edition: impl Into<String>) -> Self {
         self.edition = Some(edition.into());
         self
     }
@@ -194,27 +194,30 @@ impl<'a, C: traits::QueryClient> QueryBuilder<'a, C> {
         }
     }
 
-    /// Execute the query and return the EventBook.
-    pub async fn get_events(self) -> Result<EventBook> {
+    /// Execute the query and return a single EventBook (unary RPC).
+    pub async fn get_event_book(self) -> Result<EventBook> {
         let client = self.client;
         let query = self.build_inner();
-        client.get_events(query).await
+        client.get_event_book(query).await
     }
 
     /// Execute the query and return just the event pages.
     pub async fn get_pages(self) -> Result<Vec<EventPage>> {
-        let client = self.client;
-        let query = self.build_inner();
-        let event_book = client.get_events(query).await?;
+        let event_book = self.get_event_book().await?;
         Ok(event_book.pages)
     }
 }
 
 /// Extension trait for creating command builders.
 pub trait CommandBuilderExt: traits::GatewayClient + Sized {
-    /// Start building a command for the given domain and root.
+    /// Start building a command for an existing aggregate.
     fn command(&self, domain: impl Into<String>, root: Uuid) -> CommandBuilder<'_, Self> {
         CommandBuilder::new(self, domain, root)
+    }
+
+    /// Start building a command for a new aggregate (random root UUID).
+    fn command_new(&self, domain: impl Into<String>) -> CommandBuilder<'_, Self> {
+        CommandBuilder::new(self, domain, Uuid::new_v4())
     }
 }
 
@@ -277,7 +280,7 @@ mod tests {
 
     #[async_trait]
     impl traits::QueryClient for MockQueryClient {
-        async fn get_events(&self, _query: Query) -> Result<EventBook> {
+        async fn get_event_book(&self, _query: Query) -> Result<EventBook> {
             Ok(self.event_book.clone())
         }
     }
@@ -465,7 +468,7 @@ mod tests {
         let client = MockQueryClient {
             event_book: EventBook::default(),
         };
-        let builder = QueryBuilder::new(&client, "orders", None).edition("test-edition");
+        let builder = QueryBuilder::new(&client, "orders", None).with_edition("test-edition");
 
         assert_eq!(builder.edition, Some("test-edition".to_string()));
     }
@@ -553,7 +556,7 @@ mod tests {
         };
         let root = Uuid::new_v4();
         let query = QueryBuilder::new(&client, "orders", Some(root))
-            .edition("test-edition")
+            .with_edition("test-edition")
             .range(10)
             .build();
 

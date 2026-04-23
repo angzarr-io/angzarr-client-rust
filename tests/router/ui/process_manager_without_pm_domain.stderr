@@ -1,0 +1,7 @@
+error: pm_domain is required
+ --> tests/router/ui/process_manager_without_pm_domain.rs:9:1
+  |
+9 | #[process_manager(name = "pm", sources = ["a"], targets = ["b"], state = State)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `process_manager` (in Nightly builds, run with -Z macro-backtrace for more info)

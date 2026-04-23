@@ -1,0 +1,7 @@
+error: sources is required
+ --> tests/router/ui/process_manager_without_sources.rs:9:1
+  |
+9 | #[process_manager(name = "pm", pm_domain = "d", targets = ["b"], state = State)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `process_manager` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -58,24 +58,35 @@ pub const VERSION: &str = env!("ANGZARR_CLIENT_VERSION");
 
 pub mod builder;
 pub mod client;
+pub mod compensation;
 pub mod convert;
 pub mod error;
 pub mod handler;
 #[path = "proto.rs"]
 pub mod proto;
-#[path = "proto_ext.rs"]
 pub mod proto_ext;
+pub mod retry;
 pub mod router;
 pub mod server;
 pub mod traits;
+pub mod transport;
 pub mod validation;
 
 // Re-export main types at crate root
 pub use client::{CommandHandlerClient, DomainClient, QueryClient, SpeculativeClient};
-pub use error::{ClientError, Result};
+pub use error::{ClientError, CommandRejectedError, CommandResult, Result};
+pub use retry::{default_retry_policy, RetryPolicy};
+pub use transport::{resolve_ch_endpoint, TransportMode};
 
 // Re-export builder extension traits for fluent API
 pub use builder::{CommandBuilderExt, QueryBuilderExt};
+
+// Re-export compensation helpers
+pub use compensation::{
+    delegate_to_framework, delegate_to_framework_with_options, emit_compensation_events,
+    is_notification, pm_delegate_to_framework, pm_emit_compensation_events, CompensationContext,
+    PMRevocationResponse,
+};
 
 // Re-export helpers
 pub use builder::{decode_event, events_from_response, root_from_cover};
@@ -90,7 +101,7 @@ pub use proto_ext::{
     UuidExt,
 };
 
-// Re-export router types
+// Re-export Tier 5 unified router surface
 pub use router::{
     // Helper functions
     event_book_from,
@@ -98,67 +109,37 @@ pub use router::{
     new_event_book,
     new_event_book_multi,
     pack_event,
-    // Factory support for per-request handlers and HOF
-    BoxedHandlerFactory,
-    // Upcaster types
+    // Upcaster types (separate system, retained)
     BoxedUpcasterHandler,
-    // CloudEvents types
-    CloudEventsHandler,
-    CloudEventsProjector,
-    CloudEventsRouter,
-    // Handler traits
-    CommandHandlerDomainHandler,
-    // Mode markers
-    CommandHandlerMode,
-    // Router types
-    CommandHandlerRouter,
-    // Error types
-    CommandRejectedError,
-    CommandResult,
-    // State management
+    // Tier 5 unified Handler contract
+    BuildError,
+    Built,
+    // Destination-sequence stamping for saga/PM outbound commands
     Destinations,
-    EventApplier,
-    EventApplierHOF,
-    HandlerFactory,
-    HandlerHOF,
-    // Process Manager types
-    ProcessManagerDomainHandler,
-    ProcessManagerMode,
-    ProcessManagerResponse,
-    ProcessManagerRouter,
-    // Projector types
-    ProjectorDomainHandler,
-    ProjectorMode,
-    ProjectorRouter,
-    RejectionHandlerResponse,
-    // Saga types
-    SagaContext,
-    SagaDomainHandler,
-    SagaHandlerResponse,
-    SagaMode,
-    SagaRouter,
-    StateFactory,
-    StateRouter,
-    UnpackAny,
+    Handler,
+    HandlerConfig,
+    HandlerKind,
+    HandlerRequest,
+    HandlerResponse,
+    Kind,
+    // Builder
+    Router,
     UpcasterHandler,
     UpcasterHandlerHOF,
     UpcasterMode,
     UpcasterRouter,
 };
 
-// Note: dispatch_command! and dispatch_event! macros are available at crate root
-// via #[macro_export] in router/dispatch.rs
-
 // Re-export handler types
 pub use handler::{
-    CloudEventsGrpcHandler, CommandHandlerGrpc, ProcessManagerGrpcHandler, ProjectorHandler,
-    SagaHandler, StatePacker, UpcasterGrpcHandler, UpcasterHandleClosureFn, UpcasterHandleFn,
+    CommandHandlerGrpc, ProcessManagerGrpcHandler, ProjectorHandler, SagaHandler, StatePacker,
+    UpcasterGrpcHandler, UpcasterHandleClosureFn, UpcasterHandleFn,
 };
 
 // Re-export server utilities
 pub use server::{
-    run_cloudevents_projector, run_command_handler_server, run_process_manager_server,
-    run_projector_server, run_saga_server, run_upcaster_server, ServerConfig,
+    run_command_handler_server, run_process_manager_server, run_projector_server, run_saga_server,
+    run_upcaster_server, ServerConfig,
 };
 
 // Re-export validation helpers
@@ -167,7 +148,5 @@ pub use validation::{
     require_not_exists, require_positive, require_status, require_status_not,
 };
 
-// Re-export proc macros for OO-style component definitions
-pub use angzarr_macros::{
-    aggregate, applies, handles, prepares, process_manager, projector, projects, rejected, saga,
-};
+// Re-export proc macros for Tier 5 OO-style component definitions
+pub use angzarr_macros::{aggregate, applies, handles, process_manager, projector, rejected, saga};
