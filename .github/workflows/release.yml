@@ -1,91 +1,160 @@
 name: Release
 
+# Fires on a v*.*.* tag push. For ad-hoc / recovery runs, use the manual
+# workflow_dispatch trigger — it takes the current state of main.
 on:
   push:
     tags:
       - 'v*.*.*'
-
-env:
-  REGISTRY: ghcr.io
-  RUST_IMAGE: ghcr.io/angzarr-io/angzarr-rust:latest
+  workflow_dispatch:
 
 permissions:
   contents: write
-  packages: read
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  release:
-    name: Release to crates.io
+  validate:
+    name: Verify version
     runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Cargo.toml version matches tag
+        run: |
+          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "ERROR: Cargo.toml version ($CARGO_VERSION) does not match tag ($TAG_VERSION)"
+            exit 1
+          fi
+          echo "Releasing $TAG_VERSION"
+
+      - name: Verify VERSION file matches tag
+        run: |
+          FILE_VERSION=$(cat VERSION)
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          if [ "$FILE_VERSION" != "$TAG_VERSION" ]; then
+            echo "ERROR: VERSION file ($FILE_VERSION) does not match tag ($TAG_VERSION)"
+            exit 1
+          fi
+
+  build-test:
+    name: Build & test
+    runs-on: ubuntu-latest
+    needs: [validate]
+    # workflow_dispatch bypasses validate; still build+test.
+    if: always() && (needs.validate.result == 'success' || github.event_name == 'workflow_dispatch')
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
 
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install just
+        uses: extractions/setup-just@v2
 
-      - name: Verify version matches tag
-        run: |
-          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          TAG_VERSION=${GITHUB_REF#refs/tags/v}
-          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
-            echo "ERROR: Cargo.toml version ($CARGO_VERSION) does not match tag ($TAG_VERSION)"
-            exit 1
-          fi
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install buf CLI
         uses: bufbuild/buf-action@v1
         with:
           setup_only: true
 
-      - name: Export protos from Buf registry
-        env:
-          BUF_TOKEN: ${{ secrets.BUF_TOKEN }}
-        run: |
-          mkdir -p proto
-          buf export buf.build/angzarr/angzarr -o proto
+      - name: Install protoc plugins
+        run: cargo install protoc-gen-prost protoc-gen-tonic
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build
-        run: |
-          docker run --rm \
-            -v "${{ github.workspace }}:/workspace" \
-            -w /workspace \
-            -e ANGZARR_PROTO_ROOT=/workspace/proto \
-            ${{ env.RUST_IMAGE }} \
-            cargo build --release
+        run: just -f justfile.container build
 
       - name: Test
-        run: |
-          docker run --rm \
-            -v "${{ github.workspace }}:/workspace" \
-            -w /workspace \
-            -e ANGZARR_PROTO_ROOT=/workspace/proto \
-            ${{ env.RUST_IMAGE }} \
-            cargo test --lib
+        run: just -f justfile.container test
 
-      - name: Publish angzarr-macros to crates.io
-        run: |
-          docker run --rm \
-            -v "${{ github.workspace }}:/workspace" \
-            -w /workspace/angzarr-macros \
-            -e CARGO_REGISTRY_TOKEN=${{ secrets.CARGO_REGISTRY_TOKEN }} \
-            ${{ env.RUST_IMAGE }} \
-            cargo publish || echo "macros already published or failed"
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: [build-test]
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
 
-      - name: Wait for crates.io index update
-        run: sleep 30
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Publish angzarr-client to crates.io
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install buf CLI
+        uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
+      - name: Install protoc plugins
+        run: cargo install protoc-gen-prost protoc-gen-tonic
+
+      # Publish the macros crate first — the client crate depends on it by
+      # version. If the current version is already on crates.io (e.g. a
+      # re-release of the client), `cargo publish` returns non-zero; treat
+      # that specific case as success.
+      - name: Publish angzarr-macros
+        working-directory: angzarr-macros
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          docker run --rm \
-            -v "${{ github.workspace }}:/workspace" \
-            -w /workspace \
-            -e ANGZARR_PROTO_ROOT=/workspace/proto \
-            -e CARGO_REGISTRY_TOKEN=${{ secrets.CARGO_REGISTRY_TOKEN }} \
-            ${{ env.RUST_IMAGE }} \
-            cargo publish --allow-dirty
+          set +e
+          output=$(cargo publish 2>&1)
+          code=$?
+          echo "$output"
+          if [ "$code" -eq 0 ]; then
+            exit 0
+          fi
+          if echo "$output" | grep -qE "already exists|is already uploaded"; then
+            echo "angzarr-macros already published at this version; continuing."
+            exit 0
+          fi
+          exit "$code"
+
+      - name: Wait for crates.io index
+        run: sleep 60
+
+      - name: Publish angzarr-client
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        # --allow-dirty: build.rs generates proto code into target/ that
+        # cargo would otherwise flag as uncommitted.
+        run: cargo publish --allow-dirty
+
+  github-release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    needs: [publish]
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          generate_release_notes: true
