@@ -6,7 +6,6 @@
 
 - [ ] Buf Registry Setup: Update buf.gen.yaml to use buf.build/angzarr/angzarr
 - [ ] Package Publishing: Publish to package registry
-- [ ] CI/CD Setup: Create .github/workflows/ci.yml
 
 ## Backlog
 
@@ -16,3 +15,4 @@
 ## Done
 
 - [x] Client code extracted from angzarr core repo
+- [x] CI/CD Setup: .github/workflows/ci.yml (build + test + lint + fmt + notify-downstream) and .github/workflows/mutation.yml (weekly)

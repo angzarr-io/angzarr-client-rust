@@ -50,24 +50,136 @@ impl TransportMode {
 
 /// Resolve a domain name to a command handler coordinator endpoint.
 ///
-/// - `Standalone` → `{ANGZARR_UDS_BASE}/ch-{domain}.sock` (default base `/tmp/angzarr`)
-/// - `Distributed` → `ch-{domain}.{ANGZARR_NAMESPACE}.svc:{ANGZARR_CH_PORT}`
+/// - `Standalone` → `{uds_base}/ch-{domain}.sock` (default `/tmp/angzarr`)
+/// - `Distributed` → `ch-{domain}.{namespace}.svc:{port}` (default `angzarr`, `1310`)
+///
+/// Resolution precedence for each value matches Python's
+/// `resolve_ch_endpoint(domain, mode, *, uds_base, namespace, port)`:
+/// **env var > explicit arg > hardcoded default**.
 ///
 /// When `mode` is `None`, auto-detects from `ANGZARR_MODE`.
-pub fn resolve_ch_endpoint(domain: &str, mode: Option<TransportMode>) -> String {
+/// When `uds_base`/`namespace`/`port` are `None`, the env var is consulted
+/// and then the hardcoded default is used.
+pub fn resolve_ch_endpoint(
+    domain: &str,
+    mode: Option<TransportMode>,
+    uds_base: Option<&str>,
+    namespace: Option<&str>,
+    port: Option<u16>,
+) -> String {
     let mode = mode.unwrap_or_else(TransportMode::from_env);
     match mode {
         TransportMode::Standalone => {
-            let base = env::var(ENV_UDS_BASE).unwrap_or_else(|_| DEFAULT_UDS_BASE.to_string());
+            let base = env::var(ENV_UDS_BASE)
+                .ok()
+                .or_else(|| uds_base.map(|s| s.to_string()))
+                .unwrap_or_else(|| DEFAULT_UDS_BASE.to_string());
             format!("{}/ch-{}.sock", base, domain)
         }
         TransportMode::Distributed => {
-            let ns = env::var(ENV_NAMESPACE).unwrap_or_else(|_| DEFAULT_NAMESPACE.to_string());
-            let port = env::var(ENV_CH_PORT)
+            let ns = env::var(ENV_NAMESPACE)
+                .ok()
+                .or_else(|| namespace.map(|s| s.to_string()))
+                .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string());
+            let p = env::var(ENV_CH_PORT)
                 .ok()
                 .and_then(|p| p.parse::<u16>().ok())
+                .or(port)
                 .unwrap_or(DEFAULT_CH_PORT);
-            format!("ch-{}.{}.svc:{}", domain, ns, port)
+            format!("ch-{}.{}.svc:{}", domain, ns, p)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Tests manipulate process-wide env vars; a mutex serializes them so the
+    // test binary can still run with the default thread parallelism.
+    use std::sync::Mutex;
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn clear_env() {
+        for v in [ENV_MODE, ENV_UDS_BASE, ENV_NAMESPACE, ENV_CH_PORT] {
+            env::remove_var(v);
+        }
+    }
+
+    #[test]
+    fn standalone_uds_base_defaults_when_no_env_no_arg() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        let ep = resolve_ch_endpoint("player", Some(TransportMode::Standalone), None, None, None);
+        assert_eq!(ep, "/tmp/angzarr/ch-player.sock");
+    }
+
+    #[test]
+    fn standalone_arg_beats_default_when_no_env() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        let ep = resolve_ch_endpoint(
+            "player",
+            Some(TransportMode::Standalone),
+            Some("/srv/sockets"),
+            None,
+            None,
+        );
+        assert_eq!(ep, "/srv/sockets/ch-player.sock");
+    }
+
+    #[test]
+    fn standalone_env_beats_arg() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        env::set_var(ENV_UDS_BASE, "/env/base");
+        let ep = resolve_ch_endpoint(
+            "player",
+            Some(TransportMode::Standalone),
+            Some("/arg/base"),
+            None,
+            None,
+        );
+        assert_eq!(ep, "/env/base/ch-player.sock");
+        clear_env();
+    }
+
+    #[test]
+    fn distributed_ns_and_port_defaults() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        let ep = resolve_ch_endpoint("player", Some(TransportMode::Distributed), None, None, None);
+        assert_eq!(ep, "ch-player.angzarr.svc:1310");
+    }
+
+    #[test]
+    fn distributed_args_beat_defaults() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        let ep = resolve_ch_endpoint(
+            "player",
+            Some(TransportMode::Distributed),
+            None,
+            Some("my-ns"),
+            Some(2222),
+        );
+        assert_eq!(ep, "ch-player.my-ns.svc:2222");
+    }
+
+    #[test]
+    fn distributed_env_beats_args() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        env::set_var(ENV_NAMESPACE, "env-ns");
+        env::set_var(ENV_CH_PORT, "5555");
+        let ep = resolve_ch_endpoint(
+            "player",
+            Some(TransportMode::Distributed),
+            None,
+            Some("arg-ns"),
+            Some(2222),
+        );
+        assert_eq!(ep, "ch-player.env-ns.svc:5555");
+        clear_env();
     }
 }
