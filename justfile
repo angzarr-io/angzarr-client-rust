@@ -63,6 +63,14 @@ lint:
 fmt:
     just _container fmt
 
+# Auto-format code
+fmt-fix:
+    just _container fmt-fix
+
+# Remove build artifacts
+clean:
+    just _container clean
+
 # Run mutation testing with cargo-mutants (70% kill rate threshold)
 mutation-test:
     just _container mutation-test
@@ -78,3 +86,25 @@ publish-dry:
 # Publish to crates.io
 publish:
     just _container publish
+
+# ---------------------------------------------------------------------------
+# Submodule safety — mirrors Python's `submodules-lock` / `submodules-unlock`
+# / `bump-angzarr-project` recipes. Content edits to angzarr-project must go
+# through the super-repo; these targets enforce the lock/unlock/bump pattern.
+# ---------------------------------------------------------------------------
+
+# Lock angzarr-project read-only (filesystem enforcement against stray edits).
+submodules-lock:
+    chmod -R a-w angzarr-project
+
+# Unlock angzarr-project for manual edits. Remember to `submodules-lock` after.
+submodules-unlock:
+    chmod -R u+w angzarr-project
+
+# Bump angzarr-project to latest on its tracking branch.
+# Unlock → update from remote → re-stage pointer → re-lock.
+bump-angzarr-project:
+    chmod -R u+w angzarr-project
+    git submodule update --remote --merge angzarr-project
+    git add angzarr-project
+    chmod -R a-w angzarr-project

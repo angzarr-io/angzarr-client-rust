@@ -30,6 +30,10 @@ fmt:
 fmt-fix:
     cargo fmt
 
+# Remove build artifacts
+clean:
+    cargo clean
+
 # Run all checks (build + test + lint + fmt)
 check-all: build test lint fmt
 
