@@ -20,6 +20,7 @@ pub mod query_builder;
 pub mod query_client;
 pub mod rejected_compensation;
 pub mod rejection;
+pub mod retry;
 pub mod saga;
 pub mod speculative_client;
 pub mod state_building;

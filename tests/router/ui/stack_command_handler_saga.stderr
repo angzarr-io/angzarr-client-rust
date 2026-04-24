@@ -1,4 +1,4 @@
-error: #[command_handler] cannot coexist with #[saga] on the same impl; exactly one of #[command_handler] / #[saga] / #[process_manager] / #[projector] is allowed
+error: #[command_handler] cannot coexist with #[saga] on the same impl; exactly one of #[command_handler] / #[saga] / #[process_manager] / #[projector] / #[upcaster] is allowed
  --> tests/router/ui/stack_command_handler_saga.rs:7:1
   |
 7 | #[command_handler(domain = "x", state = State)]

@@ -30,6 +30,7 @@ use steps::query_builder::QueryBuilderWorld;
 use steps::query_client::QueryClientWorld;
 use steps::rejected_compensation::RejectedCompensationWorld;
 use steps::rejection::RejectionWorld;
+use steps::retry::RetryWorld;
 use steps::saga::SagaWorld;
 use steps::speculative_client::SpeculativeClientWorld;
 use steps::state_building::StateBuildingWorld;
@@ -220,5 +221,12 @@ async fn main() {
     UpcasterWorld::cucumber()
         .fail_on_skipped()
         .run("angzarr-project/features/client/upcaster.feature")
+        .await;
+
+    // Run Retry tests
+    println!("\n=== Running Retry Tests ===\n");
+    RetryWorld::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/client/retry.feature")
         .await;
 }
