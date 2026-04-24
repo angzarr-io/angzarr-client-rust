@@ -20,8 +20,10 @@ use steps::domain_client::DomainClientWorld;
 use steps::error_handling::ErrorHandlingWorld;
 use steps::event_decoding::EventDecodingWorld;
 use steps::fact_flow::FactFlowWorld;
+use steps::identity::IdentityWorld;
 use steps::merge_strategy::MergeStrategyWorld;
 use steps::multi_handler::MultiHandlerWorld;
+use steps::parity::ParityWorld;
 use steps::process_manager::ProcessManagerWorld;
 use steps::projector::ProjectorWorld;
 use steps::query_builder::QueryBuilderWorld;
@@ -31,10 +33,32 @@ use steps::rejection::RejectionWorld;
 use steps::saga::SagaWorld;
 use steps::speculative_client::SpeculativeClientWorld;
 use steps::state_building::StateBuildingWorld;
+use steps::testing::TestingWorld;
 use steps::validation::ValidationWorld;
 
 #[tokio::main]
 async fn main() {
+    // Run Parity tests
+    println!("\n=== Running Parity Tests ===\n");
+    ParityWorld::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/client/parity.feature")
+        .await;
+
+    // Run Identity tests
+    println!("\n=== Running Identity Tests ===\n");
+    IdentityWorld::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/client/identity.feature")
+        .await;
+
+    // Run Testing tests
+    println!("\n=== Running Testing Tests ===\n");
+    TestingWorld::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/client/testing.feature")
+        .await;
+
     // Run Connection tests
     println!("\n=== Running Connection Tests ===\n");
     ConnectionWorld::cucumber()

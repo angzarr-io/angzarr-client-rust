@@ -62,12 +62,14 @@ pub mod compensation;
 pub mod convert;
 pub mod error;
 pub mod handler;
+pub mod identity;
 #[path = "proto.rs"]
 pub mod proto;
 pub mod proto_ext;
 pub mod retry;
 pub mod router;
 pub mod server;
+pub mod testing;
 pub mod traits;
 pub mod transport;
 pub mod validation;
@@ -75,6 +77,15 @@ pub mod validation;
 // Re-export main types at crate root
 pub use client::{CommandHandlerClient, DomainClient, QueryClient, SpeculativeClient};
 pub use error::{ClientError, CommandRejectedError, CommandResult, Result};
+pub use identity::{
+    cart_root, compute_root, customer_root, fulfillment_root, inventory_product_root,
+    inventory_root, order_root, product_root, to_proto_bytes, INVENTORY_PRODUCT_NAMESPACE,
+};
+pub use testing::{
+    make_command_book, make_command_page, make_cover, make_event_book, make_event_page,
+    make_timestamp, pack_event as testing_pack_event, uuid_for, uuid_obj_for, uuid_str_for,
+    ScenarioContext, DEFAULT_TEST_NAMESPACE,
+};
 pub use retry::{default_retry_policy, RetryPolicy};
 pub use transport::{resolve_ch_endpoint, TransportMode};
 
