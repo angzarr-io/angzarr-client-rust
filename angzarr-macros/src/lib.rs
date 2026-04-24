@@ -1437,9 +1437,10 @@ impl syn::parse::Parse for UpcastsArgs {
 /// ```
 ///
 /// The macro emits `impl HandlerKind` + `impl Handler` on the annotated
-/// type so the unified [`Router`] builder accepts it as a homogeneous
-/// factory. Dispatch matches each incoming event's type URL against the
-/// registered `#[upcasts(from = …, to = …)]` pairs and invokes the first
+/// type so the unified `Router` builder (from the `angzarr-client` crate)
+/// accepts it as a homogeneous factory. Dispatch matches each incoming
+/// event's type URL against the registered `#[upcasts(from = …, to = …)]`
+/// pairs and invokes the first
 /// matching method; events without a matching transform pass through.
 #[proc_macro_attribute]
 pub fn upcaster(attr: TokenStream, item: TokenStream) -> TokenStream {
