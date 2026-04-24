@@ -25,11 +25,11 @@ const EXPORTED: &[&str] = &[
     "CommandHandlerRouter", "SagaRouter", "ProcessManagerRouter", "ProjectorRouter",
     "UpcasterRouter",
     // Handler kind declarations (proc macros)
-    "saga", "process_manager", "projector",
+    "command_handler", "saga", "process_manager", "projector", "upcaster",
     // Method markers
-    "handles", "applies", "rejected",
+    "handles", "applies", "rejected", "state_factory", "upcasts",
     // gRPC server adapters
-    "CommandHandlerGrpc",
+    "CommandHandlerGrpc", "SagaGrpc", "ProcessManagerGrpc", "ProjectorGrpc", "UpcasterGrpc",
     // Response types
     "SagaHandlerResponse", "ProcessManagerResponse", "RejectionHandlerResponse",
     // Errors
@@ -46,7 +46,7 @@ const EXPORTED: &[&str] = &[
     "make_command_page", "make_command_book", "uuid_for", "uuid_str_for",
     "uuid_obj_for", "DEFAULT_TEST_NAMESPACE", "ScenarioContext",
     // Retry
-    "RetryPolicy", "default_retry_policy",
+    "RetryPolicy", "ExponentialBackoffRetry", "default_retry_policy",
     // Validation
     "require_exists", "require_not_exists", "require_positive", "require_non_negative",
     "require_not_empty", "require_not_empty_str", "require_status", "require_status_not",
@@ -123,20 +123,22 @@ async fn then_error_predicate_exposed(_world: &mut ParityWorld, name: String) {
 mod compile_probe {
     #![allow(unused_imports, dead_code)]
     use angzarr_client::{
-        applies, cart_root, cleanup_socket, compute_root, configure_logging, create_server,
-        customer_root, default_retry_policy, delegate_to_framework, emit_compensation_events,
-        fulfillment_root, get_transport_config, handles, inventory_product_root, inventory_root,
-        make_command_book, make_command_page, make_cover, make_event_book, make_event_page,
-        make_timestamp, new_event_book, new_event_book_multi, order_root, pack_event, pack_events,
-        pm_delegate_to_framework, pm_emit_compensation_events, process_manager, product_root,
-        projector, rejected, require_exists, require_non_negative, require_not_empty,
-        require_not_empty_str, require_not_exists, require_positive, require_status,
-        require_status_not, run_server, saga, to_proto_bytes, uuid_for, uuid_obj_for, uuid_str_for,
+        applies, cart_root, cleanup_socket, command_handler, compute_root, configure_logging,
+        create_server, customer_root, default_retry_policy, delegate_to_framework,
+        emit_compensation_events, fulfillment_root, get_transport_config, handles,
+        inventory_product_root, inventory_root, make_command_book, make_command_page, make_cover,
+        make_event_book, make_event_page, make_timestamp, new_event_book, new_event_book_multi,
+        order_root, pack_event, pack_events, pm_delegate_to_framework,
+        pm_emit_compensation_events, process_manager, product_root, projector, rejected,
+        require_exists, require_non_negative, require_not_empty, require_not_empty_str,
+        require_not_exists, require_positive, require_status, require_status_not, run_server, saga,
+        state_factory, to_proto_bytes, upcaster, upcasts, uuid_for, uuid_obj_for, uuid_str_for,
         BuildError, ClientError, CommandBuilder, CommandHandlerClient, CommandHandlerGrpc,
         CommandHandlerRouter, CommandRejectedError, CompensationContext, Destinations,
-        DispatchError, DomainClient, ProcessManagerResponse, ProcessManagerRouter, ProjectorRouter,
-        QueryBuilder, QueryClient, RejectionHandlerResponse, RetryPolicy, Router,
-        SagaHandlerResponse, SagaRouter, ScenarioContext, SpeculativeClient, UpcasterRouter,
+        DispatchError, DomainClient, ExponentialBackoffRetry, ProcessManagerGrpc,
+        ProcessManagerResponse, ProcessManagerRouter, ProjectorGrpc, ProjectorRouter, QueryBuilder,
+        QueryClient, RejectionHandlerResponse, RetryPolicy, Router, SagaGrpc, SagaHandlerResponse,
+        SagaRouter, ScenarioContext, SpeculativeClient, UpcasterGrpc, UpcasterRouter,
         DEFAULT_EDITION, DEFAULT_TEST_NAMESPACE, INVENTORY_PRODUCT_NAMESPACE, META_ANGZARR_DOMAIN,
         PROJECTION_DOMAIN_PREFIX, PROJECTION_TYPE_URL, TYPE_URL_PREFIX, UNKNOWN_DOMAIN,
         WILDCARD_DOMAIN,

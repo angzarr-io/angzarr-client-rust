@@ -86,7 +86,7 @@ pub use testing::{
     make_timestamp, pack_event as testing_pack_event, uuid_for, uuid_obj_for, uuid_str_for,
     ScenarioContext, DEFAULT_TEST_NAMESPACE,
 };
-pub use retry::{default_retry_policy, RetryPolicy};
+pub use retry::{default_retry_policy, ExponentialBackoffRetry, RetryPolicy};
 pub use transport::{resolve_ch_endpoint, TransportMode};
 
 // Re-export builder extension traits for fluent API
@@ -155,8 +155,9 @@ pub use router::{
 
 // Re-export handler types
 pub use handler::{
-    CommandHandlerGrpc, ProcessManagerGrpcHandler, ProjectorHandler, SagaHandler, StatePacker,
-    UpcasterGrpcHandler, UpcasterHandleClosureFn, UpcasterHandleFn,
+    CommandHandlerGrpc, ProcessManagerGrpc, ProcessManagerGrpcHandler, ProjectorGrpc,
+    ProjectorHandler, SagaGrpc, SagaHandler, StatePacker, UpcasterGrpc, UpcasterGrpcHandler,
+    UpcasterHandleClosureFn, UpcasterHandleFn,
 };
 
 // Re-export server utilities
@@ -173,4 +174,7 @@ pub use validation::{
 };
 
 // Re-export proc macros for Tier 5 OO-style component definitions
-pub use angzarr_macros::{aggregate, applies, handles, process_manager, projector, rejected, saga};
+pub use angzarr_macros::{
+    aggregate, applies, command_handler, handles, process_manager, projector, rejected, saga,
+    state_factory, upcaster, upcasts,
+};

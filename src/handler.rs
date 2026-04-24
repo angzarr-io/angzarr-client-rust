@@ -250,3 +250,19 @@ impl UpcasterService for UpcasterGrpcHandler {
 
 /// Re-export retained for back-compat in callers that might use it.
 pub type StatePacker<S> = fn(&S) -> Result<prost_types::Any, Status>;
+
+// ---------------------------------------------------------------------------
+// Canonical cross-language gRPC-adapter aliases.
+//
+// Python exposes each kind's gRPC server adapter as `<Kind>Grpc`
+// (e.g. `SagaGrpc`). The Rust implementations predate the naming
+// convention — `SagaHandler`, `ProcessManagerGrpcHandler`,
+// `ProjectorHandler`, `UpcasterGrpcHandler`. These aliases close the
+// cross-language name-parity gap; a future breaking-rename is tracked
+// under O-1b follow-up.
+// ---------------------------------------------------------------------------
+
+pub type SagaGrpc = SagaHandler;
+pub type ProcessManagerGrpc = ProcessManagerGrpcHandler;
+pub type ProjectorGrpc = ProjectorHandler;
+pub type UpcasterGrpc = UpcasterGrpcHandler;

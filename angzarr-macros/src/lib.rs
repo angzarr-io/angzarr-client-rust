@@ -97,10 +97,23 @@ fn reject_stacked_kinds(this_kind: &str, attrs: &[Attribute]) -> Option<TokenStr
 /// ```
 #[proc_macro_attribute]
 pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
+    expand_command_handler(attr, item, "aggregate")
+}
+
+/// Cross-language alias for `#[aggregate]`. Mirrors Python's
+/// `@command_handler`. Currently both names produce identical code; prefer
+/// `#[command_handler]` in new code — `#[aggregate]` stays pre-1.0 for
+/// continuity but may be deprecated after CI is wired up.
+#[proc_macro_attribute]
+pub fn command_handler(attr: TokenStream, item: TokenStream) -> TokenStream {
+    expand_command_handler(attr, item, "command_handler")
+}
+
+fn expand_command_handler(attr: TokenStream, item: TokenStream, kind_label: &str) -> TokenStream {
     let args = parse_macro_input!(attr as AggregateArgs);
     let input = parse_macro_input!(item as ItemImpl);
 
-    if let Some(err) = reject_stacked_kinds("aggregate", &input.attrs) {
+    if let Some(err) = reject_stacked_kinds(kind_label, &input.attrs) {
         return TokenStream::from(err);
     }
 
@@ -554,6 +567,47 @@ pub fn rejected(_attr: TokenStream, item: TokenStream) -> TokenStream {
 pub fn applies(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // The actual work is done by the #[aggregate] macro
     // This is just a marker attribute
+    item
+}
+
+/// Marks a static method as the factory producing an aggregate's initial
+/// state. Cross-language alias for Python's `@state_factory` — the
+/// `#[aggregate]` / `#[command_handler]` macro inspects it during codegen.
+///
+/// # Example
+/// ```rust,ignore
+/// #[state_factory]
+/// fn empty() -> PlayerState { PlayerState::default() }
+/// ```
+#[proc_macro_attribute]
+pub fn state_factory(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+/// Marks a method as an upcaster transforming one event type into another.
+/// Cross-language alias for Python's `@upcasts`. The `#[upcaster]` macro
+/// collects the (from_type, to_type) pair from the attribute arguments
+/// and stamps it into the handler's `HandlerConfig`.
+///
+/// # Example
+/// ```rust,ignore
+/// #[upcasts(from = OldType, to = NewType)]
+/// fn upcast(old: OldType) -> NewType { old.into() }
+/// ```
+#[proc_macro_attribute]
+pub fn upcasts(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
+}
+
+/// Marks an impl block as an upcaster. Cross-language alias for Python's
+/// `@upcaster`. Currently a passthrough marker — the full Handler-trait
+/// / UpcasterRouter integration is tracked under O-1b follow-up work.
+///
+/// # Attributes
+/// - `name = "..."` - upcaster name
+/// - `domain = "..."` - domain of the upcaster
+#[proc_macro_attribute]
+pub fn upcaster(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 

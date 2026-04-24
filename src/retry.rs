@@ -78,3 +78,13 @@ impl RetryPolicy {
 pub fn default_retry_policy() -> RetryPolicy {
     RetryPolicy::default()
 }
+
+/// Alias type for cross-language name parity.
+///
+/// Python exposes `ExponentialBackoffRetry` as a distinct class with an
+/// `on_retry` callback. Rust's `RetryPolicy` carries the same tunables
+/// (`min_delay`/`max_delay`/`max_attempts`/`jitter`) and is reused here
+/// via a type alias. The `with_on_retry` builder method attaches a
+/// callback fired between attempts.
+pub type ExponentialBackoffRetry = RetryPolicy;
+
