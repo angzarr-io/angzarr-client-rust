@@ -1,11 +1,11 @@
 //! Procedural macros for angzarr OO-style component definitions.
 //!
-//! # Aggregate Example
+//! # Command-handler Example
 //!
 //! ```rust,ignore
-//! use angzarr_macros::{aggregate, handles, applies, rejected};
+//! use angzarr_macros::{command_handler, handles, applies, rejected};
 //!
-//! #[aggregate(domain = "player")]
+//! #[command_handler(domain = "player", state = PlayerState)]
 //! impl PlayerAggregate {
 //!     type State = PlayerState;
 //!
@@ -58,7 +58,7 @@ use quote::quote;
 use syn::{parse_macro_input, Attribute, Ident, ImplItem, ItemImpl, Meta, Token};
 
 /// Kind attributes that may NOT coexist on the same impl.
-const KIND_ATTRS: &[&str] = &["aggregate", "saga", "process_manager", "projector"];
+const KIND_ATTRS: &[&str] = &["command_handler", "saga", "process_manager", "projector"];
 
 /// If `attrs` contains a sibling kind attribute, return a `compile_error!` TokenStream.
 ///
@@ -70,7 +70,7 @@ fn reject_stacked_kinds(this_kind: &str, attrs: &[Attribute]) -> Option<TokenStr
         for kind in KIND_ATTRS {
             if attr.path().is_ident(kind) {
                 let msg = format!(
-                    "#[{this_kind}] cannot coexist with #[{kind}] on the same impl; exactly one of #[aggregate] / #[saga] / #[process_manager] / #[projector] is allowed"
+                    "#[{this_kind}] cannot coexist with #[{kind}] on the same impl; exactly one of #[command_handler] / #[saga] / #[process_manager] / #[projector] is allowed"
                 );
                 return Some(quote! { ::std::compile_error!(#msg); });
             }
@@ -79,14 +79,16 @@ fn reject_stacked_kinds(this_kind: &str, attrs: &[Attribute]) -> Option<TokenStr
     None
 }
 
-/// Marks an impl block as an aggregate with command handlers.
+/// Marks an impl block as a command-handler aggregate. Cross-language
+/// canonical name (matches Python's `@command_handler`).
 ///
 /// # Attributes
 /// - `domain = "name"` - The aggregate's domain name (required)
+/// - `state = StateType` - The state type (required)
 ///
 /// # Example
 /// ```rust,ignore
-/// #[aggregate(domain = "player")]
+/// #[command_handler(domain = "player", state = PlayerState)]
 /// impl PlayerAggregate {
 ///     #[handles(RegisterPlayer)]
 ///     fn register(&self, cmd: RegisterPlayer, state: &PlayerState, seq: u32)
@@ -96,24 +98,11 @@ fn reject_stacked_kinds(this_kind: &str, attrs: &[Attribute]) -> Option<TokenStr
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn aggregate(attr: TokenStream, item: TokenStream) -> TokenStream {
-    expand_command_handler(attr, item, "aggregate")
-}
-
-/// Cross-language alias for `#[aggregate]`. Mirrors Python's
-/// `@command_handler`. Currently both names produce identical code; prefer
-/// `#[command_handler]` in new code — `#[aggregate]` stays pre-1.0 for
-/// continuity but may be deprecated after CI is wired up.
-#[proc_macro_attribute]
 pub fn command_handler(attr: TokenStream, item: TokenStream) -> TokenStream {
-    expand_command_handler(attr, item, "command_handler")
-}
-
-fn expand_command_handler(attr: TokenStream, item: TokenStream, kind_label: &str) -> TokenStream {
     let args = parse_macro_input!(attr as AggregateArgs);
     let input = parse_macro_input!(item as ItemImpl);
 
-    if let Some(err) = reject_stacked_kinds(kind_label, &input.attrs) {
+    if let Some(err) = reject_stacked_kinds("command_handler", &input.attrs) {
         return TokenStream::from(err);
     }
 
@@ -297,7 +286,7 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
                     _ => {
                         return ::std::result::Result::Err(
                             ::angzarr_client::ClientError::InvalidArgument(
-                                "aggregate dispatch requires HandlerRequest::CommandHandler".into(),
+                                "command_handler dispatch requires HandlerRequest::CommandHandler".into(),
                             ),
                         );
                     }
@@ -512,7 +501,7 @@ fn strip_method_markers(input: &mut ItemImpl) {
 /// ```
 #[proc_macro_attribute]
 pub fn handles(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    // The actual work is done by the #[aggregate] macro
+    // The actual work is done by the #[command_handler] macro
     // This is just a marker attribute
     item
 }
@@ -533,7 +522,7 @@ pub fn handles(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn rejected(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    // The actual work is done by the #[aggregate] or #[process_manager] macro
+    // The actual work is done by the #[command_handler] or #[process_manager] macro
     // This is just a marker attribute
     item
 }
@@ -543,7 +532,7 @@ pub fn rejected(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// The method must be a static function with signature:
 /// `fn(state: &mut State, event: EventType)`
 ///
-/// The #[aggregate] macro collects these and generates:
+/// The #[command_handler] macro collects these and generates:
 /// - `apply_event(state, event_any)` - dispatches to the right applier
 /// - `rebuild(events)` - reconstructs state from event book
 ///
@@ -565,14 +554,14 @@ pub fn rejected(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn applies(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    // The actual work is done by the #[aggregate] macro
+    // The actual work is done by the #[command_handler] macro
     // This is just a marker attribute
     item
 }
 
 /// Marks a static method as the factory producing an aggregate's initial
 /// state. Cross-language alias for Python's `@state_factory` — the
-/// `#[aggregate]` / `#[command_handler]` macro inspects it during codegen.
+/// `#[command_handler]` / `#[command_handler]` macro inspects it during codegen.
 ///
 /// # Example
 /// ```rust,ignore

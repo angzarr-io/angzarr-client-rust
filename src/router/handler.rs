@@ -1,7 +1,7 @@
 //! Core `Handler` trait and supporting types for the unified router.
 //!
 //! Handlers are produced by proc-macro expansion in `angzarr-macros`. End users
-//! do not implement `Handler` by hand; they apply `#[aggregate]` / `#[saga]` /
+//! do not implement `Handler` by hand; they apply `#[command_handler]` / `#[saga]` /
 //! `#[process_manager]` / `#[projector]` on an inherent impl, and the macro
 //! emits `impl Handler for T`.
 

@@ -8,7 +8,7 @@ use angzarr_client::proto::{
     ContextualCommand, Cover, EventBook, EventPage, Notification, RejectionNotification,
 };
 use angzarr_client::router::{Built, Router};
-use angzarr_client::{aggregate, full_type_url, CommandResult};
+use angzarr_client::{command_handler, full_type_url, CommandResult};
 use cucumber::{given, then, when, World};
 use prost::Message;
 use prost_types::Any;
@@ -50,7 +50,7 @@ impl ::prost::Name for FundsDeposited {
 struct PaymentState;
 
 struct PaymentSingle;
-#[aggregate(domain = "payment", state = PaymentState)]
+#[command_handler(domain = "payment", state = PaymentState)]
 impl PaymentSingle {
     #[applies(FundsDeposited)]
     #[allow(unused_variables, dead_code)]
@@ -73,7 +73,7 @@ impl PaymentSingle {
 }
 
 struct PaymentDouble;
-#[aggregate(domain = "payment", state = PaymentState)]
+#[command_handler(domain = "payment", state = PaymentState)]
 impl PaymentDouble {
     #[rejected(domain = "inventory", command = "ReserveStock")]
     #[allow(unused_variables, dead_code)]
@@ -107,7 +107,7 @@ impl PaymentDouble {
 }
 
 struct PaymentTwoEvents;
-#[aggregate(domain = "payment", state = PaymentState)]
+#[command_handler(domain = "payment", state = PaymentState)]
 impl PaymentTwoEvents {
     #[rejected(domain = "inventory", command = "ReserveStock")]
     #[allow(unused_variables, dead_code)]
@@ -126,7 +126,7 @@ impl PaymentTwoEvents {
 }
 
 struct PaymentNoRejection;
-#[aggregate(domain = "payment", state = PaymentState)]
+#[command_handler(domain = "payment", state = PaymentState)]
 impl PaymentNoRejection {
     #[handles(ProcessPayment)]
     #[allow(unused_variables, dead_code)]

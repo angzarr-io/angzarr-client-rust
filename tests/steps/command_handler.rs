@@ -12,7 +12,7 @@ use angzarr_client::proto::{
     EventBook, EventPage,
 };
 use angzarr_client::router::{Built, Router};
-use angzarr_client::{aggregate, full_type_url, CommandResult};
+use angzarr_client::{command_handler, full_type_url, CommandResult};
 use cucumber::{given, then, when, World};
 use prost::Message;
 use prost_types::Any;
@@ -62,7 +62,7 @@ fn observed() -> &'static Arc<AtomicBool> {
 /// emits 1 OrderCreated event regardless of state.
 struct OrderDefault;
 
-#[aggregate(domain = "order", state = OrderState)]
+#[command_handler(domain = "order", state = OrderState)]
 impl OrderDefault {
     #[applies(OrderCreated)]
     #[allow(unused_variables, dead_code)]
@@ -95,7 +95,7 @@ impl OrderDefault {
 /// Variant whose handler emits nothing (C-0004).
 struct OrderEmpty;
 
-#[aggregate(domain = "order", state = OrderState)]
+#[command_handler(domain = "order", state = OrderState)]
 impl OrderEmpty {
     #[handles(CreateOrder)]
     #[allow(unused_variables, dead_code)]
@@ -112,7 +112,7 @@ impl OrderEmpty {
 /// Variant with a `#[state_factory]` producing created = true (C-0005).
 struct OrderWithFactory;
 
-#[aggregate(domain = "order", state = OrderState)]
+#[command_handler(domain = "order", state = OrderState)]
 impl OrderWithFactory {
     #[state_factory]
     #[allow(dead_code)]

@@ -8,8 +8,8 @@
 #[test]
 fn stacking_kind_attributes_is_rejected_at_parse_time() {
     let t = trybuild::TestCases::new();
-    t.compile_fail("tests/router/ui/stack_aggregate_saga.rs");
-    t.compile_fail("tests/router/ui/stack_aggregate_projector.rs");
+    t.compile_fail("tests/router/ui/stack_command_handler_saga.rs");
+    t.compile_fail("tests/router/ui/stack_command_handler_projector.rs");
     t.compile_fail("tests/router/ui/stack_same_kind.rs");
 }
 

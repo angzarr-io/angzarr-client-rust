@@ -175,6 +175,6 @@ pub use validation::{
 
 // Re-export proc macros for Tier 5 OO-style component definitions
 pub use angzarr_macros::{
-    aggregate, applies, command_handler, handles, process_manager, projector, rejected, saga,
-    state_factory, upcaster, upcasts,
+    applies, command_handler, handles, process_manager, projector, rejected, saga, state_factory,
+    upcaster, upcasts,
 };

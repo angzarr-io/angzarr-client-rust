@@ -4,7 +4,7 @@
 //! R2 covers method-level metadata — `#[handles]`, `#[rejected]`, `#[applies]`,
 //! `#[state_factory]` — recoverable through `Handler::config()`.
 
-use angzarr_client::aggregate;
+use angzarr_client::command_handler;
 use angzarr_client::proto::EventBook;
 use angzarr_client::router::{Handler, HandlerConfig, Kind};
 use angzarr_client::CommandResult;
@@ -37,7 +37,7 @@ struct PlayerState {
 
 struct Player;
 
-#[aggregate(domain = "player", state = PlayerState)]
+#[command_handler(domain = "player", state = PlayerState)]
 impl Player {
     #[allow(dead_code)]
     fn new() -> Self {
@@ -174,7 +174,7 @@ fn state_factory_records_method_name() {
 /// signalling to the runtime that `Default::default()` is used.
 struct PlayerNoFactory;
 
-#[aggregate(domain = "player_bare", state = PlayerState)]
+#[command_handler(domain = "player_bare", state = PlayerState)]
 impl PlayerNoFactory {
     #[handles(RegisterPlayer)]
     #[allow(unused_variables, dead_code)]

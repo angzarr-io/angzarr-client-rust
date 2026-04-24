@@ -34,7 +34,7 @@ fn run_trybuild(fixture: &str) {
 // --- @C-0070 command_handler without state ---
 #[when("I declare a @command_handler for domain \"order\" without state")]
 async fn when_declare_cmd_handler_no_state(world: &mut ValidationWorld) {
-    world.fixture = Some("tests/router/ui/aggregate_without_state.rs");
+    world.fixture = Some("tests/router/ui/command_handler_without_state.rs");
     world.scenario_tag = "C-0070".into();
 }
 
@@ -86,7 +86,7 @@ async fn given_class_has_cmd_handler(_world: &mut ValidationWorld, _class: Strin
 
 #[when(expr = "I also apply the @saga decorator to {word}")]
 async fn when_also_apply_saga(world: &mut ValidationWorld, _class: String) {
-    world.fixture = Some("tests/router/ui/stack_aggregate_saga.rs");
+    world.fixture = Some("tests/router/ui/stack_command_handler_saga.rs");
     world.scenario_tag = "C-0076".into();
 }
 
