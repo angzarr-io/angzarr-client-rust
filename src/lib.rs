@@ -155,8 +155,7 @@ pub use router::{
 
 // Re-export handler types
 pub use handler::{
-    CommandHandlerGrpc, ProcessManagerGrpc, ProcessManagerGrpcHandler, ProjectorGrpc,
-    ProjectorHandler, SagaGrpc, SagaHandler, StatePacker, UpcasterGrpc, UpcasterGrpcHandler,
+    CommandHandlerGrpc, ProcessManagerGrpc, ProjectorGrpc, SagaGrpc, StatePacker, UpcasterGrpc,
     UpcasterHandleClosureFn, UpcasterHandleFn,
 };
 

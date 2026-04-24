@@ -73,8 +73,8 @@ pub fn cleanup_socket(path: impl AsRef<Path>) {
 }
 
 use crate::handler::{
-    CommandHandlerGrpc, ProcessManagerGrpcHandler, ProjectorHandler, SagaHandler,
-    UpcasterGrpcHandler,
+    CommandHandlerGrpc, ProcessManagerGrpc, ProjectorGrpc, SagaGrpc,
+    UpcasterGrpc,
 };
 use crate::proto::command_handler_service_server::CommandHandlerServiceServer;
 use crate::proto::process_manager_service_server::ProcessManagerServiceServer;
@@ -211,7 +211,7 @@ pub async fn run_saga_server(
     router: SagaRouter,
 ) -> Result<(), tonic::transport::Error> {
     let config = ServerConfig::from_env(default_port);
-    let handler = SagaHandler::new(router);
+    let handler = SagaGrpc::new(router);
     let service = SagaServiceServer::new(handler);
 
     if let Some(uds_path) = &config.uds_path {
@@ -248,11 +248,11 @@ pub async fn run_saga_server(
 /// # Example
 ///
 /// ```rust,ignore
-/// use angzarr_client::{run_projector_server, ProjectorHandler};
+/// use angzarr_client::{run_projector_server, ProjectorGrpc};
 ///
 /// #[tokio::main]
 /// async fn main() {
-///     let handler = ProjectorHandler::new("output").with_handle(handle_events);
+///     let handler = ProjectorGrpc::new("output").with_handle(handle_events);
 ///
 ///     run_projector_server("output", 9090, handler).await;
 /// }
@@ -260,7 +260,7 @@ pub async fn run_saga_server(
 pub async fn run_projector_server(
     name: &str,
     default_port: u16,
-    handler: ProjectorHandler,
+    handler: ProjectorGrpc,
 ) -> Result<(), tonic::transport::Error> {
     let config = ServerConfig::from_env(default_port);
     let service = ProjectorServiceServer::new(handler);
@@ -315,7 +315,7 @@ pub async fn run_process_manager_server(
     router: ProcessManagerRouter,
 ) -> Result<(), tonic::transport::Error> {
     let config = ServerConfig::from_env(default_port);
-    let handler = ProcessManagerGrpcHandler::new(router);
+    let handler = ProcessManagerGrpc::new(router);
     let service = ProcessManagerServiceServer::new(handler);
 
     if let Some(uds_path) = &config.uds_path {
@@ -356,7 +356,7 @@ pub async fn run_process_manager_server(
 /// # Example
 ///
 /// ```rust,ignore
-/// use angzarr_client::{run_upcaster_server, UpcasterGrpcHandler, UpcasterRouter};
+/// use angzarr_client::{run_upcaster_server, UpcasterGrpc, UpcasterRouter};
 ///
 /// fn upcast_events(events: &[EventPage]) -> Vec<EventPage> {
 ///     let router = UpcasterRouter::new("player")
@@ -369,7 +369,7 @@ pub async fn run_process_manager_server(
 ///
 /// #[tokio::main]
 /// async fn main() {
-///     let handler = UpcasterGrpcHandler::new("upcaster-player", "player")
+///     let handler = UpcasterGrpc::new("upcaster-player", "player")
 ///         .with_handle(upcast_events);
 ///
 ///     run_upcaster_server("upcaster-player", 50401, handler).await;
@@ -378,7 +378,7 @@ pub async fn run_process_manager_server(
 pub async fn run_upcaster_server(
     name: &str,
     default_port: u16,
-    handler: UpcasterGrpcHandler,
+    handler: UpcasterGrpc,
 ) -> Result<(), tonic::transport::Error> {
     let config = ServerConfig::from_env(default_port);
     let service = UpcasterServiceServer::new(handler);

@@ -75,11 +75,11 @@ impl CommandHandlerService for CommandHandlerGrpc {
 }
 
 /// gRPC saga service wrapping a [`SagaRouter`].
-pub struct SagaHandler {
+pub struct SagaGrpc {
     router: Arc<SagaRouter>,
 }
 
-impl SagaHandler {
+impl SagaGrpc {
     pub fn new(router: SagaRouter) -> Self {
         Self {
             router: Arc::new(router),
@@ -87,7 +87,7 @@ impl SagaHandler {
     }
 }
 
-impl Clone for SagaHandler {
+impl Clone for SagaGrpc {
     fn clone(&self) -> Self {
         Self {
             router: Arc::clone(&self.router),
@@ -96,7 +96,7 @@ impl Clone for SagaHandler {
 }
 
 #[tonic::async_trait]
-impl SagaService for SagaHandler {
+impl SagaService for SagaGrpc {
     async fn handle(
         &self,
         request: Request<SagaHandleRequest>,
@@ -108,11 +108,11 @@ impl SagaService for SagaHandler {
 }
 
 /// gRPC process-manager service wrapping a [`ProcessManagerRouter`].
-pub struct ProcessManagerGrpcHandler {
+pub struct ProcessManagerGrpc {
     router: Arc<ProcessManagerRouter>,
 }
 
-impl ProcessManagerGrpcHandler {
+impl ProcessManagerGrpc {
     pub fn new(router: ProcessManagerRouter) -> Self {
         Self {
             router: Arc::new(router),
@@ -121,7 +121,7 @@ impl ProcessManagerGrpcHandler {
 }
 
 #[tonic::async_trait]
-impl ProcessManagerService for ProcessManagerGrpcHandler {
+impl ProcessManagerService for ProcessManagerGrpc {
     async fn prepare(
         &self,
         _request: Request<ProcessManagerPrepareRequest>,
@@ -142,11 +142,11 @@ impl ProcessManagerService for ProcessManagerGrpcHandler {
 }
 
 /// gRPC projector service wrapping a [`ProjectorRouter`].
-pub struct ProjectorHandler {
+pub struct ProjectorGrpc {
     router: Arc<ProjectorRouter>,
 }
 
-impl ProjectorHandler {
+impl ProjectorGrpc {
     pub fn new(router: ProjectorRouter) -> Self {
         Self {
             router: Arc::new(router),
@@ -155,7 +155,7 @@ impl ProjectorHandler {
 }
 
 #[tonic::async_trait]
-impl ProjectorService for ProjectorHandler {
+impl ProjectorService for ProjectorGrpc {
     async fn handle(&self, request: Request<EventBook>) -> Result<Response<Projection>, Status> {
         let book = request.into_inner();
         let projection = self.router.dispatch(book).map_err(client_error_to_status)?;
@@ -195,13 +195,13 @@ enum UpcasterHandleType {
     Closure(UpcasterHandleClosureFn),
 }
 
-pub struct UpcasterGrpcHandler {
+pub struct UpcasterGrpc {
     name: String,
     domain: String,
     handle_type: Option<UpcasterHandleType>,
 }
 
-impl UpcasterGrpcHandler {
+impl UpcasterGrpc {
     pub fn new(name: impl Into<String>, domain: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -233,7 +233,7 @@ impl UpcasterGrpcHandler {
 }
 
 #[tonic::async_trait]
-impl UpcasterService for UpcasterGrpcHandler {
+impl UpcasterService for UpcasterGrpc {
     async fn upcast(
         &self,
         request: Request<UpcastRequest>,
@@ -250,19 +250,3 @@ impl UpcasterService for UpcasterGrpcHandler {
 
 /// Re-export retained for back-compat in callers that might use it.
 pub type StatePacker<S> = fn(&S) -> Result<prost_types::Any, Status>;
-
-// ---------------------------------------------------------------------------
-// Canonical cross-language gRPC-adapter aliases.
-//
-// Python exposes each kind's gRPC server adapter as `<Kind>Grpc`
-// (e.g. `SagaGrpc`). The Rust implementations predate the naming
-// convention — `SagaHandler`, `ProcessManagerGrpcHandler`,
-// `ProjectorHandler`, `UpcasterGrpcHandler`. These aliases close the
-// cross-language name-parity gap; a future breaking-rename is tracked
-// under O-1b follow-up.
-// ---------------------------------------------------------------------------
-
-pub type SagaGrpc = SagaHandler;
-pub type ProcessManagerGrpc = ProcessManagerGrpcHandler;
-pub type ProjectorGrpc = ProjectorHandler;
-pub type UpcasterGrpc = UpcasterGrpcHandler;
