@@ -88,68 +88,75 @@ jobs:
       - name: Test
         run: just -f justfile.container test
 
-  publish:
-    name: Publish to crates.io
-    runs-on: ubuntu-latest
-    needs: [build-test]
-    if: github.event_name == 'push'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install buf CLI
-        uses: bufbuild/buf-action@v1
-        with:
-          setup_only: true
-
-      - name: Install protoc plugins
-        run: cargo install protoc-gen-prost protoc-gen-tonic
-
-      # Publish the macros crate first — the client crate depends on it by
-      # version. If the current version is already on crates.io (e.g. a
-      # re-release of the client), `cargo publish` returns non-zero; treat
-      # that specific case as success.
-      - name: Publish angzarr-macros
-        working-directory: angzarr-macros
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          set +e
-          output=$(cargo publish 2>&1)
-          code=$?
-          echo "$output"
-          if [ "$code" -eq 0 ]; then
-            exit 0
-          fi
-          if echo "$output" | grep -qE "already exists|is already uploaded"; then
-            echo "angzarr-macros already published at this version; continuing."
-            exit 0
-          fi
-          exit "$code"
-
-      - name: Wait for crates.io index
-        run: sleep 60
-
-      - name: Publish angzarr-client
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        # --allow-dirty: build.rs generates proto code into target/ that
-        # cargo would otherwise flag as uncommitted.
-        run: cargo publish --allow-dirty
+  # Publishing to crates.io is gated off until CARGO_REGISTRY_TOKEN is
+  # configured and the team is ready to cut a public release. Uncomment
+  # the `publish` job below and change `github-release.needs` back to
+  # `[publish]` to re-enable.
+  #
+  # publish:
+  #   name: Publish to crates.io
+  #   runs-on: ubuntu-latest
+  #   needs: [build-test]
+  #   if: github.event_name == 'push'
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         submodules: true
+  #
+  #     - name: Install Rust toolchain
+  #       uses: dtolnay/rust-toolchain@stable
+  #
+  #     - name: Install protoc
+  #       uses: arduino/setup-protoc@v3
+  #       with:
+  #         repo-token: ${{ secrets.GITHUB_TOKEN }}
+  #
+  #     - name: Install buf CLI
+  #       uses: bufbuild/buf-action@v1
+  #       with:
+  #         setup_only: true
+  #
+  #     - name: Install protoc plugins
+  #       run: cargo install protoc-gen-prost protoc-gen-tonic
+  #
+  #     # Publish the macros crate first — the client crate depends on it by
+  #     # version. If the current version is already on crates.io (e.g. a
+  #     # re-release of the client), `cargo publish` returns non-zero; treat
+  #     # that specific case as success.
+  #     - name: Publish angzarr-macros
+  #       working-directory: angzarr-macros
+  #       env:
+  #         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+  #       run: |
+  #         set +e
+  #         output=$(cargo publish 2>&1)
+  #         code=$?
+  #         echo "$output"
+  #         if [ "$code" -eq 0 ]; then
+  #           exit 0
+  #         fi
+  #         if echo "$output" | grep -qE "already exists|is already uploaded"; then
+  #           echo "angzarr-macros already published at this version; continuing."
+  #           exit 0
+  #         fi
+  #         exit "$code"
+  #
+  #     - name: Wait for crates.io index
+  #       run: sleep 60
+  #
+  #     - name: Publish angzarr-client
+  #       env:
+  #         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+  #       # --allow-dirty: build.rs generates proto code into target/ that
+  #       # cargo would otherwise flag as uncommitted.
+  #       run: cargo publish --allow-dirty
 
   github-release:
     name: Create GitHub release
     runs-on: ubuntu-latest
-    needs: [publish]
+    # While publish is gated off, chain github-release directly off build-test.
+    # When crates.io publishing is re-enabled, change this back to [publish].
+    needs: [build-test]
     if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
