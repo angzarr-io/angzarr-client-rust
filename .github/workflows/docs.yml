@@ -69,6 +69,12 @@ jobs:
         run: |
           echo '<meta http-equiv="refresh" content="0; url=angzarr_client/index.html">' > target/doc/index.html
 
+      # Configure the custom domain. GitHub Pages reads this file on deploy
+      # and serves the site at the domain specified; the DNS CNAME
+      # `rust.angzarr.io → angzarr-io.github.io` handles routing.
+      - name: Write CNAME
+        run: echo "rust.angzarr.io" > target/doc/CNAME
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
