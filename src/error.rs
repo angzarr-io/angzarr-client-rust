@@ -117,6 +117,13 @@ impl CommandRejectedError {
         }
     }
 
+    /// Explicit FAILED_PRECONDITION factory. Cross-language alias for
+    /// [`CommandRejectedError::new`]; present for name-parity with
+    /// Python's `CommandRejectedError.precondition_failed(msg)`.
+    pub fn precondition_failed(reason: impl Into<String>) -> Self {
+        Self::new(reason)
+    }
+
     /// Create an INVALID_ARGUMENT rejection for input validation failures.
     pub fn invalid_argument(reason: impl Into<String>) -> Self {
         Self {

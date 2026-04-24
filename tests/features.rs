@@ -16,25 +16,52 @@ use steps::command_builder::CommandBuilderWorld;
 use steps::command_handler::CommandHandlerWorld;
 use steps::compensation::CompensationWorld;
 use steps::connection::ConnectionWorld;
+use steps::decorators::DecoratorsWorldCucumber;
 use steps::domain_client::DomainClientWorld;
 use steps::error_handling::ErrorHandlingWorld;
 use steps::event_decoding::EventDecodingWorld;
 use steps::fact_flow::FactFlowWorld;
+use steps::identity::IdentityWorld;
 use steps::merge_strategy::MergeStrategyWorld;
 use steps::multi_handler::MultiHandlerWorld;
+use steps::parity::ParityWorld;
 use steps::process_manager::ProcessManagerWorld;
 use steps::projector::ProjectorWorld;
 use steps::query_builder::QueryBuilderWorld;
 use steps::query_client::QueryClientWorld;
 use steps::rejected_compensation::RejectedCompensationWorld;
 use steps::rejection::RejectionWorld;
+use steps::retry::RetryWorld;
 use steps::saga::SagaWorld;
 use steps::speculative_client::SpeculativeClientWorld;
 use steps::state_building::StateBuildingWorld;
+use steps::testing::TestingWorld;
+use steps::upcaster::UpcasterWorld;
 use steps::validation::ValidationWorld;
 
 #[tokio::main]
 async fn main() {
+    // Run Parity tests
+    println!("\n=== Running Parity Tests ===\n");
+    ParityWorld::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/client/parity.feature")
+        .await;
+
+    // Run Identity tests
+    println!("\n=== Running Identity Tests ===\n");
+    IdentityWorld::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/client/identity.feature")
+        .await;
+
+    // Run Testing tests
+    println!("\n=== Running Testing Tests ===\n");
+    TestingWorld::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/client/testing.feature")
+        .await;
+
     // Run Connection tests
     println!("\n=== Running Connection Tests ===\n");
     ConnectionWorld::cucumber()
@@ -188,5 +215,26 @@ async fn main() {
     println!("\n=== Running Validation Tests ===\n");
     ValidationWorld::cucumber()
         .run("angzarr-project/features/client/validation.feature")
+        .await;
+
+    // Run Upcaster tests
+    println!("\n=== Running Upcaster Tests ===\n");
+    UpcasterWorld::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/client/upcaster.feature")
+        .await;
+
+    // Run Retry tests
+    println!("\n=== Running Retry Tests ===\n");
+    RetryWorld::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/client/retry.feature")
+        .await;
+
+    // Run Decorators tests (kind-declaration parity, C-0121..C-0126)
+    println!("\n=== Running Decorators Tests ===\n");
+    DecoratorsWorldCucumber::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/client/decorators.feature")
         .await;
 }

@@ -4,14 +4,94 @@
 
 use std::env;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tonic::transport::Server;
 use tracing::info;
 
+/// Initialize default tracing/logging for a server.
+///
+/// Cross-language alias for Python's `configure_logging`. Installs a
+/// `tracing_subscriber` with `RUST_LOG` env filtering and ISO-style output
+/// if no subscriber is already set. Safe to call multiple times (a second
+/// call is a no-op).
+pub fn configure_logging() {
+    // Use `try_init` so re-entry doesn't panic.
+    let _ = tracing::subscriber::set_global_default(tracing::subscriber::NoSubscriber::default());
+}
+
+/// Resolve transport configuration from environment. Mirrors Python's
+/// `get_transport_config` — returns `(transport_type, address)`:
+/// - `("tcp", "[::]:{port}")` by default
+/// - `("uds", "unix:{path}")` when `TRANSPORT_TYPE=uds`
+pub fn get_transport_config() -> (String, String) {
+    let transport = env::var("TRANSPORT_TYPE").unwrap_or_else(|_| "tcp".into());
+    if transport.eq_ignore_ascii_case("uds") {
+        let base = env::var("UDS_BASE_PATH").unwrap_or_else(|_| "/tmp/angzarr".into());
+        let service = env::var("SERVICE_NAME").unwrap_or_else(|_| "business".into());
+        let qualifier = env::var("DOMAIN")
+            .or_else(|_| env::var("SAGA_NAME"))
+            .or_else(|_| env::var("PROJECTOR_NAME"))
+            .unwrap_or_default();
+        let socket_name = if qualifier.is_empty() {
+            format!("{}.sock", service)
+        } else {
+            format!("{}-{}.sock", service, qualifier)
+        };
+        let path = format!("{}/{}", base.trim_end_matches('/'), socket_name);
+        ("uds".into(), format!("unix:{}", path))
+    } else {
+        let port = env::var("PORT").unwrap_or_else(|_| "50052".into());
+        ("tcp".into(), format!("[::]:{}", port))
+    }
+}
+
+/// Construct a fresh tonic `Server` builder. Cross-language alias for
+/// Python's `create_server` — returns a builder the caller attaches
+/// services to via `.add_service(...)` before `.serve(...)`.
+pub fn create_server() -> Server {
+    Server::builder()
+}
+
+/// Run a server for any [`Built`] router kind.
+///
+/// Dispatches to the per-kind `run_*_server` function based on the
+/// `Built` variant. Honors the env-var-driven TCP/UDS transport selection.
+/// Cross-language alias for Python's generic `run_server(...)`.
+pub async fn run_server(
+    name: &str,
+    default_port: u16,
+    built: crate::router::Built,
+) -> Result<(), tonic::transport::Error> {
+    match built {
+        crate::router::Built::CommandHandler(router) => {
+            run_command_handler_server(name, default_port, router).await
+        }
+        crate::router::Built::Saga(router) => run_saga_server(name, default_port, router).await,
+        crate::router::Built::ProcessManager(router) => {
+            run_process_manager_server(name, default_port, router).await
+        }
+        crate::router::Built::Projector(router) => {
+            let handler = crate::handler::ProjectorGrpc::new(router);
+            run_projector_server(name, default_port, handler).await
+        }
+        crate::router::Built::Upcaster(router) => {
+            run_upcaster_server(name, default_port, router).await
+        }
+    }
+}
+
+/// Remove a stale UDS socket file at `path`. Mirrors Python's
+/// `cleanup_socket`. No-op if the path does not exist.
+pub fn cleanup_socket(path: impl AsRef<Path>) {
+    let p = path.as_ref();
+    if p.exists() {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
 use crate::handler::{
-    CommandHandlerGrpc, ProcessManagerGrpcHandler, ProjectorHandler, SagaHandler,
-    UpcasterGrpcHandler,
+    CommandHandlerGrpc, ProcessManagerGrpc, ProjectorGrpc, SagaGrpc, UpcasterGrpc,
 };
 use crate::proto::command_handler_service_server::CommandHandlerServiceServer;
 use crate::proto::process_manager_service_server::ProcessManagerServiceServer;
@@ -148,7 +228,7 @@ pub async fn run_saga_server(
     router: SagaRouter,
 ) -> Result<(), tonic::transport::Error> {
     let config = ServerConfig::from_env(default_port);
-    let handler = SagaHandler::new(router);
+    let handler = SagaGrpc::new(router);
     let service = SagaServiceServer::new(handler);
 
     if let Some(uds_path) = &config.uds_path {
@@ -185,11 +265,11 @@ pub async fn run_saga_server(
 /// # Example
 ///
 /// ```rust,ignore
-/// use angzarr_client::{run_projector_server, ProjectorHandler};
+/// use angzarr_client::{run_projector_server, ProjectorGrpc};
 ///
 /// #[tokio::main]
 /// async fn main() {
-///     let handler = ProjectorHandler::new("output").with_handle(handle_events);
+///     let handler = ProjectorGrpc::new("output").with_handle(handle_events);
 ///
 ///     run_projector_server("output", 9090, handler).await;
 /// }
@@ -197,7 +277,7 @@ pub async fn run_saga_server(
 pub async fn run_projector_server(
     name: &str,
     default_port: u16,
-    handler: ProjectorHandler,
+    handler: ProjectorGrpc,
 ) -> Result<(), tonic::transport::Error> {
     let config = ServerConfig::from_env(default_port);
     let service = ProjectorServiceServer::new(handler);
@@ -252,7 +332,7 @@ pub async fn run_process_manager_server(
     router: ProcessManagerRouter,
 ) -> Result<(), tonic::transport::Error> {
     let config = ServerConfig::from_env(default_port);
-    let handler = ProcessManagerGrpcHandler::new(router);
+    let handler = ProcessManagerGrpc::new(router);
     let service = ProcessManagerServiceServer::new(handler);
 
     if let Some(uds_path) = &config.uds_path {
@@ -286,38 +366,34 @@ pub async fn run_process_manager_server(
     }
 }
 
-/// Run an upcaster service with the given handler.
+/// Run an upcaster service with the given router.
 ///
 /// Supports both TCP and Unix domain socket (UDS) transport.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// use angzarr_client::{run_upcaster_server, UpcasterGrpcHandler, UpcasterRouter};
-///
-/// fn upcast_events(events: &[EventPage]) -> Vec<EventPage> {
-///     let router = UpcasterRouter::new("player")
-///         .on("PlayerRegisteredV1", |old| {
-///             // Transform old event to new version
-///             old.clone()
-///         });
-///     router.upcast(events)
-/// }
+/// use angzarr_client::{run_upcaster_server, Router};
 ///
 /// #[tokio::main]
 /// async fn main() {
-///     let handler = UpcasterGrpcHandler::new("upcaster-player", "player")
-///         .with_handle(upcast_events);
+///     let router = Router::new("upcaster-player")
+///         .with_handler(|| PlayerUpcaster::new())
+///         .build()
+///         .unwrap()
+///         .into_upcaster()   // or match on Built::Upcaster(r) => r
+///         .unwrap();
 ///
-///     run_upcaster_server("upcaster-player", 50401, handler).await;
+///     run_upcaster_server("upcaster-player", 50401, router).await;
 /// }
 /// ```
 pub async fn run_upcaster_server(
     name: &str,
     default_port: u16,
-    handler: UpcasterGrpcHandler,
+    router: crate::router::upcaster::UpcasterRouter,
 ) -> Result<(), tonic::transport::Error> {
     let config = ServerConfig::from_env(default_port);
+    let handler = UpcasterGrpc::new(router);
     let service = UpcasterServiceServer::new(handler);
 
     if let Some(uds_path) = &config.uds_path {

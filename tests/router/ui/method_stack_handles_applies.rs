@@ -1,7 +1,7 @@
 //! Stacking conflicting method-level decorators (@handles + @applies on the
 //! same method) must fail at macro parse time.
 
-use angzarr_client::aggregate;
+use angzarr_client::command_handler;
 use angzarr_client::proto::EventBook;
 use angzarr_client::CommandResult;
 
@@ -17,7 +17,7 @@ struct State;
 
 struct T;
 
-#[aggregate(domain = "x", state = State)]
+#[command_handler(domain = "x", state = State)]
 impl T {
     #[handles(Cmd)]
     #[applies(Cmd)]

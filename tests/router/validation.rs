@@ -7,9 +7,9 @@
 //! compile-fail harness that gherkin cannot express.
 
 #[test]
-fn aggregate_without_state_fails_to_compile() {
+fn command_handler_without_state_fails_to_compile() {
     let t = trybuild::TestCases::new();
-    t.compile_fail("tests/router/ui/aggregate_without_state.rs");
+    t.compile_fail("tests/router/ui/command_handler_without_state.rs");
 }
 
 #[test]

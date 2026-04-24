@@ -1,7 +1,7 @@
-error: #[aggregate] cannot coexist with #[aggregate] on the same impl; exactly one of #[aggregate] / #[saga] / #[process_manager] / #[projector] is allowed
+error: #[command_handler] cannot coexist with #[command_handler] on the same impl; exactly one of #[command_handler] / #[saga] / #[process_manager] / #[projector] / #[upcaster] is allowed
  --> tests/router/ui/stack_same_kind.rs:7:1
   |
-7 | #[aggregate(domain = "x", state = State)]
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+7 | #[command_handler(domain = "x", state = State)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
-  = note: this error originates in the attribute macro `aggregate` (in Nightly builds, run with -Z macro-backtrace for more info)
+  = note: this error originates in the attribute macro `command_handler` (in Nightly builds, run with -Z macro-backtrace for more info)

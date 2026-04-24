@@ -1,17 +1,18 @@
 //! Core `Handler` trait and supporting types for the unified router.
 //!
 //! Handlers are produced by proc-macro expansion in `angzarr-macros`. End users
-//! do not implement `Handler` by hand; they apply `#[aggregate]` / `#[saga]` /
+//! do not implement `Handler` by hand; they apply `#[command_handler]` / `#[saga]` /
 //! `#[process_manager]` / `#[projector]` on an inherent impl, and the macro
 //! emits `impl Handler for T`.
 
 use crate::proto::{
     BusinessResponse, ContextualCommand, EventBook, ProcessManagerHandleRequest,
-    ProcessManagerHandleResponse, Projection, SagaHandleRequest, SagaResponse,
+    ProcessManagerHandleResponse, Projection, SagaHandleRequest, SagaResponse, UpcastRequest,
+    UpcastResponse,
 };
 use crate::ClientError;
 
-/// The four handler kinds the unified router understands.
+/// The five handler kinds the unified router understands.
 ///
 /// Stored in [`HandlerConfig`] for mode inference at build time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +21,7 @@ pub enum Kind {
     Saga,
     ProcessManager,
     Projector,
+    Upcaster,
 }
 
 /// Metadata describing a handler produced by a kind macro.
@@ -62,6 +64,12 @@ pub enum HandlerConfig {
         domains: Vec<String>,
         handled: Vec<String>,
     },
+    Upcaster {
+        name: String,
+        domain: String,
+        /// `(from_type_url, to_type_url)` pairs — one per `#[upcasts]` method.
+        upcasts: Vec<(String, String)>,
+    },
 }
 
 impl HandlerConfig {
@@ -72,6 +80,7 @@ impl HandlerConfig {
             Self::Saga { .. } => Kind::Saga,
             Self::ProcessManager { .. } => Kind::ProcessManager,
             Self::Projector { .. } => Kind::Projector,
+            Self::Upcaster { .. } => Kind::Upcaster,
         }
     }
 }
@@ -85,6 +94,7 @@ pub enum HandlerRequest {
     Saga(SagaHandleRequest),
     ProcessManager(ProcessManagerHandleRequest),
     Projector(EventBook),
+    Upcaster(UpcastRequest),
 }
 
 /// Per-dispatch output from a handler.
@@ -97,6 +107,7 @@ pub enum HandlerResponse {
     Saga(SagaResponse),
     ProcessManager(ProcessManagerHandleResponse),
     Projector(Projection),
+    Upcaster(UpcastResponse),
 }
 
 /// Errors raised by `Router::build()` or runtime router construction.
@@ -112,6 +123,34 @@ pub enum BuildError {
     WrongKind { expected: Kind, requested: Kind },
 }
 
+/// Error raised by runtime dispatch (handler routing, request translation).
+///
+/// Separate from [`ClientError`](crate::ClientError) so dispatch-layer
+/// callers can distinguish routing failures from transport/grpc errors
+/// without matching on a broad enum. A `From<DispatchError> for ClientError`
+/// impl preserves single-type propagation where desired.
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+#[error("dispatch error ({code:?}): {details}")]
+pub struct DispatchError {
+    pub code: tonic::Code,
+    pub details: String,
+}
+
+impl DispatchError {
+    pub fn new(code: tonic::Code, details: impl Into<String>) -> Self {
+        Self {
+            code,
+            details: details.into(),
+        }
+    }
+}
+
+impl From<DispatchError> for crate::error::ClientError {
+    fn from(err: DispatchError) -> Self {
+        crate::error::ClientError::from(tonic::Status::new(err.code, err.details))
+    }
+}
+
 /// Typed output of [`Router::build`][crate::router::Router::build].
 ///
 /// One variant per handler kind. Obtain the concrete runtime router via the
@@ -122,6 +161,7 @@ pub enum Built {
     Saga(crate::router::runtime::SagaRouter),
     ProcessManager(crate::router::runtime::ProcessManagerRouter),
     Projector(crate::router::runtime::ProjectorRouter),
+    Upcaster(crate::router::upcaster::UpcasterRouter),
 }
 
 /// Minimal contract every handler implements.

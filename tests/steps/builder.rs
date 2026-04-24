@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-use angzarr_client::aggregate;
+use angzarr_client::command_handler;
 use angzarr_client::proto::EventBook;
 use angzarr_client::router::{BuildError, Built, Router};
 use angzarr_client::saga;
@@ -43,7 +43,7 @@ struct OrderState;
 
 struct OrderAgg;
 
-#[aggregate(domain = "order", state = OrderState)]
+#[command_handler(domain = "order", state = OrderState)]
 impl OrderAgg {
     #[handles(CreateOrder)]
     #[allow(unused_variables, dead_code)]
@@ -62,7 +62,7 @@ struct PaymentState;
 
 struct PaymentAgg;
 
-#[aggregate(domain = "payment", state = PaymentState)]
+#[command_handler(domain = "payment", state = PaymentState)]
 impl PaymentAgg {
     #[handles(CreateOrder)]
     #[allow(unused_variables, dead_code)]
@@ -77,7 +77,7 @@ impl PaymentAgg {
 }
 
 struct AlphaAgg;
-#[aggregate(domain = "order", state = OrderState)]
+#[command_handler(domain = "order", state = OrderState)]
 impl AlphaAgg {
     #[handles(CreateOrder)]
     #[allow(unused_variables, dead_code)]
@@ -92,7 +92,7 @@ impl AlphaAgg {
 }
 
 struct BetaAgg;
-#[aggregate(domain = "order", state = OrderState)]
+#[command_handler(domain = "order", state = OrderState)]
 impl BetaAgg {
     #[handles(CreateOrder)]
     #[allow(unused_variables, dead_code)]

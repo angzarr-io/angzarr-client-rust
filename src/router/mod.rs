@@ -20,22 +20,26 @@
 //! }
 //! ```
 
-mod builder;
+pub(crate) mod builder;
 mod handler;
 mod helpers;
+pub mod responses;
 pub mod runtime;
 mod state;
-mod upcaster;
+pub mod upcaster;
 
 // Public types
 pub use builder::Router;
 pub use handler::{
-    BuildError, Built, Handler, HandlerConfig, HandlerKind, HandlerRequest, HandlerResponse, Kind,
+    BuildError, Built, DispatchError, Handler, HandlerConfig, HandlerKind, HandlerRequest,
+    HandlerResponse, Kind,
 };
-pub use helpers::{event_book_from, event_page, new_event_book, new_event_book_multi, pack_event};
+pub use helpers::{
+    event_book_from, event_page, new_event_book, new_event_book_multi, pack_event, pack_events,
+};
+pub use responses::{ProcessManagerResponse, RejectionHandlerResponse, SagaHandlerResponse};
+pub use runtime::{CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter};
 pub use state::Destinations;
-pub use upcaster::{
-    BoxedUpcasterHandler, UpcasterHandler, UpcasterHandlerHOF, UpcasterMode, UpcasterRouter,
-};
+pub use upcaster::UpcasterRouter;
 
 pub use crate::error::{CommandRejectedError, CommandResult};

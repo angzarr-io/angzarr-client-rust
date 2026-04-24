@@ -73,7 +73,7 @@ impl CommandBuilderWorld {
         let builder = if let Some(root) = self.root {
             self.mock_client.command(&self.domain, root)
         } else {
-            self.mock_client.command(&self.domain, Uuid::new_v4())
+            self.mock_client.command_new(&self.domain)
         };
 
         let builder = if let Some(ref cid) = self.correlation_id {

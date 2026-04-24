@@ -9,6 +9,7 @@
 use crate::router::runtime::{
     CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter,
 };
+use crate::router::upcaster::UpcasterRouter;
 use crate::router::{BuildError, Built, Handler, HandlerKind, Kind};
 
 /// Type-erased handler factory paired with the kind of handler it produces.
@@ -100,6 +101,9 @@ impl Router {
                 factories: self.factories,
             }),
             Kind::Projector => Built::Projector(ProjectorRouter {
+                factories: self.factories,
+            }),
+            Kind::Upcaster => Built::Upcaster(UpcasterRouter {
                 factories: self.factories,
             }),
         })

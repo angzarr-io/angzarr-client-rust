@@ -1,0 +1,7 @@
+error: state is required
+ --> tests/router/ui/command_handler_without_state.rs:7:1
+  |
+7 | #[command_handler(domain = "x")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `command_handler` (in Nightly builds, run with -Z macro-backtrace for more info)

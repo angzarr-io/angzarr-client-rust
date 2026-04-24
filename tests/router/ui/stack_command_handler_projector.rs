@@ -1,10 +1,10 @@
-use angzarr_client::{aggregate, projector};
+use angzarr_client::{command_handler, projector};
 
 struct T;
 #[derive(Default)]
 struct State;
 
-#[aggregate(domain = "x", state = State)]
+#[command_handler(domain = "x", state = State)]
 #[projector(name = "p", domains = ["x"])]
 impl T {}
 

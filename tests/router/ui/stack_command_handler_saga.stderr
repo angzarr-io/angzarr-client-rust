@@ -1,0 +1,15 @@
+error: #[command_handler] cannot coexist with #[saga] on the same impl; exactly one of #[command_handler] / #[saga] / #[process_manager] / #[projector] / #[upcaster] is allowed
+ --> tests/router/ui/stack_command_handler_saga.rs:7:1
+  |
+7 | #[command_handler(domain = "x", state = State)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `command_handler` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused import: `saga`
+ --> tests/router/ui/stack_command_handler_saga.rs:1:39
+  |
+1 | use angzarr_client::{command_handler, saga};
+  |                                       ^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

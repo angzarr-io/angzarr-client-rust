@@ -5,7 +5,7 @@ use angzarr_client::proto::{
     Cover, EventBook, EventPage, Notification, RejectionNotification,
 };
 use angzarr_client::router::{Built, Router};
-use angzarr_client::{aggregate, full_type_url, CommandResult};
+use angzarr_client::{command_handler, full_type_url, CommandResult};
 use cucumber::{given, then, when, World};
 use prost::Message;
 use prost_types::Any;
@@ -40,7 +40,7 @@ struct PaymentState;
 
 struct Payment;
 
-#[aggregate(domain = "payment", state = PaymentState)]
+#[command_handler(domain = "payment", state = PaymentState)]
 impl Payment {
     #[rejected(domain = "inventory", command = "ReserveStock")]
     #[allow(unused_variables, dead_code)]
@@ -66,7 +66,7 @@ impl Payment {
 
 struct Payment2;
 
-#[aggregate(domain = "payment", state = PaymentState)]
+#[command_handler(domain = "payment", state = PaymentState)]
 impl Payment2 {
     #[rejected(domain = "inventory", command = "ReserveStock")]
     #[allow(unused_variables, dead_code)]

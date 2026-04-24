@@ -75,11 +75,11 @@ impl CommandHandlerService for CommandHandlerGrpc {
 }
 
 /// gRPC saga service wrapping a [`SagaRouter`].
-pub struct SagaHandler {
+pub struct SagaGrpc {
     router: Arc<SagaRouter>,
 }
 
-impl SagaHandler {
+impl SagaGrpc {
     pub fn new(router: SagaRouter) -> Self {
         Self {
             router: Arc::new(router),
@@ -87,7 +87,7 @@ impl SagaHandler {
     }
 }
 
-impl Clone for SagaHandler {
+impl Clone for SagaGrpc {
     fn clone(&self) -> Self {
         Self {
             router: Arc::clone(&self.router),
@@ -96,7 +96,7 @@ impl Clone for SagaHandler {
 }
 
 #[tonic::async_trait]
-impl SagaService for SagaHandler {
+impl SagaService for SagaGrpc {
     async fn handle(
         &self,
         request: Request<SagaHandleRequest>,
@@ -108,11 +108,11 @@ impl SagaService for SagaHandler {
 }
 
 /// gRPC process-manager service wrapping a [`ProcessManagerRouter`].
-pub struct ProcessManagerGrpcHandler {
+pub struct ProcessManagerGrpc {
     router: Arc<ProcessManagerRouter>,
 }
 
-impl ProcessManagerGrpcHandler {
+impl ProcessManagerGrpc {
     pub fn new(router: ProcessManagerRouter) -> Self {
         Self {
             router: Arc::new(router),
@@ -121,7 +121,7 @@ impl ProcessManagerGrpcHandler {
 }
 
 #[tonic::async_trait]
-impl ProcessManagerService for ProcessManagerGrpcHandler {
+impl ProcessManagerService for ProcessManagerGrpc {
     async fn prepare(
         &self,
         _request: Request<ProcessManagerPrepareRequest>,
@@ -142,11 +142,11 @@ impl ProcessManagerService for ProcessManagerGrpcHandler {
 }
 
 /// gRPC projector service wrapping a [`ProjectorRouter`].
-pub struct ProjectorHandler {
+pub struct ProjectorGrpc {
     router: Arc<ProjectorRouter>,
 }
 
-impl ProjectorHandler {
+impl ProjectorGrpc {
     pub fn new(router: ProjectorRouter) -> Self {
         Self {
             router: Arc::new(router),
@@ -155,7 +155,7 @@ impl ProjectorHandler {
 }
 
 #[tonic::async_trait]
-impl ProjectorService for ProjectorHandler {
+impl ProjectorService for ProjectorGrpc {
     async fn handle(&self, request: Request<EventBook>) -> Result<Response<Projection>, Status> {
         let book = request.into_inner();
         let projection = self.router.dispatch(book).map_err(client_error_to_status)?;
@@ -181,70 +181,31 @@ fn client_error_to_status(err: ClientError) -> Status {
 }
 
 // ---------------------------------------------------------------------------
-// Upcaster wrappers — unchanged Tier 5 semantics.
-// Upcaster stays outside the unified Router (plan: "separate system").
+// Upcaster wrappers — unified-Router factory-based dispatch (R8b).
 // ---------------------------------------------------------------------------
 
-pub type UpcasterHandleFn = fn(&[crate::proto::EventPage]) -> Vec<crate::proto::EventPage>;
-
-pub type UpcasterHandleClosureFn =
-    Arc<dyn Fn(&[crate::proto::EventPage]) -> Vec<crate::proto::EventPage> + Send + Sync>;
-
-enum UpcasterHandleType {
-    Fn(UpcasterHandleFn),
-    Closure(UpcasterHandleClosureFn),
+/// gRPC upcaster service wrapping an [`UpcasterRouter`].
+pub struct UpcasterGrpc {
+    router: Arc<crate::router::upcaster::UpcasterRouter>,
 }
 
-pub struct UpcasterGrpcHandler {
-    name: String,
-    domain: String,
-    handle_type: Option<UpcasterHandleType>,
-}
-
-impl UpcasterGrpcHandler {
-    pub fn new(name: impl Into<String>, domain: impl Into<String>) -> Self {
+impl UpcasterGrpc {
+    pub fn new(router: crate::router::upcaster::UpcasterRouter) -> Self {
         Self {
-            name: name.into(),
-            domain: domain.into(),
-            handle_type: None,
+            router: Arc::new(router),
         }
-    }
-
-    pub fn with_handle(mut self, handle_fn: UpcasterHandleFn) -> Self {
-        self.handle_type = Some(UpcasterHandleType::Fn(handle_fn));
-        self
-    }
-
-    pub fn with_handle_fn<H>(mut self, handle_fn: H) -> Self
-    where
-        H: Fn(&[crate::proto::EventPage]) -> Vec<crate::proto::EventPage> + Send + Sync + 'static,
-    {
-        self.handle_type = Some(UpcasterHandleType::Closure(Arc::new(handle_fn)));
-        self
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn domain(&self) -> &str {
-        &self.domain
     }
 }
 
 #[tonic::async_trait]
-impl UpcasterService for UpcasterGrpcHandler {
+impl UpcasterService for UpcasterGrpc {
     async fn upcast(
         &self,
         request: Request<UpcastRequest>,
     ) -> Result<Response<UpcastResponse>, Status> {
         let req = request.into_inner();
-        let result = match &self.handle_type {
-            Some(UpcasterHandleType::Fn(handle_fn)) => handle_fn(&req.events),
-            Some(UpcasterHandleType::Closure(handle_fn)) => handle_fn(&req.events),
-            None => req.events,
-        };
-        Ok(Response::new(UpcastResponse { events: result }))
+        let response = self.router.dispatch(req).map_err(client_error_to_status)?;
+        Ok(Response::new(response))
     }
 }
 

@@ -551,7 +551,12 @@ async fn then_payload_contains_rejection(world: &mut CompensationWorld) {
 #[then(expr = "the payload type_url should be {string}")]
 async fn then_payload_type_url(world: &mut CompensationWorld, expected: String) {
     let notif = world.notification.as_ref().unwrap();
-    assert_eq!(notif.payload_type_url, expected);
+    // The shared feature file hardcodes the Rust-internal proto package
+    // path (`angzarr_client.proto.angzarr.*`); on the wire we strip that
+    // prefix so other languages see the package-qualified short name.
+    // Normalize both sides to the wire form before comparing.
+    let expected_wire = expected.replace("angzarr_client.proto.angzarr.", "angzarr.");
+    assert_eq!(notif.payload_type_url, expected_wire);
 }
 
 #[then("the notification should have a sent_at timestamp")]

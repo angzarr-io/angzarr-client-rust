@@ -62,12 +62,14 @@ pub mod compensation;
 pub mod convert;
 pub mod error;
 pub mod handler;
+pub mod identity;
 #[path = "proto.rs"]
 pub mod proto;
 pub mod proto_ext;
 pub mod retry;
 pub mod router;
 pub mod server;
+pub mod testing;
 pub mod traits;
 pub mod transport;
 pub mod validation;
@@ -75,11 +77,20 @@ pub mod validation;
 // Re-export main types at crate root
 pub use client::{CommandHandlerClient, DomainClient, QueryClient, SpeculativeClient};
 pub use error::{ClientError, CommandRejectedError, CommandResult, Result};
-pub use retry::{default_retry_policy, RetryPolicy};
+pub use identity::{
+    cart_root, compute_root, customer_root, fulfillment_root, inventory_product_root,
+    inventory_root, order_root, product_root, to_proto_bytes, INVENTORY_PRODUCT_NAMESPACE,
+};
+pub use retry::{default_retry_policy, ExponentialBackoffRetry, RetryPolicy};
+pub use testing::{
+    make_command_book, make_command_page, make_cover, make_event_book, make_event_page,
+    make_timestamp, pack_event as testing_pack_event, uuid_for, uuid_obj_for, uuid_str_for,
+    ScenarioContext, DEFAULT_TEST_NAMESPACE,
+};
 pub use transport::{resolve_ch_endpoint, TransportMode};
 
 // Re-export builder extension traits for fluent API
-pub use builder::{CommandBuilderExt, QueryBuilderExt};
+pub use builder::{CommandBuilder, CommandBuilderExt, QueryBuilder, QueryBuilderExt};
 
 // Re-export compensation helpers
 pub use compensation::{
@@ -92,13 +103,15 @@ pub use compensation::{
 pub use builder::{decode_event, events_from_response, root_from_cover};
 pub use convert::{
     full_type_name, full_type_url, now, parse_timestamp, proto_to_uuid, try_unpack, type_matches,
-    type_name_from_url, type_url, type_url_matches_exact, unpack, uuid_to_proto, TYPE_URL_PREFIX,
+    type_name_from_url, type_url, type_url_matches, type_url_matches_exact, unpack, uuid_to_proto,
+    DEFAULT_EDITION, META_ANGZARR_DOMAIN, PROJECTION_DOMAIN_PREFIX, PROJECTION_TYPE_URL,
+    TYPE_URL_PREFIX, UNKNOWN_DOMAIN, WILDCARD_DOMAIN,
 };
 
 // Re-export extension traits
 pub use proto_ext::{
-    CommandBookExt, CommandPageExt, CoverExt, EditionExt, EventBookExt, EventPageExt, ProtoUuidExt,
-    UuidExt,
+    destination_map, CommandBookExt, CommandPageExt, CoverExt, EditionExt, EventBookExt,
+    EventPageExt, ProtoUuidExt, UuidExt,
 };
 
 // Re-export Tier 5 unified router surface
@@ -109,37 +122,42 @@ pub use router::{
     new_event_book,
     new_event_book_multi,
     pack_event,
-    // Upcaster types (separate system, retained)
-    BoxedUpcasterHandler,
+    pack_events,
     // Tier 5 unified Handler contract
     BuildError,
     Built,
+    // Typed runtime routers returned by Router::build()
+    CommandHandlerRouter,
     // Destination-sequence stamping for saga/PM outbound commands
     Destinations,
+    DispatchError,
     Handler,
     HandlerConfig,
     HandlerKind,
     HandlerRequest,
     HandlerResponse,
     Kind,
+    ProcessManagerResponse,
+    ProcessManagerRouter,
+    ProjectorRouter,
+    RejectionHandlerResponse,
     // Builder
     Router,
-    UpcasterHandler,
-    UpcasterHandlerHOF,
-    UpcasterMode,
+    SagaHandlerResponse,
+    SagaRouter,
     UpcasterRouter,
 };
 
 // Re-export handler types
 pub use handler::{
-    CommandHandlerGrpc, ProcessManagerGrpcHandler, ProjectorHandler, SagaHandler, StatePacker,
-    UpcasterGrpcHandler, UpcasterHandleClosureFn, UpcasterHandleFn,
+    CommandHandlerGrpc, ProcessManagerGrpc, ProjectorGrpc, SagaGrpc, StatePacker, UpcasterGrpc,
 };
 
 // Re-export server utilities
 pub use server::{
+    cleanup_socket, configure_logging, create_server, get_transport_config,
     run_command_handler_server, run_process_manager_server, run_projector_server, run_saga_server,
-    run_upcaster_server, ServerConfig,
+    run_server, run_upcaster_server, ServerConfig,
 };
 
 // Re-export validation helpers
@@ -149,4 +167,7 @@ pub use validation::{
 };
 
 // Re-export proc macros for Tier 5 OO-style component definitions
-pub use angzarr_macros::{aggregate, applies, handles, process_manager, projector, rejected, saga};
+pub use angzarr_macros::{
+    applies, command_handler, handles, process_manager, projector, rejected, saga, state_factory,
+    upcaster, upcasts,
+};

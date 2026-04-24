@@ -13,9 +13,10 @@ default:
 build:
     cargo build --workspace
 
-# Run all tests (lib tests only, no doc tests)
+# Run all tests: lib tests + cucumber feature suites + trybuild UI snapshots.
 test:
     cargo test --workspace --lib
+    cargo test --test features --no-fail-fast
 
 # Run clippy linter
 lint:

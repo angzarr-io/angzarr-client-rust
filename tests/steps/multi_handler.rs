@@ -12,7 +12,9 @@ use angzarr_client::proto::{
     SagaHandleRequest, SagaResponse,
 };
 use angzarr_client::router::{Built, Router};
-use angzarr_client::{aggregate, full_type_url, process_manager, projector, saga, CommandResult};
+use angzarr_client::{
+    command_handler, full_type_url, process_manager, projector, saga, CommandResult,
+};
 use cucumber::{given, then, when, World};
 use prost::Message;
 use prost_types::Any;
@@ -64,7 +66,7 @@ struct S;
 // ---------------------------------------------------------------------------
 
 struct Alpha;
-#[aggregate(domain = "order", state = S)]
+#[command_handler(domain = "order", state = S)]
 impl Alpha {
     #[handles(CreateOrder)]
     #[allow(unused_variables, dead_code)]
@@ -84,7 +86,7 @@ impl Alpha {
 }
 
 struct Beta;
-#[aggregate(domain = "order", state = S)]
+#[command_handler(domain = "order", state = S)]
 impl Beta {
     #[handles(CreateOrder)]
     #[allow(unused_variables, dead_code)]

@@ -138,20 +138,23 @@ pub fn delegate_to_framework(reason: impl Into<String>) -> BusinessResponse {
 ///
 /// Provides fine-grained control over framework compensation behavior:
 /// - `emit_system_event`: emit SagaCompensationFailed event
-/// - `send_to_dlq`: send to dead letter queue
+/// - `send_to_dead_letter`: send to dead letter queue
 /// - `escalate`: flag for alerting/human intervention
 /// - `abort`: stop saga chain, propagate error to caller
+///
+/// Parameter name matches Python's `delegate_to_framework(send_to_dead_letter=...)`
+/// kwarg.
 pub fn delegate_to_framework_with_options(
     reason: impl Into<String>,
     emit_system_event: bool,
-    send_to_dlq: bool,
+    send_to_dead_letter: bool,
     escalate: bool,
     abort: bool,
 ) -> BusinessResponse {
     BusinessResponse {
         result: Some(business_response::Result::Revocation(RevocationResponse {
             emit_system_revocation: emit_system_event,
-            send_to_dead_letter_queue: send_to_dlq,
+            send_to_dead_letter_queue: send_to_dead_letter,
             escalate,
             abort,
             reason: reason.into(),
