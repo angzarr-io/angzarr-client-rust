@@ -16,6 +16,7 @@ use steps::command_builder::CommandBuilderWorld;
 use steps::command_handler::CommandHandlerWorld;
 use steps::compensation::CompensationWorld;
 use steps::connection::ConnectionWorld;
+use steps::decorators::DecoratorsWorldCucumber;
 use steps::domain_client::DomainClientWorld;
 use steps::error_handling::ErrorHandlingWorld;
 use steps::event_decoding::EventDecodingWorld;
@@ -228,5 +229,12 @@ async fn main() {
     RetryWorld::cucumber()
         .fail_on_skipped()
         .run("angzarr-project/features/client/retry.feature")
+        .await;
+
+    // Run Decorators tests (kind-declaration parity, C-0121..C-0126)
+    println!("\n=== Running Decorators Tests ===\n");
+    DecoratorsWorldCucumber::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/client/decorators.feature")
         .await;
 }
