@@ -446,7 +446,10 @@ mod tests {
     }
 
     #[test]
-    fn test_command_builder_build_missing_sequence() {
+    fn test_command_builder_build_missing_sequence_defaults_to_zero() {
+        // Missing sequence is no longer an error — it defaults to 0 to
+        // match Python's CommandBuilder contract. Missing type_url /
+        // payload still produce InvalidArgument errors.
         let client = MockGatewayClient {
             response: CommandResponse::default(),
         };
@@ -455,13 +458,17 @@ mod tests {
             seconds: 42,
             nanos: 0,
         };
-        let result = CommandBuilder::new(&client, "orders", root)
+        let cmd = CommandBuilder::new(&client, "orders", root)
             .with_command("type.googleapis.com/test.Command", &msg)
-            .build();
+            .build()
+            .expect("build should succeed with default sequence=0");
 
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.is_invalid_argument());
+        let page = &cmd.pages[0];
+        use crate::proto::page_header::SequenceType;
+        match page.header.as_ref().and_then(|h| h.sequence_type.as_ref()) {
+            Some(SequenceType::Sequence(s)) => assert_eq!(*s, 0),
+            other => panic!("expected Sequence(0), got {:?}", other),
+        }
     }
 
     // QueryBuilder tests
@@ -750,7 +757,7 @@ mod tests {
         let builder = client.command("orders", root);
 
         assert_eq!(builder.domain, "orders");
-        assert_eq!(builder.root, root);
+        assert_eq!(builder.root, Some(root));
     }
 
     #[test]
