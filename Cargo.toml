@@ -13,6 +13,14 @@ documentation = "https://docs.rs/angzarr-client"
 keywords = ["cqrs", "event-sourcing", "grpc", "client"]
 categories = ["network-programming", "asynchronous"]
 
+[package.metadata.docs.rs]
+# Tell docs.rs to build with all features enabled and pin to one target so the
+# page's left nav lists the full API. docs.rs picks these up automatically on
+# `cargo publish` — no external workflow or secret needed.
+all-features = true
+targets = ["x86_64-unknown-linux-gnu"]
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 # Macros (re-exported for convenience)
 angzarr-macros = { version = "0.1.0", path = "angzarr-macros" }

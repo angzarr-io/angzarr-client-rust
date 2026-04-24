@@ -76,7 +76,7 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
 
     /// Build the CommandBook without executing.
     ///
-    /// `type_url` and `payload` (set together by [`with_command`]) are
+    /// `type_url` and `payload` (set together by [`CommandBuilder::with_command`]) are
     /// required. `sequence` defaults to 0 when unset — matching Python's
     /// CommandBuilder semantics. `correlation_id` defaults to a fresh
     /// random UUID when unset.

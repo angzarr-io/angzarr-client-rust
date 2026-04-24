@@ -53,7 +53,7 @@ pub fn create_server() -> Server {
     Server::builder()
 }
 
-/// Run a server for any [`Built`] router kind.
+/// Run a server for any [`crate::router::Built`] router kind.
 ///
 /// Dispatches to the per-kind `run_*_server` function based on the
 /// `Built` variant. Honors the env-var-driven TCP/UDS transport selection.

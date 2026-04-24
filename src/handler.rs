@@ -184,7 +184,7 @@ fn client_error_to_status(err: ClientError) -> Status {
 // Upcaster wrappers — unified-Router factory-based dispatch (R8b).
 // ---------------------------------------------------------------------------
 
-/// gRPC upcaster service wrapping an [`UpcasterRouter`].
+/// gRPC upcaster service wrapping an [`crate::router::UpcasterRouter`].
 pub struct UpcasterGrpc {
     router: Arc<crate::router::upcaster::UpcasterRouter>,
 }
