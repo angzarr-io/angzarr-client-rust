@@ -55,12 +55,32 @@ pub fn create_server() -> Server {
     Server::builder()
 }
 
-/// Generic server runner alias. Rust's server lifecycle is typed per
-/// handler kind, so this is a no-op placeholder that exists for
-/// cross-language name parity. Prefer the kind-specific
-/// `run_command_handler_server` / `run_saga_server` / etc.
-pub async fn run_server() {
-    // Intentionally empty — see kind-specific runners above.
+/// Run a server for any [`Built`] router kind.
+///
+/// Dispatches to the per-kind `run_*_server` function based on the
+/// `Built` variant. Honors the env-var-driven TCP/UDS transport selection.
+/// Cross-language alias for Python's generic `run_server(...)`.
+pub async fn run_server(
+    name: &str,
+    default_port: u16,
+    built: crate::router::Built,
+) -> Result<(), tonic::transport::Error> {
+    match built {
+        crate::router::Built::CommandHandler(router) => {
+            run_command_handler_server(name, default_port, router).await
+        }
+        crate::router::Built::Saga(router) => run_saga_server(name, default_port, router).await,
+        crate::router::Built::ProcessManager(router) => {
+            run_process_manager_server(name, default_port, router).await
+        }
+        crate::router::Built::Projector(router) => {
+            let handler = crate::handler::ProjectorGrpc::new(router);
+            run_projector_server(name, default_port, handler).await
+        }
+        crate::router::Built::Upcaster(router) => {
+            run_upcaster_server(name, default_port, router).await
+        }
+    }
 }
 
 /// Remove a stale UDS socket file at `path`. Mirrors Python's
@@ -349,38 +369,34 @@ pub async fn run_process_manager_server(
     }
 }
 
-/// Run an upcaster service with the given handler.
+/// Run an upcaster service with the given router.
 ///
 /// Supports both TCP and Unix domain socket (UDS) transport.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// use angzarr_client::{run_upcaster_server, UpcasterGrpc, UpcasterRouter};
-///
-/// fn upcast_events(events: &[EventPage]) -> Vec<EventPage> {
-///     let router = UpcasterRouter::new("player")
-///         .on("PlayerRegisteredV1", |old| {
-///             // Transform old event to new version
-///             old.clone()
-///         });
-///     router.upcast(events)
-/// }
+/// use angzarr_client::{run_upcaster_server, Router};
 ///
 /// #[tokio::main]
 /// async fn main() {
-///     let handler = UpcasterGrpc::new("upcaster-player", "player")
-///         .with_handle(upcast_events);
+///     let router = Router::new("upcaster-player")
+///         .with_handler(|| PlayerUpcaster::new())
+///         .build()
+///         .unwrap()
+///         .into_upcaster()   // or match on Built::Upcaster(r) => r
+///         .unwrap();
 ///
-///     run_upcaster_server("upcaster-player", 50401, handler).await;
+///     run_upcaster_server("upcaster-player", 50401, router).await;
 /// }
 /// ```
 pub async fn run_upcaster_server(
     name: &str,
     default_port: u16,
-    handler: UpcasterGrpc,
+    router: crate::router::upcaster::UpcasterRouter,
 ) -> Result<(), tonic::transport::Error> {
     let config = ServerConfig::from_env(default_port);
+    let handler = UpcasterGrpc::new(router);
     let service = UpcasterServiceServer::new(handler);
 
     if let Some(uds_path) = &config.uds_path {

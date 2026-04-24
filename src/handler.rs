@@ -181,54 +181,19 @@ fn client_error_to_status(err: ClientError) -> Status {
 }
 
 // ---------------------------------------------------------------------------
-// Upcaster wrappers — unchanged Tier 5 semantics.
-// Upcaster stays outside the unified Router (plan: "separate system").
+// Upcaster wrappers — unified-Router factory-based dispatch (R8b).
 // ---------------------------------------------------------------------------
 
-pub type UpcasterHandleFn = fn(&[crate::proto::EventPage]) -> Vec<crate::proto::EventPage>;
-
-pub type UpcasterHandleClosureFn =
-    Arc<dyn Fn(&[crate::proto::EventPage]) -> Vec<crate::proto::EventPage> + Send + Sync>;
-
-enum UpcasterHandleType {
-    Fn(UpcasterHandleFn),
-    Closure(UpcasterHandleClosureFn),
-}
-
+/// gRPC upcaster service wrapping an [`UpcasterRouter`].
 pub struct UpcasterGrpc {
-    name: String,
-    domain: String,
-    handle_type: Option<UpcasterHandleType>,
+    router: Arc<crate::router::upcaster::UpcasterRouter>,
 }
 
 impl UpcasterGrpc {
-    pub fn new(name: impl Into<String>, domain: impl Into<String>) -> Self {
+    pub fn new(router: crate::router::upcaster::UpcasterRouter) -> Self {
         Self {
-            name: name.into(),
-            domain: domain.into(),
-            handle_type: None,
+            router: Arc::new(router),
         }
-    }
-
-    pub fn with_handle(mut self, handle_fn: UpcasterHandleFn) -> Self {
-        self.handle_type = Some(UpcasterHandleType::Fn(handle_fn));
-        self
-    }
-
-    pub fn with_handle_fn<H>(mut self, handle_fn: H) -> Self
-    where
-        H: Fn(&[crate::proto::EventPage]) -> Vec<crate::proto::EventPage> + Send + Sync + 'static,
-    {
-        self.handle_type = Some(UpcasterHandleType::Closure(Arc::new(handle_fn)));
-        self
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn domain(&self) -> &str {
-        &self.domain
     }
 }
 
@@ -239,12 +204,11 @@ impl UpcasterService for UpcasterGrpc {
         request: Request<UpcastRequest>,
     ) -> Result<Response<UpcastResponse>, Status> {
         let req = request.into_inner();
-        let result = match &self.handle_type {
-            Some(UpcasterHandleType::Fn(handle_fn)) => handle_fn(&req.events),
-            Some(UpcasterHandleType::Closure(handle_fn)) => handle_fn(&req.events),
-            None => req.events,
-        };
-        Ok(Response::new(UpcastResponse { events: result }))
+        let response = self
+            .router
+            .dispatch(req)
+            .map_err(client_error_to_status)?;
+        Ok(Response::new(response))
     }
 }
 

@@ -7,11 +7,12 @@
 
 use crate::proto::{
     BusinessResponse, ContextualCommand, EventBook, ProcessManagerHandleRequest,
-    ProcessManagerHandleResponse, Projection, SagaHandleRequest, SagaResponse,
+    ProcessManagerHandleResponse, Projection, SagaHandleRequest, SagaResponse, UpcastRequest,
+    UpcastResponse,
 };
 use crate::ClientError;
 
-/// The four handler kinds the unified router understands.
+/// The five handler kinds the unified router understands.
 ///
 /// Stored in [`HandlerConfig`] for mode inference at build time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +21,7 @@ pub enum Kind {
     Saga,
     ProcessManager,
     Projector,
+    Upcaster,
 }
 
 /// Metadata describing a handler produced by a kind macro.
@@ -62,6 +64,12 @@ pub enum HandlerConfig {
         domains: Vec<String>,
         handled: Vec<String>,
     },
+    Upcaster {
+        name: String,
+        domain: String,
+        /// `(from_type_url, to_type_url)` pairs — one per `#[upcasts]` method.
+        upcasts: Vec<(String, String)>,
+    },
 }
 
 impl HandlerConfig {
@@ -72,6 +80,7 @@ impl HandlerConfig {
             Self::Saga { .. } => Kind::Saga,
             Self::ProcessManager { .. } => Kind::ProcessManager,
             Self::Projector { .. } => Kind::Projector,
+            Self::Upcaster { .. } => Kind::Upcaster,
         }
     }
 }
@@ -85,6 +94,7 @@ pub enum HandlerRequest {
     Saga(SagaHandleRequest),
     ProcessManager(ProcessManagerHandleRequest),
     Projector(EventBook),
+    Upcaster(UpcastRequest),
 }
 
 /// Per-dispatch output from a handler.
@@ -97,6 +107,7 @@ pub enum HandlerResponse {
     Saga(SagaResponse),
     ProcessManager(ProcessManagerHandleResponse),
     Projector(Projection),
+    Upcaster(UpcastResponse),
 }
 
 /// Errors raised by `Router::build()` or runtime router construction.
@@ -150,6 +161,7 @@ pub enum Built {
     Saga(crate::router::runtime::SagaRouter),
     ProcessManager(crate::router::runtime::ProcessManagerRouter),
     Projector(crate::router::runtime::ProjectorRouter),
+    Upcaster(crate::router::upcaster::UpcasterRouter),
 }
 
 /// Minimal contract every handler implements.

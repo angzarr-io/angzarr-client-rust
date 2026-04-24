@@ -20,13 +20,13 @@
 //! }
 //! ```
 
-mod builder;
+pub(crate) mod builder;
 mod handler;
 mod helpers;
 pub mod responses;
 pub mod runtime;
 mod state;
-mod upcaster;
+pub mod upcaster;
 
 // Public types
 pub use builder::Router;
@@ -42,8 +42,6 @@ pub use runtime::{
     CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter,
 };
 pub use state::Destinations;
-pub use upcaster::{
-    BoxedUpcasterHandler, UpcasterHandler, UpcasterHandlerHOF, UpcasterMode, UpcasterRouter,
-};
+pub use upcaster::UpcasterRouter;
 
 pub use crate::error::{CommandRejectedError, CommandResult};

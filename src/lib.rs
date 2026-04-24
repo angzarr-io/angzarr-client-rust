@@ -123,8 +123,6 @@ pub use router::{
     new_event_book_multi,
     pack_event,
     pack_events,
-    // Upcaster types (separate system, retained)
-    BoxedUpcasterHandler,
     // Tier 5 unified Handler contract
     BuildError,
     Built,
@@ -147,16 +145,12 @@ pub use router::{
     Router,
     SagaHandlerResponse,
     SagaRouter,
-    UpcasterHandler,
-    UpcasterHandlerHOF,
-    UpcasterMode,
     UpcasterRouter,
 };
 
 // Re-export handler types
 pub use handler::{
     CommandHandlerGrpc, ProcessManagerGrpc, ProjectorGrpc, SagaGrpc, StatePacker, UpcasterGrpc,
-    UpcasterHandleClosureFn, UpcasterHandleFn,
 };
 
 // Re-export server utilities

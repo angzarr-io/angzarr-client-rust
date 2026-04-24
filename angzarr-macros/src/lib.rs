@@ -58,7 +58,13 @@ use quote::quote;
 use syn::{parse_macro_input, Attribute, Ident, ImplItem, ItemImpl, Meta, Token};
 
 /// Kind attributes that may NOT coexist on the same impl.
-const KIND_ATTRS: &[&str] = &["command_handler", "saga", "process_manager", "projector"];
+const KIND_ATTRS: &[&str] = &[
+    "command_handler",
+    "saga",
+    "process_manager",
+    "projector",
+    "upcaster",
+];
 
 /// If `attrs` contains a sibling kind attribute, return a `compile_error!` TokenStream.
 ///
@@ -70,7 +76,7 @@ fn reject_stacked_kinds(this_kind: &str, attrs: &[Attribute]) -> Option<TokenStr
         for kind in KIND_ATTRS {
             if attr.path().is_ident(kind) {
                 let msg = format!(
-                    "#[{this_kind}] cannot coexist with #[{kind}] on the same impl; exactly one of #[command_handler] / #[saga] / #[process_manager] / #[projector] is allowed"
+                    "#[{this_kind}] cannot coexist with #[{kind}] on the same impl; exactly one of #[command_handler] / #[saga] / #[process_manager] / #[projector] / #[upcaster] is allowed"
                 );
                 return Some(quote! { ::std::compile_error!(#msg); });
             }
@@ -428,6 +434,8 @@ struct MethodMetadata {
     applies_with_methods: Vec<(Ident, Ident)>,
     /// Name of the method annotated with `#[state_factory]`, if any.
     state_factory: Option<Ident>,
+    /// `(method name, from type, to type)` triples for upcaster dispatch arms.
+    upcasts_with_methods: Vec<(Ident, Ident, Ident)>,
 }
 
 fn collect_method_metadata(input: &ItemImpl) -> MethodMetadata {
@@ -438,6 +446,7 @@ fn collect_method_metadata(input: &ItemImpl) -> MethodMetadata {
     let mut applies = Vec::new();
     let mut applies_with_methods = Vec::new();
     let mut state_factory = None;
+    let mut upcasts_with_methods = Vec::new();
 
     for item in &input.items {
         let ImplItem::Fn(method) = item else { continue };
@@ -459,6 +468,10 @@ fn collect_method_metadata(input: &ItemImpl) -> MethodMetadata {
                 }
             } else if attr.path().is_ident("state_factory") {
                 state_factory = Some(method.sig.ident.clone());
+            } else if attr.path().is_ident("upcasts") {
+                if let Ok((from, to)) = get_upcasts_args(attr) {
+                    upcasts_with_methods.push((method.sig.ident.clone(), from, to));
+                }
             }
         }
     }
@@ -471,11 +484,64 @@ fn collect_method_metadata(input: &ItemImpl) -> MethodMetadata {
         applies,
         applies_with_methods,
         state_factory,
+        upcasts_with_methods,
     }
 }
 
-/// Strip `#[handles]`, `#[applies]`, `#[rejected]`, `#[state_factory]` from
-/// the methods of an impl block so rustc doesn't see them as unknown attrs.
+fn get_upcasts_args(attr: &Attribute) -> syn::Result<(Ident, Ident)> {
+    let meta = attr.meta.clone();
+    match meta {
+        Meta::List(list) => {
+            let args: UpcastsArgsParse = syn::parse2(list.tokens)?;
+            Ok((args.from, args.to))
+        }
+        _ => Err(syn::Error::new_spanned(
+            attr,
+            "expected #[upcasts(from = FromType, to = ToType)]",
+        )),
+    }
+}
+
+struct UpcastsArgsParse {
+    from: Ident,
+    to: Ident,
+}
+
+impl syn::parse::Parse for UpcastsArgsParse {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mut from = None;
+        let mut to = None;
+
+        while !input.is_empty() {
+            let ident: Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+            let value: Ident = input.parse()?;
+
+            match ident.to_string().as_str() {
+                "from" => from = Some(value),
+                "to" => to = Some(value),
+                _ => return Err(syn::Error::new(ident.span(), "unknown attribute")),
+            }
+
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            }
+        }
+
+        Ok(UpcastsArgsParse {
+            from: from.ok_or_else(|| {
+                syn::Error::new(proc_macro2::Span::call_site(), "from is required")
+            })?,
+            to: to.ok_or_else(|| {
+                syn::Error::new(proc_macro2::Span::call_site(), "to is required")
+            })?,
+        })
+    }
+}
+
+/// Strip `#[handles]`, `#[applies]`, `#[rejected]`, `#[state_factory]`,
+/// `#[upcasts]` from the methods of an impl block so rustc doesn't see
+/// them as unknown attrs.
 fn strip_method_markers(input: &mut ItemImpl) {
     for item in &mut input.items {
         if let ImplItem::Fn(method) = item {
@@ -484,6 +550,7 @@ fn strip_method_markers(input: &mut ItemImpl) {
                     && !attr.path().is_ident("rejected")
                     && !attr.path().is_ident("applies")
                     && !attr.path().is_ident("state_factory")
+                    && !attr.path().is_ident("upcasts")
             });
         }
     }
@@ -1362,19 +1429,137 @@ impl syn::parse::Parse for UpcastsArgs {
 /// #[upcaster(name = "player-v1-to-v2", domain = "player")]
 /// impl PlayerUpcaster {
 ///     #[upcasts(from = PlayerRegisteredV1, to = PlayerRegisteredV2)]
-///     fn upgrade(old: PlayerRegisteredV1) -> PlayerRegisteredV2 { ... }
+///     fn upgrade(old: PlayerRegisteredV1) -> PlayerRegisteredV2 { /* ... */ }
 /// }
+///
+/// let router = Router::new("upcaster-player")
+///     .with_handler(|| PlayerUpcaster)
+///     .build()?
+///     .into_upcaster()?; // or match Built::Upcaster(r)
 /// ```
 ///
-/// The macro currently validates attribute shape and passes the impl
-/// through unchanged. Full Handler-trait / Router-builder integration for
-/// upcasters is a follow-up task; until it lands, callers register
-/// transforms directly on [`angzarr_client::UpcasterRouter`].
+/// The macro emits `impl HandlerKind` + `impl Handler` on the annotated
+/// type so the unified [`Router`] builder accepts it as a homogeneous
+/// factory. Dispatch matches each incoming event's type URL against the
+/// registered `#[upcasts(from = …, to = …)]` pairs and invokes the first
+/// matching method; events without a matching transform pass through.
 #[proc_macro_attribute]
 pub fn upcaster(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as UpcasterArgs);
-    let _ = args;
-    item
+    let input = parse_macro_input!(item as ItemImpl);
+
+    if let Some(err) = reject_stacked_kinds("upcaster", &input.attrs) {
+        return TokenStream::from(err);
+    }
+
+    let expanded = expand_upcaster(args, input);
+    TokenStream::from(expanded)
+}
+
+fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
+    let name = &args.name;
+    let domain = &args.domain;
+    let self_ty = input.self_ty.clone();
+
+    let meta = collect_method_metadata(&input);
+    strip_method_markers(&mut input);
+
+    // (from_url, to_url) pairs for HandlerConfig::Upcaster.upcasts
+    let upcast_pairs = meta.upcasts_with_methods.iter().map(|(_, from, to)| {
+        quote! {
+            (
+                ::angzarr_client::full_type_url::<#from>(),
+                ::angzarr_client::full_type_url::<#to>(),
+            )
+        }
+    });
+
+    // Dispatch arms: match each method's `from` type URL against the incoming
+    // event's type URL; the first matching method transforms it.
+    let dispatch_arms = meta
+        .upcasts_with_methods
+        .iter()
+        .map(|(method_ident, from, to)| {
+            quote! {
+                if event_any.type_url == ::angzarr_client::full_type_url::<#from>() {
+                    let old = <#from as ::prost::Message>::decode(event_any.value.as_slice())
+                        .map_err(|e| ::angzarr_client::ClientError::InvalidArgument(
+                            format!("upcaster decode {}: {}", stringify!(#from), e)
+                        ))?;
+                    let new: #to = <#self_ty>::#method_ident(old);
+                    let new_any = ::prost_types::Any {
+                        type_url: ::angzarr_client::full_type_url::<#to>(),
+                        value: ::prost::Message::encode_to_vec(&new),
+                    };
+                    out_pages.push(::angzarr_client::proto::EventPage {
+                        header: page.header.clone(),
+                        created_at: page.created_at,
+                        payload: Some(::angzarr_client::proto::event_page::Payload::Event(new_any)),
+                        no_commit: page.no_commit,
+                        cascade_id: page.cascade_id.clone(),
+                    });
+                    continue;
+                }
+            }
+        });
+
+    quote! {
+        #input
+
+        impl ::angzarr_client::HandlerKind for #self_ty {
+            const KIND: ::angzarr_client::Kind = ::angzarr_client::Kind::Upcaster;
+        }
+
+        impl ::angzarr_client::Handler for #self_ty {
+            fn config(&self) -> ::angzarr_client::HandlerConfig {
+                ::angzarr_client::HandlerConfig::Upcaster {
+                    name: #name.to_string(),
+                    domain: #domain.to_string(),
+                    upcasts: vec![#( #upcast_pairs ),*],
+                }
+            }
+
+            fn dispatch(
+                &self,
+                request: ::angzarr_client::HandlerRequest,
+            ) -> ::core::result::Result<
+                ::angzarr_client::HandlerResponse,
+                ::angzarr_client::ClientError,
+            > {
+                let req = match request {
+                    ::angzarr_client::HandlerRequest::Upcaster(r) => r,
+                    _ => {
+                        return Err(::angzarr_client::ClientError::InvalidArgument(
+                            "upcaster handler received non-Upcaster request".into(),
+                        ));
+                    }
+                };
+
+                let mut out_pages: Vec<::angzarr_client::proto::EventPage> =
+                    Vec::with_capacity(req.events.len());
+
+                'page: for page in req.events.iter() {
+                    // Only event payloads are candidates for upcasting; external
+                    // payloads and headerless pages pass through untouched.
+                    let Some(::angzarr_client::proto::event_page::Payload::Event(ref event_any)) =
+                        page.payload
+                    else {
+                        out_pages.push(page.clone());
+                        continue 'page;
+                    };
+
+                    #( #dispatch_arms )*
+
+                    // No matching upcast — pass the page through unchanged.
+                    out_pages.push(page.clone());
+                }
+
+                Ok(::angzarr_client::HandlerResponse::Upcaster(
+                    ::angzarr_client::proto::UpcastResponse { events: out_pages },
+                ))
+            }
+        }
+    }
 }
 
 struct UpcasterArgs {
