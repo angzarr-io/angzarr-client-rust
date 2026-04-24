@@ -15,7 +15,7 @@ use uuid::Uuid;
 pub struct CommandBuilder<'a, C: traits::GatewayClient> {
     client: &'a C,
     domain: String,
-    root: Uuid,
+    root: Option<Uuid>,
     correlation_id: Option<String>,
     sequence: Option<u32>,
     merge_strategy: crate::proto::MergeStrategy,
@@ -25,16 +25,25 @@ pub struct CommandBuilder<'a, C: traits::GatewayClient> {
 
 impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
     pub(crate) fn new(client: &'a C, domain: impl Into<String>, root: Uuid) -> Self {
+        Self::new_rootless(client, domain).with_root(root)
+    }
+
+    pub(crate) fn new_rootless(client: &'a C, domain: impl Into<String>) -> Self {
         Self {
             client,
             domain: domain.into(),
-            root,
+            root: None,
             correlation_id: None,
             sequence: None,
             merge_strategy: crate::proto::MergeStrategy::MergeCommutative,
             type_url: None,
             payload: None,
         }
+    }
+
+    fn with_root(mut self, root: Uuid) -> Self {
+        self.root = Some(root);
+        self
     }
 
     /// Set the correlation ID for request tracing.
@@ -66,6 +75,11 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
     }
 
     /// Build the CommandBook without executing.
+    ///
+    /// `type_url` and `payload` (set together by [`with_command`]) are
+    /// required. `sequence` defaults to 0 when unset — matching Python's
+    /// CommandBuilder semantics. `correlation_id` defaults to a fresh
+    /// random UUID when unset.
     pub fn build(self) -> Result<CommandBook> {
         let type_url = self
             .type_url
@@ -73,9 +87,7 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
         let payload = self
             .payload
             .ok_or_else(|| ClientError::InvalidArgument("command payload not set".to_string()))?;
-        let sequence = self
-            .sequence
-            .ok_or_else(|| ClientError::InvalidArgument("command sequence not set".to_string()))?;
+        let sequence = self.sequence.unwrap_or(0);
         let correlation_id = self
             .correlation_id
             .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -83,7 +95,7 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
         Ok(CommandBook {
             cover: Some(Cover {
                 domain: self.domain,
-                root: Some(uuid_to_proto(self.root)),
+                root: self.root.map(uuid_to_proto),
                 correlation_id,
                 edition: None,
             }),
@@ -215,9 +227,12 @@ pub trait CommandBuilderExt: traits::GatewayClient + Sized {
         CommandBuilder::new(self, domain, root)
     }
 
-    /// Start building a command for a new aggregate (random root UUID).
+    /// Start building a command for a new aggregate. The resulting
+    /// CommandBook has no root set — the coordinator assigns one on
+    /// first persistence. Use [`command`](Self::command) when the root
+    /// is already known.
     fn command_new(&self, domain: impl Into<String>) -> CommandBuilder<'_, Self> {
-        CommandBuilder::new(self, domain, Uuid::new_v4())
+        CommandBuilder::new_rootless(self, domain)
     }
 }
 

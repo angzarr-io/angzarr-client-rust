@@ -400,12 +400,25 @@ impl ProjectorRouter {
     /// book's cover and the last registered projector's name.
     pub fn dispatch(&self, book: EventBook) -> Result<Projection, ClientError> {
         let mut last_projection: Option<Projection> = None;
+        // Only filter by domain when the book explicitly carries a cover.
+        // Coverless books (used by tests that don't assert domain scoping)
+        // pass through to every projector unchanged.
+        let incoming_domain = book.cover.as_ref().map(|c| c.domain.clone());
 
         for factory in &self.factories {
             let handler: Box<dyn Handler> = (factory.produce)();
-            match handler.config() {
-                HandlerConfig::Projector { .. } => {}
+            let declared_domains = match handler.config() {
+                HandlerConfig::Projector { domains, .. } => domains,
                 _ => continue,
+            };
+
+            // Skip projectors whose declared domains don't cover the
+            // incoming book's domain. Wildcard "*" matches any.
+            if let Some(ref d) = incoming_domain {
+                let matches = declared_domains.iter().any(|x| x == d || x == "*");
+                if !matches {
+                    continue;
+                }
             }
 
             let response = handler.dispatch(HandlerRequest::Projector(book.clone()))?;
