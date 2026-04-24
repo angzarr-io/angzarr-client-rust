@@ -559,47 +559,6 @@ pub fn applies(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 
-/// Marks a static method as the factory producing an aggregate's initial
-/// state. Cross-language alias for Python's `@state_factory` — the
-/// `#[command_handler]` / `#[command_handler]` macro inspects it during codegen.
-///
-/// # Example
-/// ```rust,ignore
-/// #[state_factory]
-/// fn empty() -> PlayerState { PlayerState::default() }
-/// ```
-#[proc_macro_attribute]
-pub fn state_factory(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
-}
-
-/// Marks a method as an upcaster transforming one event type into another.
-/// Cross-language alias for Python's `@upcasts`. The `#[upcaster]` macro
-/// collects the (from_type, to_type) pair from the attribute arguments
-/// and stamps it into the handler's `HandlerConfig`.
-///
-/// # Example
-/// ```rust,ignore
-/// #[upcasts(from = OldType, to = NewType)]
-/// fn upcast(old: OldType) -> NewType { old.into() }
-/// ```
-#[proc_macro_attribute]
-pub fn upcasts(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
-}
-
-/// Marks an impl block as an upcaster. Cross-language alias for Python's
-/// `@upcaster`. Currently a passthrough marker — the full Handler-trait
-/// / UpcasterRouter integration is tracked under O-1b follow-up work.
-///
-/// # Attributes
-/// - `name = "..."` - upcaster name
-/// - `domain = "..."` - domain of the upcaster
-#[proc_macro_attribute]
-pub fn upcaster(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
-}
-
 /// Marks an impl block as a saga with event handlers.
 ///
 /// Sagas are pure translators: they receive source events and produce commands
@@ -1302,6 +1261,166 @@ impl syn::parse::Parse for RejectedArgs {
             })?,
             command: command.ok_or_else(|| {
                 syn::Error::new(proc_macro2::Span::call_site(), "command is required")
+            })?,
+        })
+    }
+}
+
+/// Marks a method as the state factory for its aggregate / process manager.
+///
+/// The method must be a static function returning the state type. When a
+/// handler's `#[command_handler]` or `#[process_manager]` macro sees a
+/// method annotated with `#[state_factory]`, it calls that method to
+/// construct the initial state instead of `Default::default()`.
+///
+/// Exposed as a standalone proc macro so cross-language docs / examples can
+/// reference it via the same name (`@state_factory` in Python,
+/// `#[state_factory]` in Rust). The actual work is done by the parent
+/// kind macro.
+#[proc_macro_attribute]
+pub fn state_factory(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    // Marker attribute — parent kind macros strip and consume it.
+    item
+}
+
+/// Marks a method as an event version transformation.
+///
+/// # Attributes
+/// - `from = OldType` — the proto message type this method accepts
+/// - `to = NewType` — the proto message type this method produces
+///
+/// # Example
+/// ```rust,ignore
+/// #[upcasts(from = PlayerRegisteredV1, to = PlayerRegisteredV2)]
+/// fn upgrade(old: PlayerRegisteredV1) -> PlayerRegisteredV2 {
+///     PlayerRegisteredV2 { /* ... */ }
+/// }
+/// ```
+///
+/// Consumed by the parent `#[upcaster]` macro at expansion time. Validates
+/// attribute shape (both `from` and `to` are required) but otherwise
+/// passes the method through unchanged.
+#[proc_macro_attribute]
+pub fn upcasts(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr as UpcastsArgs);
+    let _ = args; // consumed by parent #[upcaster]; attrs validated here
+    item
+}
+
+struct UpcastsArgs {
+    #[allow(dead_code)]
+    from: Ident,
+    #[allow(dead_code)]
+    to: Ident,
+}
+
+impl syn::parse::Parse for UpcastsArgs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mut from = None;
+        let mut to = None;
+
+        while !input.is_empty() {
+            let ident: Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+
+            match ident.to_string().as_str() {
+                "from" => from = Some(input.parse()?),
+                "to" => to = Some(input.parse()?),
+                _ => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        "unknown attribute: expected `from` or `to`",
+                    ))
+                }
+            }
+
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            }
+        }
+
+        Ok(UpcastsArgs {
+            from: from.ok_or_else(|| {
+                syn::Error::new(proc_macro2::Span::call_site(), "from is required")
+            })?,
+            to: to.ok_or_else(|| {
+                syn::Error::new(proc_macro2::Span::call_site(), "to is required")
+            })?,
+        })
+    }
+}
+
+/// Marks a class as an upcaster — transforms events in a given `domain`
+/// from one version to another.
+///
+/// # Attributes
+/// - `name = "..."` — identifier for this upcaster (used in logging / registry)
+/// - `domain = "..."` — the aggregate domain whose events this upcaster covers
+///
+/// # Example
+/// ```rust,ignore
+/// #[upcaster(name = "player-v1-to-v2", domain = "player")]
+/// impl PlayerUpcaster {
+///     #[upcasts(from = PlayerRegisteredV1, to = PlayerRegisteredV2)]
+///     fn upgrade(old: PlayerRegisteredV1) -> PlayerRegisteredV2 { ... }
+/// }
+/// ```
+///
+/// The macro currently validates attribute shape and passes the impl
+/// through unchanged. Full Handler-trait / Router-builder integration for
+/// upcasters is a follow-up task; until it lands, callers register
+/// transforms directly on [`angzarr_client::UpcasterRouter`].
+#[proc_macro_attribute]
+pub fn upcaster(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr as UpcasterArgs);
+    let _ = args;
+    item
+}
+
+struct UpcasterArgs {
+    #[allow(dead_code)]
+    name: String,
+    #[allow(dead_code)]
+    domain: String,
+}
+
+impl syn::parse::Parse for UpcasterArgs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mut name = None;
+        let mut domain = None;
+
+        while !input.is_empty() {
+            let ident: Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+
+            match ident.to_string().as_str() {
+                "name" => {
+                    let value: syn::LitStr = input.parse()?;
+                    name = Some(value.value());
+                }
+                "domain" => {
+                    let value: syn::LitStr = input.parse()?;
+                    domain = Some(value.value());
+                }
+                _ => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        "unknown attribute: expected `name` or `domain`",
+                    ))
+                }
+            }
+
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            }
+        }
+
+        Ok(UpcasterArgs {
+            name: name.ok_or_else(|| {
+                syn::Error::new(proc_macro2::Span::call_site(), "name is required")
+            })?,
+            domain: domain.ok_or_else(|| {
+                syn::Error::new(proc_macro2::Span::call_site(), "domain is required")
             })?,
         })
     }

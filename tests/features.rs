@@ -34,6 +34,7 @@ use steps::saga::SagaWorld;
 use steps::speculative_client::SpeculativeClientWorld;
 use steps::state_building::StateBuildingWorld;
 use steps::testing::TestingWorld;
+use steps::upcaster::UpcasterWorld;
 use steps::validation::ValidationWorld;
 
 #[tokio::main]
@@ -212,5 +213,12 @@ async fn main() {
     println!("\n=== Running Validation Tests ===\n");
     ValidationWorld::cucumber()
         .run("angzarr-project/features/client/validation.feature")
+        .await;
+
+    // Run Upcaster tests
+    println!("\n=== Running Upcaster Tests ===\n");
+    UpcasterWorld::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/client/upcaster.feature")
         .await;
 }

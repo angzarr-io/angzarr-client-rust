@@ -24,4 +24,5 @@ pub mod saga;
 pub mod speculative_client;
 pub mod state_building;
 pub mod testing;
+pub mod upcaster;
 pub mod validation;
