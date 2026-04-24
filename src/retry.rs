@@ -111,8 +111,8 @@ impl ExponentialBackoffRetry {
     /// `jitter == true`.
     pub fn compute_delay(&self, attempt: u32) -> Duration {
         // min_delay * 2^attempt
-        let raw_nanos = self.min_delay.as_nanos() as u128 * (1u128 << attempt.min(30));
-        let cap_nanos = self.max_delay.as_nanos() as u128;
+        let raw_nanos = self.min_delay.as_nanos() * (1u128 << attempt.min(30));
+        let cap_nanos = self.max_delay.as_nanos();
         let capped = raw_nanos.min(cap_nanos);
         let mut result = capped;
         if self.jitter {
