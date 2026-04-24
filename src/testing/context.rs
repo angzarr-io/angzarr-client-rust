@@ -83,8 +83,14 @@ mod tests {
         let mut ctx = ScenarioContext::new();
         ctx.domain = "player".into();
         ctx.root = [2u8; 16];
-        ctx.events.push(Any { type_url: "t".into(), value: vec![] });
-        ctx.events.push(Any { type_url: "t".into(), value: vec![] });
+        ctx.events.push(Any {
+            type_url: "t".into(),
+            value: vec![],
+        });
+        ctx.events.push(Any {
+            type_url: "t".into(),
+            value: vec![],
+        });
         let book = ctx.event_book();
         assert_eq!(book.pages.len(), 2);
         assert_eq!(book.next_sequence, 2);
@@ -96,7 +102,10 @@ mod tests {
         let mut ctx = ScenarioContext::new();
         ctx.domain = "x".into();
         ctx.root = [9u8; 16];
-        ctx.events.push(Any { type_url: "t".into(), value: vec![] });
+        ctx.events.push(Any {
+            type_url: "t".into(),
+            value: vec![],
+        });
         ctx.reset();
         assert!(ctx.domain.is_empty());
         assert_eq!(ctx.root, [0u8; 16]);

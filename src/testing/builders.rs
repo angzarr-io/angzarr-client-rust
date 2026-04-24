@@ -27,10 +27,16 @@ pub fn pack_event<M: Message>(msg: &M, type_name: &str) -> Any {
 }
 
 /// Build a `Cover` from domain + 16-byte root.
-pub fn make_cover(domain: impl Into<String>, root: [u8; 16], correlation_id: impl Into<String>) -> Cover {
+pub fn make_cover(
+    domain: impl Into<String>,
+    root: [u8; 16],
+    correlation_id: impl Into<String>,
+) -> Cover {
     Cover {
         domain: domain.into(),
-        root: Some(ProtoUuid { value: root.to_vec() }),
+        root: Some(ProtoUuid {
+            value: root.to_vec(),
+        }),
         correlation_id: correlation_id.into(),
         edition: None,
     }
@@ -102,8 +108,20 @@ mod tests {
     fn make_event_book_defaults_next_sequence() {
         let cover = make_cover("x", [0u8; 16], "");
         let pages = vec![
-            make_event_page(0, Any { type_url: "t".into(), value: vec![] }),
-            make_event_page(1, Any { type_url: "t".into(), value: vec![] }),
+            make_event_page(
+                0,
+                Any {
+                    type_url: "t".into(),
+                    value: vec![],
+                },
+            ),
+            make_event_page(
+                1,
+                Any {
+                    type_url: "t".into(),
+                    value: vec![],
+                },
+            ),
         ];
         let book = make_event_book(cover, pages, None);
         assert_eq!(book.pages.len(), 2);
@@ -112,7 +130,13 @@ mod tests {
 
     #[test]
     fn make_event_page_sets_sequence() {
-        let page = make_event_page(7, Any { type_url: "t".into(), value: vec![] });
+        let page = make_event_page(
+            7,
+            Any {
+                type_url: "t".into(),
+                value: vec![],
+            },
+        );
         assert_eq!(page.sequence_num(), 7);
         assert!(page.created_at.is_some());
     }
@@ -120,7 +144,14 @@ mod tests {
     #[test]
     fn make_command_book_single_page() {
         let cover = make_cover("x", [0u8; 16], "");
-        let book = make_command_book(cover, Any { type_url: "t".into(), value: vec![] }, 0);
+        let book = make_command_book(
+            cover,
+            Any {
+                type_url: "t".into(),
+                value: vec![],
+            },
+            0,
+        );
         assert_eq!(book.pages.len(), 1);
     }
 }

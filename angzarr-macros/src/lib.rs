@@ -532,9 +532,8 @@ impl syn::parse::Parse for UpcastsArgsParse {
             from: from.ok_or_else(|| {
                 syn::Error::new(proc_macro2::Span::call_site(), "from is required")
             })?,
-            to: to.ok_or_else(|| {
-                syn::Error::new(proc_macro2::Span::call_site(), "to is required")
-            })?,
+            to: to
+                .ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "to is required"))?,
         })
     }
 }
@@ -1410,9 +1409,8 @@ impl syn::parse::Parse for UpcastsArgs {
             from: from.ok_or_else(|| {
                 syn::Error::new(proc_macro2::Span::call_site(), "from is required")
             })?,
-            to: to.ok_or_else(|| {
-                syn::Error::new(proc_macro2::Span::call_site(), "to is required")
-            })?,
+            to: to
+                .ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "to is required"))?,
         })
     }
 }

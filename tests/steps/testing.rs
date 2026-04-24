@@ -36,8 +36,7 @@ async fn given_scenario_context(world: &mut TestingWorld, domain: String, name: 
     let mut ctx = ScenarioContext::new();
     ctx.domain = domain;
     ctx.root = uuid_for(&name, DEFAULT_TEST_NAMESPACE);
-    ctx.events
-        .push(prost_types::Any::default()); // something to prove reset clears it
+    ctx.events.push(prost_types::Any::default()); // something to prove reset clears it
     world.context = Some(ctx);
 }
 
@@ -113,10 +112,7 @@ async fn then_cover_correlation_id(world: &mut TestingWorld, expected: String) {
 async fn then_cover_root_matches(world: &mut TestingWorld) {
     let cover = world.cover.as_ref().expect("no cover");
     let root = world.derived_root.expect("no derived root");
-    assert_eq!(
-        cover.root.as_ref().expect("no root").value,
-        root.to_vec()
-    );
+    assert_eq!(cover.root.as_ref().expect("no root").value, root.to_vec());
 }
 
 #[then(expr = "the resulting event book has next_sequence equal to {int}")]
@@ -127,18 +123,25 @@ async fn then_event_book_next_sequence(world: &mut TestingWorld, expected: u32) 
 
 #[then("the context's domain is empty")]
 async fn then_context_domain_empty(world: &mut TestingWorld) {
-    assert!(world.context.as_ref().expect("no context").domain.is_empty());
+    assert!(world
+        .context
+        .as_ref()
+        .expect("no context")
+        .domain
+        .is_empty());
 }
 
 #[then("the context's root is empty")]
 async fn then_context_root_empty(world: &mut TestingWorld) {
-    assert_eq!(
-        world.context.as_ref().expect("no context").root,
-        [0u8; 16]
-    );
+    assert_eq!(world.context.as_ref().expect("no context").root, [0u8; 16]);
 }
 
 #[then("the context's events list is empty")]
 async fn then_context_events_empty(world: &mut TestingWorld) {
-    assert!(world.context.as_ref().expect("no context").events.is_empty());
+    assert!(world
+        .context
+        .as_ref()
+        .expect("no context")
+        .events
+        .is_empty());
 }

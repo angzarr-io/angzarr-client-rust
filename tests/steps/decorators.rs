@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use cucumber::{given, then, World};
 
+use angzarr_client::proto::{BusinessResponse, CommandBook, ContextualCommand};
 use angzarr_client::{
     command_handler, handles, saga, upcaster, upcasts, Handler, HandlerConfig, HandlerRequest,
     HandlerResponse,
 };
-use angzarr_client::proto::{BusinessResponse, CommandBook, ContextualCommand};
 
 #[derive(Debug, Default)]
 pub struct DecoratorsWorld {
@@ -100,9 +100,12 @@ struct OrderHandler;
 #[command_handler(domain = "order", state = OrderState)]
 impl OrderHandler {
     #[handles(FakeCmd)]
-    fn handle_fake(&self, _cmd: FakeCmd, _state: &OrderState, _seq: u32)
-        -> angzarr_client::CommandResult<angzarr_client::proto::EventBook>
-    {
+    fn handle_fake(
+        &self,
+        _cmd: FakeCmd,
+        _state: &OrderState,
+        _seq: u32,
+    ) -> angzarr_client::CommandResult<angzarr_client::proto::EventBook> {
         unreachable!("decorators.feature does not dispatch")
     }
 }
@@ -112,9 +115,10 @@ struct OrderFulfillmentSaga;
 #[saga(name = "OrderFulfillment", source = "order", target = "inventory")]
 impl OrderFulfillmentSaga {
     #[handles(FakeCmd)]
-    fn translate(&self, _evt: FakeCmd)
-        -> angzarr_client::CommandResult<angzarr_client::proto::SagaResponse>
-    {
+    fn translate(
+        &self,
+        _evt: FakeCmd,
+    ) -> angzarr_client::CommandResult<angzarr_client::proto::SagaResponse> {
         unreachable!("decorators.feature does not dispatch")
     }
 }

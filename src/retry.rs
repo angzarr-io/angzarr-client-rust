@@ -261,4 +261,3 @@ mod tests {
         assert_eq!(policy.compute_delay(20), Duration::from_secs(1));
     }
 }
-

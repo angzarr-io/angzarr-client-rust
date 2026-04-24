@@ -204,10 +204,7 @@ impl UpcasterService for UpcasterGrpc {
         request: Request<UpcastRequest>,
     ) -> Result<Response<UpcastResponse>, Status> {
         let req = request.into_inner();
-        let response = self
-            .router
-            .dispatch(req)
-            .map_err(client_error_to_status)?;
+        let response = self.router.dispatch(req).map_err(client_error_to_status)?;
         Ok(Response::new(response))
     }
 }

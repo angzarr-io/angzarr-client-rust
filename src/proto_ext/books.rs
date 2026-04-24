@@ -48,7 +48,9 @@ pub fn calculate_set_next_seq(book: &mut EventBook) {
 /// Cross-language alias for Python's `destination_map(destinations)`. Used
 /// in multi-destination sagas to look up the correct EventBook by aggregate
 /// root when stamping command sequences. Entries without a root are skipped.
-pub fn destination_map(destinations: &[EventBook]) -> std::collections::HashMap<String, &EventBook> {
+pub fn destination_map(
+    destinations: &[EventBook],
+) -> std::collections::HashMap<String, &EventBook> {
     destinations
         .iter()
         .filter_map(|book| book.root_id_hex().map(|hex| (hex, book)))

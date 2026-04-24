@@ -38,9 +38,7 @@ pub use helpers::{
     event_book_from, event_page, new_event_book, new_event_book_multi, pack_event, pack_events,
 };
 pub use responses::{ProcessManagerResponse, RejectionHandlerResponse, SagaHandlerResponse};
-pub use runtime::{
-    CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter,
-};
+pub use runtime::{CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter};
 pub use state::Destinations;
 pub use upcaster::UpcasterRouter;
 

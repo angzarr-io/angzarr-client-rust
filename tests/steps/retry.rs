@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use cucumber::{given, then, when, World};
 
-use angzarr_client::{CommandRejectedError, ExponentialBackoffRetry, default_retry_policy};
+use angzarr_client::{default_retry_policy, CommandRejectedError, ExponentialBackoffRetry};
 
 #[derive(Default, World)]
 #[world(init = Self::new)]
@@ -24,7 +24,10 @@ impl std::fmt::Debug for RetryWorld {
         f.debug_struct("RetryWorld")
             .field("has_policy", &self.policy.is_some())
             .field("call_count", &self.call_count.load(Ordering::SeqCst))
-            .field("on_retry_calls", &self.on_retry_calls.load(Ordering::SeqCst))
+            .field(
+                "on_retry_calls",
+                &self.on_retry_calls.load(Ordering::SeqCst),
+            )
             .field("has_result", &self.result.is_some())
             .field("has_rejected", &self.rejected.is_some())
             .finish()
@@ -148,12 +151,20 @@ async fn when_precondition_failed(world: &mut RetryWorld, reason: String) {
 
 #[then("the error's is_precondition_failed predicate is true")]
 async fn then_pf_true(world: &mut RetryWorld) {
-    assert!(world.rejected.as_ref().expect("no rejected").is_precondition_failed());
+    assert!(world
+        .rejected
+        .as_ref()
+        .expect("no rejected")
+        .is_precondition_failed());
 }
 
 #[then("the error's is_invalid_argument predicate is false")]
 async fn then_ia_false(world: &mut RetryWorld) {
-    assert!(!world.rejected.as_ref().expect("no rejected").is_invalid_argument());
+    assert!(!world
+        .rejected
+        .as_ref()
+        .expect("no rejected")
+        .is_invalid_argument());
 }
 
 #[then("the error's is_not_found predicate is false")]

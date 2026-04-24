@@ -17,9 +17,7 @@ use tracing::info;
 /// call is a no-op).
 pub fn configure_logging() {
     // Use `try_init` so re-entry doesn't panic.
-    let _ = tracing::subscriber::set_global_default(
-        tracing::subscriber::NoSubscriber::default(),
-    );
+    let _ = tracing::subscriber::set_global_default(tracing::subscriber::NoSubscriber::default());
 }
 
 /// Resolve transport configuration from environment. Mirrors Python's
@@ -93,8 +91,7 @@ pub fn cleanup_socket(path: impl AsRef<Path>) {
 }
 
 use crate::handler::{
-    CommandHandlerGrpc, ProcessManagerGrpc, ProjectorGrpc, SagaGrpc,
-    UpcasterGrpc,
+    CommandHandlerGrpc, ProcessManagerGrpc, ProjectorGrpc, SagaGrpc, UpcasterGrpc,
 };
 use crate::proto::command_handler_service_server::CommandHandlerServiceServer;
 use crate::proto::process_manager_service_server::ProcessManagerServiceServer;
