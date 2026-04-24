@@ -90,7 +90,7 @@ pub use retry::{default_retry_policy, RetryPolicy};
 pub use transport::{resolve_ch_endpoint, TransportMode};
 
 // Re-export builder extension traits for fluent API
-pub use builder::{CommandBuilderExt, QueryBuilderExt};
+pub use builder::{CommandBuilder, CommandBuilderExt, QueryBuilder, QueryBuilderExt};
 
 // Re-export compensation helpers
 pub use compensation::{
@@ -103,7 +103,9 @@ pub use compensation::{
 pub use builder::{decode_event, events_from_response, root_from_cover};
 pub use convert::{
     full_type_name, full_type_url, now, parse_timestamp, proto_to_uuid, try_unpack, type_matches,
-    type_name_from_url, type_url, type_url_matches_exact, unpack, uuid_to_proto, TYPE_URL_PREFIX,
+    type_name_from_url, type_url, type_url_matches_exact, unpack, uuid_to_proto, DEFAULT_EDITION,
+    META_ANGZARR_DOMAIN, PROJECTION_DOMAIN_PREFIX, PROJECTION_TYPE_URL, TYPE_URL_PREFIX,
+    UNKNOWN_DOMAIN, WILDCARD_DOMAIN,
 };
 
 // Re-export extension traits
@@ -120,21 +122,31 @@ pub use router::{
     new_event_book,
     new_event_book_multi,
     pack_event,
+    pack_events,
     // Upcaster types (separate system, retained)
     BoxedUpcasterHandler,
     // Tier 5 unified Handler contract
     BuildError,
     Built,
+    // Typed runtime routers returned by Router::build()
+    CommandHandlerRouter,
     // Destination-sequence stamping for saga/PM outbound commands
     Destinations,
+    DispatchError,
     Handler,
     HandlerConfig,
     HandlerKind,
     HandlerRequest,
     HandlerResponse,
     Kind,
+    ProcessManagerResponse,
+    ProcessManagerRouter,
+    ProjectorRouter,
+    RejectionHandlerResponse,
     // Builder
     Router,
+    SagaHandlerResponse,
+    SagaRouter,
     UpcasterHandler,
     UpcasterHandlerHOF,
     UpcasterMode,
@@ -149,8 +161,9 @@ pub use handler::{
 
 // Re-export server utilities
 pub use server::{
+    cleanup_socket, configure_logging, create_server, get_transport_config,
     run_command_handler_server, run_process_manager_server, run_projector_server, run_saga_server,
-    run_upcaster_server, ServerConfig,
+    run_server, run_upcaster_server, ServerConfig,
 };
 
 // Re-export validation helpers

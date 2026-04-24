@@ -61,6 +61,15 @@ pub fn pack_event<M: Message>(msg: &M, type_name: &str) -> Any {
     }
 }
 
+/// Pack a list of messages sharing a single type name.
+///
+/// Useful for multi-event command handlers that emit multiple events of
+/// the same type (e.g., a batch of `ItemAdded`). Mirrors Python's
+/// plural `pack_events(events, type_url_prefix)`.
+pub fn pack_events<M: Message>(msgs: &[M], type_name: &str) -> Vec<Any> {
+    msgs.iter().map(|m| pack_event(m, type_name)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -21,17 +21,23 @@ const EXPORTED: &[&str] = &[
     // Clients
     "CommandHandlerClient", "QueryClient", "SpeculativeClient", "DomainClient",
     // Router runtime
-    "Router", "BuildError", "UpcasterRouter",
+    "Router", "BuildError", "DispatchError",
+    "CommandHandlerRouter", "SagaRouter", "ProcessManagerRouter", "ProjectorRouter",
+    "UpcasterRouter",
     // Handler kind declarations (proc macros)
     "saga", "process_manager", "projector",
     // Method markers
     "handles", "applies", "rejected",
     // gRPC server adapters
     "CommandHandlerGrpc",
+    // Response types
+    "SagaHandlerResponse", "ProcessManagerResponse", "RejectionHandlerResponse",
     // Errors
     "ClientError", "CommandRejectedError",
     // Constants
     "INVENTORY_PRODUCT_NAMESPACE", "TYPE_URL_PREFIX",
+    "UNKNOWN_DOMAIN", "WILDCARD_DOMAIN", "DEFAULT_EDITION", "META_ANGZARR_DOMAIN",
+    "PROJECTION_DOMAIN_PREFIX", "PROJECTION_TYPE_URL",
     // Identity helpers
     "compute_root", "customer_root", "product_root", "order_root", "inventory_root",
     "inventory_product_root", "cart_root", "fulfillment_root", "to_proto_bytes",
@@ -48,12 +54,23 @@ const EXPORTED: &[&str] = &[
     "CompensationContext", "delegate_to_framework", "emit_compensation_events",
     "pm_delegate_to_framework", "pm_emit_compensation_events",
     // Event packing
-    "pack_event", "new_event_book", "new_event_book_multi",
+    "pack_event", "pack_events", "new_event_book", "new_event_book_multi",
+    // Builders (direct types, distinct from *Ext traits)
+    "CommandBuilder", "QueryBuilder",
     // Destinations
     "Destinations",
+    // Server utilities
+    "configure_logging", "get_transport_config", "create_server", "run_server", "cleanup_socket",
 ];
 
-const ERROR_PREDICATES_IMPLEMENTED: &[&str] = &[];
+/// Predicates implemented on `ClientError` (verified by `tests::error` below
+/// — `ClientError::is_not_found`, etc.).
+const ERROR_PREDICATES_IMPLEMENTED: &[&str] = &[
+    "is_not_found",
+    "is_precondition_failed",
+    "is_invalid_argument",
+    "is_connection_error",
+];
 
 fn check(name: &str) {
     assert!(
@@ -106,19 +123,22 @@ async fn then_error_predicate_exposed(_world: &mut ParityWorld, name: String) {
 mod compile_probe {
     #![allow(unused_imports, dead_code)]
     use angzarr_client::{
-        applies, cart_root, compute_root, customer_root, default_retry_policy,
-        delegate_to_framework, emit_compensation_events, fulfillment_root, handles,
-        inventory_product_root, inventory_root, make_command_book, make_command_page,
-        make_cover, make_event_book, make_event_page, make_timestamp, new_event_book,
-        new_event_book_multi, order_root, pm_delegate_to_framework, pm_emit_compensation_events,
-        process_manager, product_root, projector, rejected, require_exists, require_non_negative,
-        require_not_empty, require_not_empty_str, require_not_exists, require_positive,
-        require_status, require_status_not, saga, to_proto_bytes, uuid_for, uuid_obj_for,
-        uuid_str_for, BuildError, ClientError, CommandHandlerClient, CommandHandlerGrpc,
-        CommandRejectedError, CompensationContext, Destinations, DomainClient, QueryClient,
-        RetryPolicy, Router, ScenarioContext, SpeculativeClient, UpcasterRouter,
-        DEFAULT_TEST_NAMESPACE, INVENTORY_PRODUCT_NAMESPACE, TYPE_URL_PREFIX,
+        applies, cart_root, cleanup_socket, compute_root, configure_logging, create_server,
+        customer_root, default_retry_policy, delegate_to_framework, emit_compensation_events,
+        fulfillment_root, get_transport_config, handles, inventory_product_root, inventory_root,
+        make_command_book, make_command_page, make_cover, make_event_book, make_event_page,
+        make_timestamp, new_event_book, new_event_book_multi, order_root, pack_event, pack_events,
+        pm_delegate_to_framework, pm_emit_compensation_events, process_manager, product_root,
+        projector, rejected, require_exists, require_non_negative, require_not_empty,
+        require_not_empty_str, require_not_exists, require_positive, require_status,
+        require_status_not, run_server, saga, to_proto_bytes, uuid_for, uuid_obj_for, uuid_str_for,
+        BuildError, ClientError, CommandBuilder, CommandHandlerClient, CommandHandlerGrpc,
+        CommandHandlerRouter, CommandRejectedError, CompensationContext, Destinations,
+        DispatchError, DomainClient, ProcessManagerResponse, ProcessManagerRouter, ProjectorRouter,
+        QueryBuilder, QueryClient, RejectionHandlerResponse, RetryPolicy, Router,
+        SagaHandlerResponse, SagaRouter, ScenarioContext, SpeculativeClient, UpcasterRouter,
+        DEFAULT_EDITION, DEFAULT_TEST_NAMESPACE, INVENTORY_PRODUCT_NAMESPACE, META_ANGZARR_DOMAIN,
+        PROJECTION_DOMAIN_PREFIX, PROJECTION_TYPE_URL, TYPE_URL_PREFIX, UNKNOWN_DOMAIN,
+        WILDCARD_DOMAIN,
     };
-    // `pack_event` lives at crate root via router::pack_event
-    use angzarr_client::pack_event;
 }

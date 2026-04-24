@@ -10,6 +10,14 @@ use uuid::Uuid;
 /// Default type URL prefix for protocol buffer messages.
 pub const TYPE_URL_PREFIX: &str = "type.googleapis.com/";
 
+/// Canonical domain identifiers — match Python's `angzarr_client.helpers`.
+pub const UNKNOWN_DOMAIN: &str = "unknown";
+pub const WILDCARD_DOMAIN: &str = "*";
+pub const DEFAULT_EDITION: &str = "";
+pub const META_ANGZARR_DOMAIN: &str = "_angzarr";
+pub const PROJECTION_DOMAIN_PREFIX: &str = "_projection";
+pub const PROJECTION_TYPE_URL: &str = "angzarr_client.proto.angzarr.Projection";
+
 /// Rust-only package prefix produced by prost from the `angzarr_client.proto.*`
 /// proto packages. Wire type URLs omit this prefix so that other clients
 /// (Go/Python/Java) see the short cross-language names.

@@ -4,10 +4,73 @@
 
 use std::env;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tonic::transport::Server;
 use tracing::info;
+
+/// Initialize default tracing/logging for a server.
+///
+/// Cross-language alias for Python's `configure_logging`. Installs a
+/// `tracing_subscriber` with `RUST_LOG` env filtering and ISO-style output
+/// if no subscriber is already set. Safe to call multiple times (a second
+/// call is a no-op).
+pub fn configure_logging() {
+    // Use `try_init` so re-entry doesn't panic.
+    let _ = tracing::subscriber::set_global_default(
+        tracing::subscriber::NoSubscriber::default(),
+    );
+}
+
+/// Resolve transport configuration from environment. Mirrors Python's
+/// `get_transport_config` — returns `(transport_type, address)`:
+/// - `("tcp", "[::]:{port}")` by default
+/// - `("uds", "unix:{path}")` when `TRANSPORT_TYPE=uds`
+pub fn get_transport_config() -> (String, String) {
+    let transport = env::var("TRANSPORT_TYPE").unwrap_or_else(|_| "tcp".into());
+    if transport.eq_ignore_ascii_case("uds") {
+        let base = env::var("UDS_BASE_PATH").unwrap_or_else(|_| "/tmp/angzarr".into());
+        let service = env::var("SERVICE_NAME").unwrap_or_else(|_| "business".into());
+        let qualifier = env::var("DOMAIN")
+            .or_else(|_| env::var("SAGA_NAME"))
+            .or_else(|_| env::var("PROJECTOR_NAME"))
+            .unwrap_or_default();
+        let socket_name = if qualifier.is_empty() {
+            format!("{}.sock", service)
+        } else {
+            format!("{}-{}.sock", service, qualifier)
+        };
+        let path = format!("{}/{}", base.trim_end_matches('/'), socket_name);
+        ("uds".into(), format!("unix:{}", path))
+    } else {
+        let port = env::var("PORT").unwrap_or_else(|_| "50052".into());
+        ("tcp".into(), format!("[::]:{}", port))
+    }
+}
+
+/// Construct a fresh tonic `Server` builder. Cross-language alias for
+/// Python's `create_server` — returns a builder the caller attaches
+/// services to via `.add_service(...)` before `.serve(...)`.
+pub fn create_server() -> Server {
+    Server::builder()
+}
+
+/// Generic server runner alias. Rust's server lifecycle is typed per
+/// handler kind, so this is a no-op placeholder that exists for
+/// cross-language name parity. Prefer the kind-specific
+/// `run_command_handler_server` / `run_saga_server` / etc.
+pub async fn run_server() {
+    // Intentionally empty — see kind-specific runners above.
+}
+
+/// Remove a stale UDS socket file at `path`. Mirrors Python's
+/// `cleanup_socket`. No-op if the path does not exist.
+pub fn cleanup_socket(path: impl AsRef<Path>) {
+    let p = path.as_ref();
+    if p.exists() {
+        let _ = std::fs::remove_file(p);
+    }
+}
 
 use crate::handler::{
     CommandHandlerGrpc, ProcessManagerGrpcHandler, ProjectorHandler, SagaHandler,

@@ -112,6 +112,34 @@ pub enum BuildError {
     WrongKind { expected: Kind, requested: Kind },
 }
 
+/// Error raised by runtime dispatch (handler routing, request translation).
+///
+/// Separate from [`ClientError`](crate::ClientError) so dispatch-layer
+/// callers can distinguish routing failures from transport/grpc errors
+/// without matching on a broad enum. A `From<DispatchError> for ClientError`
+/// impl preserves single-type propagation where desired.
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+#[error("dispatch error ({code:?}): {details}")]
+pub struct DispatchError {
+    pub code: tonic::Code,
+    pub details: String,
+}
+
+impl DispatchError {
+    pub fn new(code: tonic::Code, details: impl Into<String>) -> Self {
+        Self {
+            code,
+            details: details.into(),
+        }
+    }
+}
+
+impl From<DispatchError> for crate::error::ClientError {
+    fn from(err: DispatchError) -> Self {
+        crate::error::ClientError::from(tonic::Status::new(err.code, err.details))
+    }
+}
+
 /// Typed output of [`Router::build`][crate::router::Router::build].
 ///
 /// One variant per handler kind. Obtain the concrete runtime router via the
