@@ -103,15 +103,15 @@ pub use compensation::{
 pub use builder::{decode_event, events_from_response, root_from_cover};
 pub use convert::{
     full_type_name, full_type_url, now, parse_timestamp, proto_to_uuid, try_unpack, type_matches,
-    type_name_from_url, type_url, type_url_matches_exact, unpack, uuid_to_proto, DEFAULT_EDITION,
-    META_ANGZARR_DOMAIN, PROJECTION_DOMAIN_PREFIX, PROJECTION_TYPE_URL, TYPE_URL_PREFIX,
-    UNKNOWN_DOMAIN, WILDCARD_DOMAIN,
+    type_name_from_url, type_url, type_url_matches, type_url_matches_exact, unpack, uuid_to_proto,
+    DEFAULT_EDITION, META_ANGZARR_DOMAIN, PROJECTION_DOMAIN_PREFIX, PROJECTION_TYPE_URL,
+    TYPE_URL_PREFIX, UNKNOWN_DOMAIN, WILDCARD_DOMAIN,
 };
 
 // Re-export extension traits
 pub use proto_ext::{
-    CommandBookExt, CommandPageExt, CoverExt, EditionExt, EventBookExt, EventPageExt, ProtoUuidExt,
-    UuidExt,
+    destination_map, CommandBookExt, CommandPageExt, CoverExt, EditionExt, EventBookExt,
+    EventPageExt, ProtoUuidExt, UuidExt,
 };
 
 // Re-export Tier 5 unified router surface

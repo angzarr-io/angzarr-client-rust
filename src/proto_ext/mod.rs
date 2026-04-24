@@ -24,7 +24,9 @@ pub mod type_url;
 pub mod uuid;
 
 // Re-export all public items for convenient imports
-pub use books::{calculate_next_sequence, calculate_set_next_seq, CommandBookExt, EventBookExt};
+pub use books::{
+    calculate_next_sequence, calculate_set_next_seq, destination_map, CommandBookExt, EventBookExt,
+};
 pub use constants::{
     CORRELATION_ID_HEADER, DEFAULT_EDITION, META_ANGZARR_DOMAIN, PROJECTION_DOMAIN_PREFIX,
     PROJECTION_TYPE_URL, UNKNOWN_DOMAIN, WILDCARD_DOMAIN,

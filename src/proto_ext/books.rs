@@ -43,6 +43,18 @@ pub fn calculate_set_next_seq(book: &mut EventBook) {
     book.next_sequence = calculate_next_sequence(&book.pages, book.snapshot.as_ref());
 }
 
+/// Build a map from root UUID hex to EventBook, for destination lookup.
+///
+/// Cross-language alias for Python's `destination_map(destinations)`. Used
+/// in multi-destination sagas to look up the correct EventBook by aggregate
+/// root when stamping command sequences. Entries without a root are skipped.
+pub fn destination_map(destinations: &[EventBook]) -> std::collections::HashMap<String, &EventBook> {
+    destinations
+        .iter()
+        .filter_map(|book| book.root_id_hex().map(|hex| (hex, book)))
+        .collect()
+}
+
 impl EventBookExt for EventBook {
     fn next_sequence(&self) -> u32 {
         self.next_sequence
@@ -91,5 +103,38 @@ impl CommandBookExt for CommandBook {
             .first()
             .map(|p| p.merge_strategy())
             .unwrap_or(MergeStrategy::MergeCommutative)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::{Cover, Uuid as ProtoUuid};
+
+    fn book_with_root(bytes: [u8; 16]) -> EventBook {
+        EventBook {
+            cover: Some(Cover {
+                root: Some(ProtoUuid {
+                    value: bytes.to_vec(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn destination_map_keys_by_root_hex_and_skips_rootless() {
+        let with_root = book_with_root([0xAB; 16]);
+        let without_root = EventBook {
+            cover: Some(Cover::default()),
+            ..Default::default()
+        };
+        let dests = vec![with_root.clone(), without_root];
+        let map = destination_map(&dests);
+
+        assert_eq!(map.len(), 1, "rootless EventBook must be skipped");
+        let key = with_root.root_id_hex().unwrap();
+        assert!(map.contains_key(&key));
     }
 }

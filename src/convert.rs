@@ -64,6 +64,14 @@ pub fn type_url_matches_exact(type_url: &str, full_type_name: &str) -> bool {
     type_url == format!("{}{}", TYPE_URL_PREFIX, wire_name(full_type_name))
 }
 
+/// Python-canonical name for [`type_url_matches_exact`]. Python exposes
+/// `type_url_matches` as the primary function and `type_url_matches_exact`
+/// as a Rust-compat alias; Rust reciprocates so either call shape works in
+/// either language.
+pub fn type_url_matches(type_url: &str, full_type_name: &str) -> bool {
+    type_url_matches_exact(type_url, full_type_name)
+}
+
 // Type-safe reflection helpers using prost::Name
 
 /// Check if an Any contains a message of type T using prost::Name reflection.
@@ -206,6 +214,19 @@ mod tests {
         ));
         // Suffix matching should NOT work with exact matching
         assert!(!type_url_matches_exact(
+            "type.googleapis.com/examples.AddItemToCart",
+            "AddItemToCart"
+        ));
+    }
+
+    #[test]
+    fn type_url_matches_is_alias_for_exact() {
+        // Python-canonical name. Must behave identically to type_url_matches_exact.
+        assert!(type_url_matches(
+            "type.googleapis.com/examples.AddItemToCart",
+            "angzarr_client.proto.examples.AddItemToCart"
+        ));
+        assert!(!type_url_matches(
             "type.googleapis.com/examples.AddItemToCart",
             "AddItemToCart"
         ));
