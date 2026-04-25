@@ -66,6 +66,7 @@ pub mod identity;
 #[path = "proto.rs"]
 pub mod proto;
 pub mod proto_ext;
+pub mod readiness;
 pub mod retry;
 pub mod router;
 pub mod server;
