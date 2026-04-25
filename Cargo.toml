@@ -59,6 +59,7 @@ prost-build = "0.14"
 cucumber = "0.21"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 trybuild = "1"
+sha2 = "0.10"
 
 [[test]]
 name = "features"

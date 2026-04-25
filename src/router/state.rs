@@ -164,4 +164,71 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown"));
     }
+
+    /// Wire-format parity with the Python client. Locks the SHA-256 of the
+    /// deterministically-encoded stamped CommandBook. The Python sibling
+    /// at `client-python/main/tests/test_destinations_wire_parity.py`
+    /// asserts the same hash for the same input. If either side changes
+    /// how `stamp_command` modifies wire bytes, both tests must agree on
+    /// the new value — drift fails on at least one side.
+    #[test]
+    fn destinations_stamp_command_wire_parity() {
+        use crate::proto::{
+            command_page::Payload as CmdPayload, CommandPage, Cover, Uuid as ProtoUuid,
+        };
+        use prost::Message;
+        use prost_types::Any as ProtoAny;
+        use sha2::{Digest, Sha256};
+
+        // Same fixed input as the Python test.
+        let root_bytes: Vec<u8> = (0u8..16).collect();
+        let domain = "saga-x";
+        let correlation_id = "corr-1";
+        let command_type_url = "type.googleapis.com/example.Foo";
+        let command_payload: Vec<u8> = vec![1, 2, 3, 4];
+        let target_domain = "inventory";
+        let target_sequence = 5u32;
+        const GOLDEN_SHA256: &str =
+            "8a6da2dfa422553d73fcd840f6ad501c91ac6ffcac2f591183146ab6c042ace9";
+
+        let payload_any = ProtoAny {
+            type_url: command_type_url.into(),
+            value: command_payload,
+        };
+        let mut book = CommandBook {
+            cover: Some(Cover {
+                domain: domain.into(),
+                root: Some(ProtoUuid {
+                    value: root_bytes,
+                }),
+                correlation_id: correlation_id.into(),
+                edition: None,
+            }),
+            pages: vec![CommandPage {
+                header: None,
+                merge_strategy: 0,
+                payload: Some(CmdPayload::Command(payload_any)),
+            }],
+            ..Default::default()
+        };
+
+        let mut seqs = HashMap::new();
+        seqs.insert(target_domain.to_string(), target_sequence);
+        Destinations::from_sequences(seqs)
+            .stamp_command(&mut book, target_domain)
+            .expect("stamp must succeed");
+
+        let raw = book.encode_to_vec();
+        let digest = format!("{:x}", Sha256::digest(&raw));
+
+        assert_eq!(
+            digest, GOLDEN_SHA256,
+            "Stamped CommandBook wire bytes drifted from Python client.\n\
+             If this is intentional, update the golden in BOTH this test and\n\
+             client-python/main/tests/test_destinations_wire_parity.py in tandem.\n\
+             actual:   {}\n\
+             expected: {}",
+            digest, GOLDEN_SHA256
+        );
+    }
 }

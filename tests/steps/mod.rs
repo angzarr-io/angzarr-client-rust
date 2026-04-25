@@ -28,3 +28,4 @@ pub mod state_building;
 pub mod testing;
 pub mod upcaster;
 pub mod validation;
+pub mod wire_parity;

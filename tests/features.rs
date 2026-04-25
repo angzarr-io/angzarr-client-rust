@@ -38,6 +38,7 @@ use steps::state_building::StateBuildingWorld;
 use steps::testing::TestingWorld;
 use steps::upcaster::UpcasterWorld;
 use steps::validation::ValidationWorld;
+use steps::wire_parity::WireParityWorld;
 
 #[tokio::main]
 async fn main() {
@@ -236,5 +237,12 @@ async fn main() {
     DecoratorsWorldCucumber::cucumber()
         .fail_on_skipped()
         .run("angzarr-project/features/client/decorators.feature")
+        .await;
+
+    // Run cross-language wire-format parity tests
+    println!("\n=== Running WireParity Tests ===\n");
+    WireParityWorld::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/client/wire_parity.feature")
         .await;
 }
