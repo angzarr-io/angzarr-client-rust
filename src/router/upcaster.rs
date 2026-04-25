@@ -29,6 +29,21 @@ pub struct UpcasterRouter {
     pub(crate) factories: Vec<Factory>,
 }
 
+impl UpcasterRouter {
+    /// Upcaster name (`#[upcaster(name = ...)]` from the first registered handler).
+    pub fn name(&self) -> String {
+        match self.factories.first().map(|f| (f.produce)().config()) {
+            Some(HandlerConfig::Upcaster { name, .. }) => name,
+            _ => String::new(),
+        }
+    }
+
+    /// Upcasters are stream transformers; no outbound destinations.
+    pub fn output_domains(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
 impl std::fmt::Debug for UpcasterRouter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UpcasterRouter")

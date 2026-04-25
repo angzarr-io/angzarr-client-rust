@@ -456,3 +456,89 @@ impl_handler_count!(CommandHandlerRouter);
 impl_handler_count!(SagaRouter);
 impl_handler_count!(ProcessManagerRouter);
 impl_handler_count!(ProjectorRouter);
+
+/// Extract the first handler's [`HandlerConfig`] by invoking its factory once.
+fn first_config(factories: &[Factory]) -> Option<HandlerConfig> {
+    factories.first().map(|f| (f.produce)().config())
+}
+
+impl CommandHandlerRouter {
+    /// Domain this router serves (read from the first registered handler's
+    /// `#[command_handler(domain = ...)]` metadata).
+    pub fn name(&self) -> String {
+        match first_config(&self.factories) {
+            Some(HandlerConfig::CommandHandler { domain, .. }) => domain,
+            _ => String::new(),
+        }
+    }
+
+    /// Command handlers don't emit cross-domain commands at the framework
+    /// level — they return events. Always empty.
+    pub fn output_domains(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+impl SagaRouter {
+    /// Saga name (`#[saga(name = ...)]` from the first registered handler).
+    pub fn name(&self) -> String {
+        match first_config(&self.factories) {
+            Some(HandlerConfig::Saga { name, .. }) => name,
+            _ => String::new(),
+        }
+    }
+
+    /// Output target domains from every registered saga's `#[saga(target = ...)]`,
+    /// deduplicated.
+    pub fn output_domains(&self) -> Vec<String> {
+        let mut seen = Vec::new();
+        for factory in &self.factories {
+            if let HandlerConfig::Saga { target, .. } = (factory.produce)().config() {
+                if !target.is_empty() && !seen.contains(&target) {
+                    seen.push(target);
+                }
+            }
+        }
+        seen
+    }
+}
+
+impl ProcessManagerRouter {
+    /// Process-manager name (`#[process_manager(name = ...)]` from the first handler).
+    pub fn name(&self) -> String {
+        match first_config(&self.factories) {
+            Some(HandlerConfig::ProcessManager { name, .. }) => name,
+            _ => String::new(),
+        }
+    }
+
+    /// Flattened, deduplicated `targets` across every registered PM.
+    pub fn output_domains(&self) -> Vec<String> {
+        let mut seen = Vec::new();
+        for factory in &self.factories {
+            if let HandlerConfig::ProcessManager { targets, .. } = (factory.produce)().config() {
+                for t in targets {
+                    if !t.is_empty() && !seen.contains(&t) {
+                        seen.push(t);
+                    }
+                }
+            }
+        }
+        seen
+    }
+}
+
+impl ProjectorRouter {
+    /// Projector name (`#[projector(name = ...)]` from the first handler).
+    pub fn name(&self) -> String {
+        match first_config(&self.factories) {
+            Some(HandlerConfig::Projector { name, .. }) => name,
+            _ => String::new(),
+        }
+    }
+
+    /// Projectors are read-side; no outbound destinations.
+    pub fn output_domains(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
