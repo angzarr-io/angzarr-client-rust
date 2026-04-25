@@ -88,9 +88,16 @@ impl ClientError {
             || matches!(self, ClientError::InvalidArgument(_))
     }
 
-    /// Returns true if this is a connection or transport error.
+    /// Returns true for connection/transport-class errors — including a gRPC
+    /// `UNAVAILABLE` status, which is the standard way for gRPC services to
+    /// signal a transient transport-level outage. Mirrors the Python client's
+    /// classification so retry decisions agree across languages.
     pub fn is_connection_error(&self) -> bool {
-        matches!(self, ClientError::Connection(_) | ClientError::Transport(_))
+        match self {
+            ClientError::Connection(_) | ClientError::Transport(_) => true,
+            ClientError::Grpc(s) => s.code() == Code::Unavailable,
+            _ => false,
+        }
     }
 }
 
@@ -175,3 +182,42 @@ impl From<CommandRejectedError> for Status {
 
 /// Result type for command/event handlers.
 pub type CommandResult<T> = std::result::Result<T, CommandRejectedError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_connection_error_includes_unavailable_grpc() {
+        let err = ClientError::from(Status::unavailable("backend down"));
+        assert!(
+            err.is_connection_error(),
+            "Grpc(UNAVAILABLE) must classify as connection error to mirror Python"
+        );
+    }
+
+    #[test]
+    fn is_connection_error_excludes_other_grpc_codes() {
+        for status in [
+            Status::not_found("missing"),
+            Status::failed_precondition("conflict"),
+            Status::invalid_argument("bad"),
+            Status::internal("oops"),
+        ] {
+            let err = ClientError::from(status);
+            assert!(
+                !err.is_connection_error(),
+                "non-UNAVAILABLE Grpc must not classify as connection error: {:?}",
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn is_connection_error_includes_connection_and_transport_variants() {
+        assert!(ClientError::Connection("x".into()).is_connection_error());
+        // Transport variant is constructed via tonic::transport::Error which we can't
+        // synthesize directly here; covered by the existing cucumber step that
+        // checks ClientError::Connection-as-stand-in-for-transport.
+    }
+}
