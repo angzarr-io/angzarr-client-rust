@@ -1,94 +1,32 @@
-//! gRPC server utilities for running aggregate and saga services.
+//! gRPC runner utilities for hosting aggregate, saga, process manager,
+//! projector, and upcaster services.
 //!
-//! This module provides helpers for starting gRPC servers with TCP or UDS transport.
+//! Each `run_*_server` function:
+//!
+//! 1. Resolves transport from env via [`get_transport_config`] →
+//!    [`ServerConfig`] (TCP or UDS — UDS path lives in the parent dir we
+//!    create on demand, with any stale socket file removed).
+//! 2. Reads the runner's logical name from the router (`router.name()`),
+//!    so callers don't pass a redundant `domain`/`name` argument that can
+//!    drift from the metadata on the registered handlers.
+//! 3. Adds `grpc.health.v1.Health` alongside the kind-specific service.
+//! 4. Spawns a [`crate::readiness`] supervisor whose probes are:
+//!    - a [`crate::readiness::TransportProbe`] flipped once the listener is
+//!      bound and the server is accepting traffic, and
+//!    - one [`crate::readiness::OutputDomainProbe`] per `target` declared in
+//!      the router's saga / process-manager handler metadata.
+//!
+//! While any probe is failing, the per-kind health service name and the empty
+//! `""` overall name both report `NOT_SERVING`. K8s liveness sees the gRPC
+//! server respond regardless; readiness only flips green once all probes do.
 
 use std::env;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use tonic::transport::Server;
+use tonic_health::ServingStatus;
 use tracing::info;
-
-/// Initialize default tracing/logging for a server.
-///
-/// Cross-language alias for Python's `configure_logging`. Installs a
-/// `tracing_subscriber` with `RUST_LOG` env filtering and ISO-style output
-/// if no subscriber is already set. Safe to call multiple times (a second
-/// call is a no-op).
-pub fn configure_logging() {
-    // Use `try_init` so re-entry doesn't panic.
-    let _ = tracing::subscriber::set_global_default(tracing::subscriber::NoSubscriber::default());
-}
-
-/// Resolve transport configuration from environment. Mirrors Python's
-/// `get_transport_config` — returns `(transport_type, address)`:
-/// - `("tcp", "[::]:{port}")` by default
-/// - `("uds", "unix:{path}")` when `TRANSPORT_TYPE=uds`
-pub fn get_transport_config() -> (String, String) {
-    let transport = env::var("TRANSPORT_TYPE").unwrap_or_else(|_| "tcp".into());
-    if transport.eq_ignore_ascii_case("uds") {
-        let base = env::var("UDS_BASE_PATH").unwrap_or_else(|_| "/tmp/angzarr".into());
-        let service = env::var("SERVICE_NAME").unwrap_or_else(|_| "business".into());
-        let qualifier = env::var("DOMAIN")
-            .or_else(|_| env::var("SAGA_NAME"))
-            .or_else(|_| env::var("PROJECTOR_NAME"))
-            .unwrap_or_default();
-        let socket_name = if qualifier.is_empty() {
-            format!("{}.sock", service)
-        } else {
-            format!("{}-{}.sock", service, qualifier)
-        };
-        let path = format!("{}/{}", base.trim_end_matches('/'), socket_name);
-        ("uds".into(), format!("unix:{}", path))
-    } else {
-        let port = env::var("PORT").unwrap_or_else(|_| "50052".into());
-        ("tcp".into(), format!("[::]:{}", port))
-    }
-}
-
-/// Construct a fresh tonic `Server` builder. Cross-language alias for
-/// Python's `create_server` — returns a builder the caller attaches
-/// services to via `.add_service(...)` before `.serve(...)`.
-pub fn create_server() -> Server {
-    Server::builder()
-}
-
-/// Run a server for any [`crate::router::Built`] router kind.
-///
-/// Dispatches to the per-kind `run_*_server` function based on the
-/// `Built` variant. Honors the env-var-driven TCP/UDS transport selection.
-/// Cross-language alias for Python's generic `run_server(...)`.
-pub async fn run_server(
-    name: &str,
-    default_port: u16,
-    built: crate::router::Built,
-) -> Result<(), tonic::transport::Error> {
-    match built {
-        crate::router::Built::CommandHandler(router) => {
-            run_command_handler_server(name, default_port, router).await
-        }
-        crate::router::Built::Saga(router) => run_saga_server(name, default_port, router).await,
-        crate::router::Built::ProcessManager(router) => {
-            run_process_manager_server(name, default_port, router).await
-        }
-        crate::router::Built::Projector(router) => {
-            let handler = crate::handler::ProjectorGrpc::new(router);
-            run_projector_server(name, default_port, handler).await
-        }
-        crate::router::Built::Upcaster(router) => {
-            run_upcaster_server(name, default_port, router).await
-        }
-    }
-}
-
-/// Remove a stale UDS socket file at `path`. Mirrors Python's
-/// `cleanup_socket`. No-op if the path does not exist.
-pub fn cleanup_socket(path: impl AsRef<Path>) {
-    let p = path.as_ref();
-    if p.exists() {
-        let _ = std::fs::remove_file(p);
-    }
-}
 
 use crate::handler::{
     CommandHandlerGrpc, ProcessManagerGrpc, ProjectorGrpc, SagaGrpc, UpcasterGrpc,
@@ -98,29 +36,51 @@ use crate::proto::process_manager_service_server::ProcessManagerServiceServer;
 use crate::proto::projector_service_server::ProjectorServiceServer;
 use crate::proto::saga_service_server::SagaServiceServer;
 use crate::proto::upcaster_service_server::UpcasterServiceServer;
+use crate::readiness::{
+    probe_config_from_env, run_supervisor, OutputDomainProbe, Probe, TransportProbe,
+};
 use crate::router::runtime::{CommandHandlerRouter, ProcessManagerRouter, SagaRouter};
 
-/// Configuration for a gRPC server.
+/// Fully-qualified gRPC service names — matched against `Health.Check` and
+/// used as health-reporter keys.
+const HEALTH_NAME_COMMAND_HANDLER: &str = "angzarr_client.proto.angzarr.CommandHandlerService";
+const HEALTH_NAME_SAGA: &str = "angzarr_client.proto.angzarr.SagaService";
+const HEALTH_NAME_PROCESS_MANAGER: &str = "angzarr_client.proto.angzarr.ProcessManagerService";
+const HEALTH_NAME_PROJECTOR: &str = "angzarr_client.proto.angzarr.ProjectorService";
+const HEALTH_NAME_UPCASTER: &str = "angzarr_client.proto.angzarr.UpcasterService";
+
+/// Initialize a JSON tracing subscriber filtered by `RUST_LOG` (default `info`).
+///
+/// Idempotent — `try_init` swallows the "already set" error so a second call
+/// in the same process is a no-op.
+pub fn configure_logging() {
+    let _ = tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .try_init();
+}
+
+/// Configuration for a gRPC runner.
+#[derive(Debug, Clone)]
 pub struct ServerConfig {
-    /// Port to listen on (TCP mode).
+    /// TCP port (used when `uds_path` is `None`).
     pub port: u16,
-    /// Unix domain socket path (UDS mode).
+    /// Unix domain socket path. When `Some`, supersedes `port`.
     pub uds_path: Option<PathBuf>,
 }
 
 impl ServerConfig {
-    /// Create config from environment variables.
+    /// Resolve from env. UDS mode is selected when all three of `UDS_BASE_PATH`,
+    /// `SERVICE_NAME`, and `DOMAIN` are set; otherwise TCP, with port read from
+    /// `PORT` or `GRPC_PORT`, falling back to `default_port`.
     ///
-    /// UDS mode (standalone):
-    /// - `UDS_BASE_PATH`: Base directory for UDS sockets
-    /// - `SERVICE_NAME`: Service name (e.g., "business")
-    /// - `DOMAIN`: Domain name (e.g., "player")
-    ///   => Socket path: `{UDS_BASE_PATH}/{SERVICE_NAME}-{DOMAIN}.sock`
-    ///
-    /// TCP mode (distributed):
-    /// - `PORT` or `GRPC_PORT`: TCP port (default: `default_port`)
+    /// This function is **pure** — no filesystem side effects. The runner is
+    /// responsible for creating the parent directory and removing any stale
+    /// socket file at the chosen path.
     pub fn from_env(default_port: u16) -> Self {
-        // Check for UDS mode first
         if let (Ok(base_path), Ok(service_name), Ok(domain)) = (
             env::var("UDS_BASE_PATH"),
             env::var("SERVICE_NAME"),
@@ -133,14 +93,11 @@ impl ServerConfig {
                 uds_path: Some(uds_path),
             };
         }
-
-        // Fall back to TCP mode
         let port = env::var("PORT")
             .or_else(|_| env::var("GRPC_PORT"))
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(default_port);
-
         Self {
             port,
             uds_path: None,
@@ -148,277 +105,220 @@ impl ServerConfig {
     }
 }
 
-/// Run a command handler service with the given router.
+/// Resolve transport configuration from environment. Single canonical entry
+/// point — the only env reader callers should use.
+pub fn get_transport_config(default_port: u16) -> ServerConfig {
+    ServerConfig::from_env(default_port)
+}
+
+/// Construct a fresh `tonic::transport::Server` builder.
+pub fn create_server() -> Server {
+    Server::builder()
+}
+
+/// Run a server for any [`crate::router::Built`] router kind.
 ///
-/// Supports both TCP and Unix domain socket (UDS) transport.
-/// UDS is used when `UDS_BASE_PATH`, `SERVICE_NAME`, and `DOMAIN` env vars are set.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use angzarr_client::{run_command_handler_server, CommandHandlerRouter};
-///
-/// #[tokio::main]
-/// async fn main() {
-///     let router = CommandHandlerRouter::new("player", "player", PlayerHandler::new());
-///
-///     run_command_handler_server("player", 50001, router).await;
-/// }
-/// ```
+/// Dispatches to the per-kind `run_*_server` function based on the variant.
+pub async fn run_server(
+    default_port: u16,
+    built: crate::router::Built,
+) -> Result<(), tonic::transport::Error> {
+    match built {
+        crate::router::Built::CommandHandler(router) => {
+            run_command_handler_server(router, default_port).await
+        }
+        crate::router::Built::Saga(router) => run_saga_server(router, default_port).await,
+        crate::router::Built::ProcessManager(router) => {
+            run_process_manager_server(router, default_port).await
+        }
+        crate::router::Built::Projector(router) => {
+            run_projector_server(router, default_port).await
+        }
+        crate::router::Built::Upcaster(router) => run_upcaster_server(router, default_port).await,
+    }
+}
+
+/// Remove a stale UDS socket file at `path`. No-op if the path does not exist.
+pub fn cleanup_socket(path: impl AsRef<Path>) {
+    let p = path.as_ref();
+    if p.exists() {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-kind runners
+// ---------------------------------------------------------------------------
+
+/// Run a command handler service. Domain is read from the router's
+/// `#[command_handler(domain = ...)]` metadata.
 pub async fn run_command_handler_server(
-    domain: &str,
-    default_port: u16,
     router: CommandHandlerRouter,
+    default_port: u16,
 ) -> Result<(), tonic::transport::Error> {
-    let config = ServerConfig::from_env(default_port);
-    let handler = CommandHandlerGrpc::new(router);
-    let service = CommandHandlerServiceServer::new(handler);
-
-    if let Some(uds_path) = &config.uds_path {
-        // UDS mode (standalone)
-        info!(
-            domain = domain,
-            path = %uds_path.display(),
-            "Starting command handler server (UDS)"
-        );
-
-        // Remove existing socket file if present
-        let _ = std::fs::remove_file(uds_path);
-
-        let uds = tokio::net::UnixListener::bind(uds_path).expect("Failed to bind UDS socket");
-        let incoming = tokio_stream::wrappers::UnixListenerStream::new(uds);
-
-        Server::builder()
-            .add_service(service)
-            .serve_with_incoming(incoming)
-            .await
-    } else {
-        // TCP mode (distributed)
-        let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse().unwrap();
-
-        info!(
-            domain = domain,
-            port = config.port,
-            "Starting command handler server"
-        );
-
-        Server::builder().add_service(service).serve(addr).await
-    }
+    let name = router.name();
+    let outputs = router.output_domains();
+    let svc = CommandHandlerServiceServer::new(CommandHandlerGrpc::new(router));
+    run_kind(
+        name,
+        get_transport_config(default_port),
+        outputs,
+        HEALTH_NAME_COMMAND_HANDLER,
+        |r| r.add_service(svc),
+    )
+    .await
 }
 
-/// Run a saga service with the given router.
-///
-/// Supports both TCP and Unix domain socket (UDS) transport.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use angzarr_client::{run_saga_server, SagaRouter};
-///
-/// #[tokio::main]
-/// async fn main() {
-///     let router = SagaRouter::new("saga-order-fulfillment", "order", "fulfillment", OrderHandler::new());
-///
-///     run_saga_server("saga-order-fulfillment", 50010, router).await;
-/// }
-/// ```
+/// Run a saga service. Saga name is read from the router's `#[saga(name = ...)]`
+/// metadata. Output-domain probes are constructed from each handler's `target`.
 pub async fn run_saga_server(
-    name: &str,
-    default_port: u16,
     router: SagaRouter,
+    default_port: u16,
 ) -> Result<(), tonic::transport::Error> {
-    let config = ServerConfig::from_env(default_port);
-    let handler = SagaGrpc::new(router);
-    let service = SagaServiceServer::new(handler);
-
-    if let Some(uds_path) = &config.uds_path {
-        // UDS mode
-        info!(
-            name = name,
-            path = %uds_path.display(),
-            "Starting saga server (UDS)"
-        );
-
-        let _ = std::fs::remove_file(uds_path);
-
-        let uds = tokio::net::UnixListener::bind(uds_path).expect("Failed to bind UDS socket");
-        let incoming = tokio_stream::wrappers::UnixListenerStream::new(uds);
-
-        Server::builder()
-            .add_service(service)
-            .serve_with_incoming(incoming)
-            .await
-    } else {
-        // TCP mode
-        let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse().unwrap();
-
-        info!(name = name, port = config.port, "Starting saga server");
-
-        Server::builder().add_service(service).serve(addr).await
-    }
+    let name = router.name();
+    let outputs = router.output_domains();
+    let svc = SagaServiceServer::new(SagaGrpc::new(router));
+    run_kind(
+        name,
+        get_transport_config(default_port),
+        outputs,
+        HEALTH_NAME_SAGA,
+        |r| r.add_service(svc),
+    )
+    .await
 }
 
-/// Run a projector service with the given handler.
-///
-/// Supports both TCP and Unix domain socket (UDS) transport.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use angzarr_client::{run_projector_server, ProjectorGrpc};
-///
-/// #[tokio::main]
-/// async fn main() {
-///     let handler = ProjectorGrpc::new("output").with_handle(handle_events);
-///
-///     run_projector_server("output", 9090, handler).await;
-/// }
-/// ```
+/// Run a projector service. Projector name is read from the
+/// `#[projector(name = ...)]` metadata. Projectors are read-side and have no
+/// output-domain probes.
 pub async fn run_projector_server(
-    name: &str,
+    router: crate::router::ProjectorRouter,
     default_port: u16,
-    handler: ProjectorGrpc,
 ) -> Result<(), tonic::transport::Error> {
-    let config = ServerConfig::from_env(default_port);
-    let service = ProjectorServiceServer::new(handler);
-
-    if let Some(uds_path) = &config.uds_path {
-        // UDS mode
-        info!(
-            name = name,
-            path = %uds_path.display(),
-            "Starting projector server (UDS)"
-        );
-
-        let _ = std::fs::remove_file(uds_path);
-
-        let uds = tokio::net::UnixListener::bind(uds_path).expect("Failed to bind UDS socket");
-        let incoming = tokio_stream::wrappers::UnixListenerStream::new(uds);
-
-        Server::builder()
-            .add_service(service)
-            .serve_with_incoming(incoming)
-            .await
-    } else {
-        // TCP mode
-        let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse().unwrap();
-
-        info!(name = name, port = config.port, "Starting projector server");
-
-        Server::builder().add_service(service).serve(addr).await
-    }
+    let name = router.name();
+    let svc = ProjectorServiceServer::new(ProjectorGrpc::new(router));
+    run_kind(
+        name,
+        get_transport_config(default_port),
+        Vec::new(),
+        HEALTH_NAME_PROJECTOR,
+        |r| r.add_service(svc),
+    )
+    .await
 }
 
-/// Run a process manager service with the given router.
-///
-/// Supports both TCP and Unix domain socket (UDS) transport.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use angzarr_client::{run_process_manager_server, ProcessManagerRouter};
-///
-/// #[tokio::main]
-/// async fn main() {
-///     let router = ProcessManagerRouter::new("hand-flow", "hand-flow", rebuild_state)
-///         .domain("table", TablePmHandler::new());
-///
-///     run_process_manager_server("hand-flow", 9091, router).await;
-/// }
-/// ```
+/// Run a process-manager service. PM name is read from
+/// `#[process_manager(name = ...)]` metadata. Output-domain probes are built
+/// from the union of `targets` declared across registered handlers.
 pub async fn run_process_manager_server(
-    name: &str,
-    default_port: u16,
     router: ProcessManagerRouter,
+    default_port: u16,
 ) -> Result<(), tonic::transport::Error> {
-    let config = ServerConfig::from_env(default_port);
-    let handler = ProcessManagerGrpc::new(router);
-    let service = ProcessManagerServiceServer::new(handler);
-
-    if let Some(uds_path) = &config.uds_path {
-        // UDS mode
-        info!(
-            name = name,
-            path = %uds_path.display(),
-            "Starting process manager server (UDS)"
-        );
-
-        let _ = std::fs::remove_file(uds_path);
-
-        let uds = tokio::net::UnixListener::bind(uds_path).expect("Failed to bind UDS socket");
-        let incoming = tokio_stream::wrappers::UnixListenerStream::new(uds);
-
-        Server::builder()
-            .add_service(service)
-            .serve_with_incoming(incoming)
-            .await
-    } else {
-        // TCP mode
-        let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse().unwrap();
-
-        info!(
-            name = name,
-            port = config.port,
-            "Starting process manager server"
-        );
-
-        Server::builder().add_service(service).serve(addr).await
-    }
+    let name = router.name();
+    let outputs = router.output_domains();
+    let svc = ProcessManagerServiceServer::new(ProcessManagerGrpc::new(router));
+    run_kind(
+        name,
+        get_transport_config(default_port),
+        outputs,
+        HEALTH_NAME_PROCESS_MANAGER,
+        |r| r.add_service(svc),
+    )
+    .await
 }
 
-/// Run an upcaster service with the given router.
-///
-/// Supports both TCP and Unix domain socket (UDS) transport.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use angzarr_client::{run_upcaster_server, Router};
-///
-/// #[tokio::main]
-/// async fn main() {
-///     let router = Router::new("upcaster-player")
-///         .with_handler(|| PlayerUpcaster::new())
-///         .build()
-///         .unwrap()
-///         .into_upcaster()   // or match on Built::Upcaster(r) => r
-///         .unwrap();
-///
-///     run_upcaster_server("upcaster-player", 50401, router).await;
-/// }
-/// ```
+/// Run an upcaster service. Upcaster name is read from
+/// `#[upcaster(name = ...)]` metadata. Upcasters have no output-domain probes.
 pub async fn run_upcaster_server(
-    name: &str,
-    default_port: u16,
     router: crate::router::upcaster::UpcasterRouter,
+    default_port: u16,
 ) -> Result<(), tonic::transport::Error> {
-    let config = ServerConfig::from_env(default_port);
-    let handler = UpcasterGrpc::new(router);
-    let service = UpcasterServiceServer::new(handler);
+    let name = router.name();
+    let svc = UpcasterServiceServer::new(UpcasterGrpc::new(router));
+    run_kind(
+        name,
+        get_transport_config(default_port),
+        Vec::new(),
+        HEALTH_NAME_UPCASTER,
+        |r| r.add_service(svc),
+    )
+    .await
+}
 
-    if let Some(uds_path) = &config.uds_path {
-        // UDS mode
-        info!(
-            name = name,
-            path = %uds_path.display(),
-            "Starting upcaster server (UDS)"
-        );
+// ---------------------------------------------------------------------------
+// Shared runner core
+// ---------------------------------------------------------------------------
 
-        let _ = std::fs::remove_file(uds_path);
-
-        let uds = tokio::net::UnixListener::bind(uds_path).expect("Failed to bind UDS socket");
-        let incoming = tokio_stream::wrappers::UnixListenerStream::new(uds);
-
-        Server::builder()
-            .add_service(service)
-            .serve_with_incoming(incoming)
-            .await
-    } else {
-        // TCP mode
-        let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse().unwrap();
-
-        info!(name = name, port = config.port, "Starting upcaster server");
-
-        Server::builder().add_service(service).serve(addr).await
+/// Common runner body shared by every per-kind `run_*_server`:
+/// builds probes + health, marks transport bound after the listener succeeds,
+/// then serves until the future resolves.
+async fn run_kind<F>(
+    instance_name: String,
+    config: ServerConfig,
+    output_domains: Vec<String>,
+    health_service_name: &'static str,
+    add_kind_service: F,
+) -> Result<(), tonic::transport::Error>
+where
+    F: FnOnce(tonic::transport::server::Router) -> tonic::transport::server::Router,
+{
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
+    let service_names: Vec<String> = vec![String::new(), health_service_name.to_string()];
+    for name in &service_names {
+        health_reporter
+            .set_service_status(name, ServingStatus::NotServing)
+            .await;
     }
+
+    let (transport_probe, transport_signal) = TransportProbe::new();
+    let mut probes: Vec<Box<dyn Probe>> = vec![Box::new(transport_probe)];
+    for domain in output_domains {
+        probes.push(Box::new(OutputDomainProbe::for_domain(domain)));
+    }
+
+    let (interval, timeout) = probe_config_from_env();
+    let supervisor = tokio::spawn(run_supervisor(
+        probes,
+        health_reporter,
+        service_names,
+        interval,
+        timeout,
+    ));
+
+    let server = Server::builder().add_service(health_service);
+    let router = add_kind_service(server);
+
+    let result = match config.uds_path.as_ref() {
+        Some(uds_path) => {
+            if let Some(parent) = uds_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            cleanup_socket(uds_path);
+            info!(
+                name = %instance_name,
+                path = %uds_path.display(),
+                "Starting server (UDS)"
+            );
+            let listener =
+                tokio::net::UnixListener::bind(uds_path).expect("Failed to bind UDS socket");
+            let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
+            transport_signal.mark_bound();
+            router.serve_with_incoming(incoming).await
+        }
+        None => {
+            let addr: SocketAddr = format!("0.0.0.0:{}", config.port)
+                .parse()
+                .expect("invalid TCP bind address");
+            info!(
+                name = %instance_name,
+                port = config.port,
+                "Starting server (TCP)"
+            );
+            transport_signal.mark_bound();
+            router.serve(addr).await
+        }
+    };
+
+    supervisor.abort();
+    result
 }
