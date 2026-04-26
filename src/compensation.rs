@@ -98,21 +98,30 @@ impl CompensationContext {
             .unwrap_or("")
     }
 
-    /// Returns the domain and command type suffix as a "domain:CommandType" key.
+    /// Returns the domain and command type suffix as a "domain/CommandType" key.
     ///
-    /// Useful for routing rejection handling by target domain and command type.
+    /// Mirrors Python's `CompensationContext.dispatch_key`
+    /// (`f"{domain}/{type_name_from_url(cmd_type)}"`). Returns an empty
+    /// string when the rejected command, its cover, the domain, or the
+    /// command type URL is missing.
     pub fn dispatch_key(&self) -> String {
-        let domain = self
+        let Some(domain) = self
             .rejected_command
             .as_ref()
             .and_then(|cmd| cmd.cover.as_ref())
             .map(|c| c.domain.as_str())
-            .unwrap_or("");
+            .filter(|d| !d.is_empty())
+        else {
+            return String::new();
+        };
 
         let cmd_type = self.rejected_command_type();
-        let suffix = cmd_type.rsplit('/').next().unwrap_or(cmd_type);
+        if cmd_type.is_empty() {
+            return String::new();
+        }
+        let suffix = crate::convert::type_name_from_url(cmd_type);
 
-        format!("{}:{}", domain, suffix)
+        format!("{}/{}", domain, suffix)
     }
 }
 
@@ -342,7 +351,25 @@ mod tests {
             "type.googleapis.com/examples.CreateShipment",
         );
         let ctx = CompensationContext::from_notification(&notification);
-        assert_eq!(ctx.dispatch_key(), "fulfillment:examples.CreateShipment");
+        assert_eq!(ctx.dispatch_key(), "fulfillment/examples.CreateShipment");
+    }
+
+    #[test]
+    fn dispatch_key_empty_when_domain_missing() {
+        let notification = make_rejection_notification(
+            "fail",
+            "",
+            "type.googleapis.com/examples.CreateShipment",
+        );
+        let ctx = CompensationContext::from_notification(&notification);
+        assert_eq!(ctx.dispatch_key(), "");
+    }
+
+    #[test]
+    fn dispatch_key_empty_when_cmd_type_missing() {
+        let notification = make_rejection_notification("fail", "fulfillment", "");
+        let ctx = CompensationContext::from_notification(&notification);
+        assert_eq!(ctx.dispatch_key(), "");
     }
 
     #[test]
