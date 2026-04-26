@@ -32,6 +32,18 @@ async fn given_destinations(world: &mut DestinationsWorld, spec: String) {
     world.destinations = Some(Destinations::from_sequences(seqs));
 }
 
+#[given(regex = r"^a Destinations built from an ordered sequence list (.+)$")]
+async fn given_destinations_ordered(world: &mut DestinationsWorld, spec: String) {
+    // Build from an ordered Vec so the insertion sequence matches the
+    // spec literally. Each named destination gets sequence 0; the
+    // order is what's under test.
+    let pairs: Vec<(String, u32)> = spec
+        .split(" then ")
+        .map(|s| (s.trim().trim_matches('"').to_string(), 0u32))
+        .collect();
+    world.destinations = Some(Destinations::from_sequences(pairs));
+}
+
 #[then(regex = r#"^has_domain "([^"]*)" returns (true|false)$"#)]
 async fn then_has_domain(world: &mut DestinationsWorld, domain: String, expected: String) {
     let dest = world.destinations.as_ref().expect("Destinations must be set");
@@ -61,4 +73,19 @@ async fn then_domains_count(world: &mut DestinationsWorld, count: usize) {
     let dest = world.destinations.as_ref().expect("Destinations must be set");
     let n = dest.domains().count();
     assert_eq!(n, count, "domains count = {}, expected {}", n, count);
+}
+
+#[then(regex = r"^domains in order are (.+)$")]
+async fn then_domains_in_order(world: &mut DestinationsWorld, spec: String) {
+    let dest = world.destinations.as_ref().expect("Destinations must be set");
+    let expected: Vec<String> = spec
+        .split(',')
+        .map(|s| s.trim().trim_matches('"').to_string())
+        .collect();
+    let actual: Vec<String> = dest.domains().map(|s| s.to_string()).collect();
+    assert_eq!(
+        actual, expected,
+        "insertion order drift: got {:?}, expected {:?}",
+        actual, expected
+    );
 }

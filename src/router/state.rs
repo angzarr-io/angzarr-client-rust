@@ -6,7 +6,7 @@
 //! code wraps it with [`Destinations`] and calls [`Destinations::stamp_command`]
 //! when building the outbound `CommandBook`.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use crate::proto::CommandBook;
 
@@ -28,7 +28,7 @@ use crate::proto::CommandBook;
 /// ```
 #[derive(Debug)]
 pub struct Destinations {
-    sequences: HashMap<String, u32>,
+    sequences: IndexMap<String, u32>,
 }
 
 impl Default for Destinations {
@@ -41,13 +41,25 @@ impl Destinations {
     /// Create empty Destinations.
     pub fn new() -> Self {
         Self {
-            sequences: HashMap::new(),
+            sequences: IndexMap::new(),
         }
     }
 
     /// Build Destinations from a destination_sequences map.
-    pub fn from_sequences(sequences: HashMap<String, u32>) -> Self {
-        Self { sequences }
+    ///
+    /// Accepts any iterable of `(domain, sequence)` pairs — `HashMap`,
+    /// `BTreeMap`, `IndexMap`, `Vec`, etc. The iteration order at
+    /// [`Destinations::domains`] follows the order yielded by the input
+    /// iterator. Pass an ordered collection (`Vec`, `IndexMap`,
+    /// `BTreeMap`) if you want deterministic order; passing a `HashMap`
+    /// keeps the surface compiling but forfeits the order guarantee.
+    pub fn from_sequences<I>(sequences: I) -> Self
+    where
+        I: IntoIterator<Item = (String, u32)>,
+    {
+        Self {
+            sequences: sequences.into_iter().collect(),
+        }
     }
 
     /// Get the next sequence number for a domain.
@@ -103,6 +115,12 @@ impl Destinations {
     }
 
     /// Get all domain names that have sequences.
+    ///
+    /// Iteration order matches the insertion order from
+    /// [`Destinations::from_sequences`] — pass an ordered collection
+    /// (`Vec`, `IndexMap`, `BTreeMap`) to get deterministic order.
+    /// Mirrors Python's `Destinations.domains` (`destinations.py:144`),
+    /// which is insertion-preserving by virtue of CPython dict.
     pub fn domains(&self) -> impl Iterator<Item = &str> {
         self.sequences.keys().map(|s| s.as_str())
     }
@@ -111,6 +129,7 @@ impl Destinations {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn destinations_from_sequences() {
@@ -133,6 +152,23 @@ mod tests {
 
         assert!(destinations.has_domain("order"));
         assert!(!destinations.has_domain("inventory"));
+    }
+
+    #[test]
+    fn destinations_domains_preserves_insertion_order_from_vec() {
+        // P2.2: switching internal storage from HashMap to IndexMap pins
+        // the iteration order to the order of insertion, so callers
+        // passing an ordered iterable (Vec, IndexMap, BTreeMap) get a
+        // deterministic `domains()` listing. HashMap callers still
+        // compile but iteration order remains hash-random.
+        let pairs = vec![
+            ("zulu".to_string(), 0u32),
+            ("alpha".to_string(), 1u32),
+            ("mike".to_string(), 2u32),
+        ];
+        let destinations = Destinations::from_sequences(pairs);
+        let actual: Vec<&str> = destinations.domains().collect();
+        assert_eq!(actual, vec!["zulu", "alpha", "mike"]);
     }
 
     #[test]
