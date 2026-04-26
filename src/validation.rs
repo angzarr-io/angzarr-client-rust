@@ -17,9 +17,13 @@
 use crate::CommandRejectedError;
 
 /// Require that an aggregate exists (has prior events).
+///
+/// Returns a `NOT_FOUND` rejection — not retryable, since refetching events
+/// cannot change the outcome. Mirrors Python's `require_exists`
+/// (`validation.py:18-19`), which raises `CommandRejectedError.not_found(...)`.
 pub fn require_exists(exists: bool, message: &str) -> Result<(), CommandRejectedError> {
     if !exists {
-        return Err(CommandRejectedError::new(message));
+        return Err(CommandRejectedError::not_found(message));
     }
     Ok(())
 }
@@ -118,8 +122,9 @@ mod tests {
     #[test]
     fn test_require_exists_fails() {
         let result = require_exists(false, "Player does not exist");
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().reason, "Player does not exist");
+        let err = result.expect_err("expected rejection");
+        assert_eq!(err.reason, "Player does not exist");
+        assert!(err.is_not_found(), "expected NOT_FOUND, got {}", err.status_code);
     }
 
     #[test]
