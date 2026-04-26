@@ -177,6 +177,7 @@ fn client_error_to_status(err: ClientError) -> Status {
         ClientError::Transport(e) => Status::unavailable(e.to_string()),
         ClientError::Grpc(s) => *s,
         ClientError::InvalidTimestamp(msg) => Status::invalid_argument(msg),
+        ClientError::Rejected(r) => r.into(),
     }
 }
 
