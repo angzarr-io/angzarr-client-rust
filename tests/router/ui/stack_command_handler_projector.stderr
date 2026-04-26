@@ -7,9 +7,9 @@ error: #[command_handler] cannot coexist with #[projector] on the same impl; exa
   = note: this error originates in the attribute macro `command_handler` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 warning: unused import: `projector`
- --> tests/router/ui/stack_command_handler_projector.rs:1:33
+ --> tests/router/ui/stack_command_handler_projector.rs:1:39
   |
 1 | use angzarr_client::{command_handler, projector};
-  |                                 ^^^^^^^^^
+  |                                       ^^^^^^^^^
   |
   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
