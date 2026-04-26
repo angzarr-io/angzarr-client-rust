@@ -7,6 +7,7 @@ pub mod command_handler;
 pub mod compensation;
 pub mod connection;
 pub mod decorators;
+pub mod destinations;
 pub mod domain_client;
 pub mod error_handling;
 pub mod event_decoding;

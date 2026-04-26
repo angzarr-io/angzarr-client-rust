@@ -17,6 +17,7 @@ use steps::command_handler::CommandHandlerWorld;
 use steps::compensation::CompensationWorld;
 use steps::connection::ConnectionWorld;
 use steps::decorators::DecoratorsWorldCucumber;
+use steps::destinations::DestinationsWorld;
 use steps::domain_client::DomainClientWorld;
 use steps::error_handling::ErrorHandlingWorld;
 use steps::event_decoding::EventDecodingWorld;
@@ -244,5 +245,12 @@ async fn main() {
     WireParityWorld::cucumber()
         .fail_on_skipped()
         .run("angzarr-project/features/client/wire_parity.feature")
+        .await;
+
+    // Run Destinations query-surface tests (C-0132..C-0134)
+    println!("\n=== Running Destinations Tests ===\n");
+    DestinationsWorld::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/client/destinations.feature")
         .await;
 }

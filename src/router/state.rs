@@ -26,6 +26,7 @@ use crate::proto::CommandBook;
 ///     Ok(SagaResponse { commands: vec![cmd], events: vec![] })
 /// }
 /// ```
+#[derive(Debug)]
 pub struct Destinations {
     sequences: HashMap<String, u32>,
 }
@@ -81,9 +82,24 @@ impl Destinations {
         Ok(())
     }
 
-    /// Check if a domain has a sequence available.
-    pub fn has_sequence(&self, domain: &str) -> bool {
+    /// Check if a destination domain is available.
+    ///
+    /// Mirrors Python's `Destinations.has_domain` (`destinations.py:133`).
+    pub fn has_domain(&self, domain: &str) -> bool {
         self.sequences.contains_key(domain)
+    }
+
+    /// Deprecated alias for [`Destinations::has_domain`].
+    ///
+    /// Kept for backwards compatibility with the pre-P2.1 surface where
+    /// the method was named after the internal storage rather than the
+    /// queried concept. Will be removed in a future major version.
+    #[deprecated(
+        since = "0.5.0",
+        note = "use `has_domain` — see PARITY_AUDIT.md plan item P2.1"
+    )]
+    pub fn has_sequence(&self, domain: &str) -> bool {
+        self.has_domain(domain)
     }
 
     /// Get all domain names that have sequences.
@@ -110,13 +126,30 @@ mod tests {
     }
 
     #[test]
-    fn destinations_has_sequence() {
+    fn destinations_has_domain() {
         let mut seqs = HashMap::new();
         seqs.insert("order".to_string(), 5u32);
         let destinations = Destinations::from_sequences(seqs);
 
-        assert!(destinations.has_sequence("order"));
-        assert!(!destinations.has_sequence("inventory"));
+        assert!(destinations.has_domain("order"));
+        assert!(!destinations.has_domain("inventory"));
+    }
+
+    #[test]
+    fn destinations_has_sequence_alias_still_works() {
+        // P2.1 deprecated alias — `#[deprecated]` attribute fires a
+        // compile-time warning but does not change runtime behavior. This
+        // test pins that the alias still returns the same answer as the
+        // canonical `has_domain`. Remove when the alias is removed.
+        let mut seqs = HashMap::new();
+        seqs.insert("order".to_string(), 5u32);
+        let destinations = Destinations::from_sequences(seqs);
+
+        #[allow(deprecated)]
+        {
+            assert!(destinations.has_sequence("order"));
+            assert!(!destinations.has_sequence("inventory"));
+        }
     }
 
     #[test]
