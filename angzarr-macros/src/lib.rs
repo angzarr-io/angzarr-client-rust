@@ -66,6 +66,48 @@ const KIND_ATTRS: &[&str] = &[
     "upcaster",
 ];
 
+/// Take a parsed Option<String> and reject both absence and emptiness, mirroring
+/// Python's `_require_non_empty_str` (`router/validation.py:43-45`). The
+/// "is required" / "must be a non-empty string" wording matches Python's
+/// `BuildError` messages.
+fn require_non_empty_str(opt: Option<String>, field: &str) -> syn::Result<String> {
+    match opt {
+        None => Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("{} is required", field),
+        )),
+        Some(s) if s.is_empty() => Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("{} must be a non-empty string", field),
+        )),
+        Some(s) => Ok(s),
+    }
+}
+
+/// Take a parsed Option<Vec<String>> and reject absence, emptiness, or any
+/// empty element, mirroring Python's `_require_non_empty_list`
+/// (`router/validation.py:48-50`).
+fn require_non_empty_str_list(
+    opt: Option<Vec<String>>,
+    field: &str,
+) -> syn::Result<Vec<String>> {
+    match opt {
+        None => Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("{} is required", field),
+        )),
+        Some(v) if v.is_empty() => Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("{} must be a non-empty list", field),
+        )),
+        Some(v) if v.iter().any(|s| s.is_empty()) => Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("{} must not contain empty strings", field),
+        )),
+        Some(v) => Ok(v),
+    }
+}
+
 /// If `attrs` contains a sibling kind attribute, return a `compile_error!` TokenStream.
 ///
 /// Invoked at the top of each kind-macro entry point so stacking two kinds on
@@ -148,9 +190,7 @@ impl syn::parse::Parse for AggregateArgs {
         }
 
         Ok(AggregateArgs {
-            domain: domain.ok_or_else(|| {
-                syn::Error::new(proc_macro2::Span::call_site(), "domain is required")
-            })?,
+            domain: require_non_empty_str(domain, "domain")?,
             state: state.ok_or_else(|| {
                 syn::Error::new(proc_macro2::Span::call_site(), "state is required")
             })?,
@@ -690,15 +730,9 @@ impl syn::parse::Parse for SagaArgs {
         }
 
         Ok(SagaArgs {
-            name: name.ok_or_else(|| {
-                syn::Error::new(proc_macro2::Span::call_site(), "name is required")
-            })?,
-            source: source.ok_or_else(|| {
-                syn::Error::new(proc_macro2::Span::call_site(), "source is required")
-            })?,
-            target: target.ok_or_else(|| {
-                syn::Error::new(proc_macro2::Span::call_site(), "target is required")
-            })?,
+            name: require_non_empty_str(name, "name")?,
+            source: require_non_empty_str(source, "source")?,
+            target: require_non_empty_str(target, "target")?,
         })
     }
 }
@@ -895,21 +929,13 @@ impl syn::parse::Parse for ProcessManagerArgs {
         }
 
         Ok(ProcessManagerArgs {
-            name: name.ok_or_else(|| {
-                syn::Error::new(proc_macro2::Span::call_site(), "name is required")
-            })?,
-            pm_domain: pm_domain.ok_or_else(|| {
-                syn::Error::new(proc_macro2::Span::call_site(), "pm_domain is required")
-            })?,
+            name: require_non_empty_str(name, "name")?,
+            pm_domain: require_non_empty_str(pm_domain, "pm_domain")?,
             state: state.ok_or_else(|| {
                 syn::Error::new(proc_macro2::Span::call_site(), "state is required")
             })?,
-            sources: sources.ok_or_else(|| {
-                syn::Error::new(proc_macro2::Span::call_site(), "sources is required")
-            })?,
-            targets: targets.ok_or_else(|| {
-                syn::Error::new(proc_macro2::Span::call_site(), "targets is required")
-            })?,
+            sources: require_non_empty_str_list(sources, "sources")?,
+            targets: require_non_empty_str_list(targets, "targets")?,
         })
     }
 }
@@ -1160,12 +1186,8 @@ impl syn::parse::Parse for ProjectorArgs {
         }
 
         Ok(ProjectorArgs {
-            name: name.ok_or_else(|| {
-                syn::Error::new(proc_macro2::Span::call_site(), "name is required")
-            })?,
-            domains: domains.ok_or_else(|| {
-                syn::Error::new(proc_macro2::Span::call_site(), "domains is required")
-            })?,
+            name: require_non_empty_str(name, "name")?,
+            domains: require_non_empty_str_list(domains, "domains")?,
         })
     }
 }
@@ -1322,12 +1344,8 @@ impl syn::parse::Parse for RejectedArgs {
         }
 
         Ok(RejectedArgs {
-            domain: domain.ok_or_else(|| {
-                syn::Error::new(proc_macro2::Span::call_site(), "domain is required")
-            })?,
-            command: command.ok_or_else(|| {
-                syn::Error::new(proc_macro2::Span::call_site(), "command is required")
-            })?,
+            domain: require_non_empty_str(domain, "domain")?,
+            command: require_non_empty_str(command, "command")?,
         })
     }
 }
@@ -1600,12 +1618,8 @@ impl syn::parse::Parse for UpcasterArgs {
         }
 
         Ok(UpcasterArgs {
-            name: name.ok_or_else(|| {
-                syn::Error::new(proc_macro2::Span::call_site(), "name is required")
-            })?,
-            domain: domain.ok_or_else(|| {
-                syn::Error::new(proc_macro2::Span::call_site(), "domain is required")
-            })?,
+            name: require_non_empty_str(name, "name")?,
+            domain: require_non_empty_str(domain, "domain")?,
         })
     }
 }
