@@ -97,9 +97,19 @@ impl CommandHandlerRouter {
         }
 
         if matched == 0 {
+            // Mirror Python's wording (`dispatch.py:246-249`): include
+            // both domain and type_url so the user can distinguish
+            // "wrong domain" from "wrong command type". P2.6 / audit
+            // finding #11.
+            let domain = cmd
+                .command
+                .as_ref()
+                .and_then(|cb| cb.cover.as_ref())
+                .map(|c| c.domain.as_str())
+                .unwrap_or("<missing>");
             return Err(ClientError::InvalidArgument(format!(
-                "no handler registered for type: {}",
-                type_url
+                "no handler registered for domain={:?} type_url={:?}",
+                domain, type_url
             )));
         }
 
