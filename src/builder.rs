@@ -274,12 +274,21 @@ pub fn events_from_response(response: &CommandResponse) -> &[EventPage] {
 }
 
 /// Helper to decode an event payload if the type URL matches.
-pub fn decode_event<M: Message + Default>(event: &EventPage, type_suffix: &str) -> Option<M> {
+///
+/// `full_type_name` is the fully-qualified protobuf type name (e.g.
+/// `"examples.OrderCreated"`, `"google.protobuf.Duration"`) — NOT a
+/// suffix. The check is exact equality against
+/// `TYPE_URL_PREFIX + full_type_name`, mirroring Python's
+/// `helpers.decode_event` (`helpers.py:439`). Suffix matching is
+/// rejected as a contract: a real `OrderCreated` and an unrelated
+/// `legacy.OrderCreated` would be indistinguishable. See
+/// PARITY_AUDIT.md finding #25.
+pub fn decode_event<M: Message + Default>(event: &EventPage, full_type_name: &str) -> Option<M> {
     let any = match &event.payload {
         Some(crate::proto::event_page::Payload::Event(e)) => e,
         _ => return None,
     };
-    if !any.type_url.ends_with(type_suffix) {
+    if !crate::convert::type_url_matches_exact(&any.type_url, full_type_name) {
         return None;
     }
     M::decode(any.value.as_slice()).ok()
@@ -678,7 +687,7 @@ mod tests {
             no_commit: false,
         };
 
-        let decoded: Option<prost_types::Duration> = decode_event(&event, "Duration");
+        let decoded: Option<prost_types::Duration> = decode_event(&event, "google.protobuf.Duration");
         assert!(decoded.is_some());
         assert_eq!(decoded.unwrap().seconds, 42);
     }
@@ -704,7 +713,7 @@ mod tests {
             no_commit: false,
         };
 
-        let decoded: Option<prost_types::Duration> = decode_event(&event, "Timestamp");
+        let decoded: Option<prost_types::Duration> = decode_event(&event, "google.protobuf.Timestamp");
         assert!(decoded.is_none());
     }
 
@@ -720,8 +729,8 @@ mod tests {
             no_commit: false,
         };
 
-        let decoded: Option<prost_types::Duration> = decode_event(&event, "Duration");
-        assert!(decoded.is_none());
+        let decoded: Option<prost_types::Duration> = decode_event(&event, "google.protobuf.Duration");
+        assert!(decoded.is_none(), "garbage bytes must not decode");
     }
 
     #[test]
@@ -741,7 +750,7 @@ mod tests {
             no_commit: false,
         };
 
-        let decoded: Option<prost_types::Duration> = decode_event(&event, "Duration");
+        let decoded: Option<prost_types::Duration> = decode_event(&event, "google.protobuf.Duration");
         assert!(decoded.is_none());
     }
 

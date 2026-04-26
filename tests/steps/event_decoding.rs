@@ -349,7 +349,7 @@ async fn given_mixed_events(world: &mut EventDecodingWorld) {
 #[when("I decode the event as OrderCreated")]
 async fn when_decode_as_order_created(world: &mut EventDecodingWorld) {
     if let Some(ref event) = world.current_event {
-        let result: Option<OrderCreated> = decode_event(event, "OrderCreated");
+        let result: Option<OrderCreated> = decode_event(event, "orders.OrderCreated");
         if let Some(decoded) = result {
             world.decode_result = Some(decoded);
         } else {
@@ -474,7 +474,7 @@ async fn when_call_events_from_response(world: &mut EventDecodingWorld) {
 #[when("I decode each as ItemAdded")]
 async fn when_decode_each_as_item_added(world: &mut EventDecodingWorld) {
     for event in &world.events_list {
-        let _result: Option<ItemAdded> = decode_event(event, "ItemAdded");
+        let _result: Option<ItemAdded> = decode_event(event, "orders.ItemAdded");
     }
 }
 
@@ -700,7 +700,7 @@ async fn then_each_has_correct_data(world: &mut EventDecodingWorld) {
 #[then("OrderCreated should decode as OrderCreated")]
 async fn then_order_created_decodes(world: &mut EventDecodingWorld) {
     let event = &world.events_list[0];
-    let result: Option<OrderCreated> = decode_event(event, "OrderCreated");
+    let result: Option<OrderCreated> = decode_event(event, "orders.OrderCreated");
     assert!(result.is_some());
 }
 
@@ -709,7 +709,7 @@ async fn then_item_added_decodes(world: &mut EventDecodingWorld) {
     for event in &world.events_list {
         if let Some(event_page::Payload::Event(any)) = &event.payload {
             if any.type_url.ends_with("ItemAdded") {
-                let result: Option<ItemAdded> = decode_event(event, "ItemAdded");
+                let result: Option<ItemAdded> = decode_event(event, "orders.ItemAdded");
                 assert!(result.is_some());
             }
         }
