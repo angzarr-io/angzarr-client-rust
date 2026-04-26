@@ -82,11 +82,12 @@ impl CommandBuilderWorld {
             builder
         };
 
-        let builder = if let Some(seq) = self.sequence {
-            builder.with_sequence(seq)
-        } else {
-            builder
-        };
+        // Default to sequence=0 when no scenario step set one explicitly,
+        // mirroring Python's test_command_builder.py:77 simulation. The
+        // real builder requires `with_sequence` (builder.py:83-84) — that
+        // contract is exercised by the unit test
+        // `test_command_builder_build_missing_sequence_is_invalid_argument`.
+        let builder = builder.with_sequence(self.sequence.unwrap_or(0));
 
         // Handle the different scenarios for type_url and payload
         if self.type_url_set && self.payload_set {
@@ -230,6 +231,7 @@ async fn when_build_and_execute(world: &mut CommandBuilderWorld, domain: String)
     let result = world
         .mock_client
         .command(&domain, Uuid::new_v4())
+        .with_sequence(0)
         .with_command("type.googleapis.com/test.TestCommand", &cmd)
         .execute()
         .await;
@@ -248,6 +250,7 @@ async fn when_execute_directly(world: &mut CommandBuilderWorld) {
     let result = world
         .mock_client
         .command("orders", root)
+        .with_sequence(0)
         .with_command("type.googleapis.com/test.CreateOrder", &cmd)
         .execute()
         .await;
@@ -274,12 +277,14 @@ async fn when_create_two_commands(world: &mut CommandBuilderWorld) {
     let _ = world
         .mock_client
         .command(&world.domain, root1)
+        .with_sequence(0)
         .with_command("type.googleapis.com/test.TestCommand", &cmd)
         .build();
 
     let result = world
         .mock_client
         .command(&world.domain, root2)
+        .with_sequence(0)
         .with_command("type.googleapis.com/test.TestCommand", &cmd)
         .build();
 

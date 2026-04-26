@@ -76,10 +76,11 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
 
     /// Build the CommandBook without executing.
     ///
-    /// `type_url` and `payload` (set together by [`CommandBuilder::with_command`]) are
-    /// required. `sequence` defaults to 0 when unset — matching Python's
-    /// CommandBuilder semantics. `correlation_id` defaults to a fresh
-    /// random UUID when unset.
+    /// `type_url` and `payload` (set together by [`CommandBuilder::with_command`])
+    /// and `sequence` (set by [`CommandBuilder::with_sequence`]) are all
+    /// required — matching Python's `CommandBuilder.build` contract
+    /// (`builder.py:83-84`). `correlation_id` defaults to a fresh random
+    /// UUID when unset.
     pub fn build(self) -> Result<CommandBook> {
         let type_url = self
             .type_url
@@ -87,7 +88,9 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
         let payload = self
             .payload
             .ok_or_else(|| ClientError::InvalidArgument("command payload not set".to_string()))?;
-        let sequence = self.sequence.unwrap_or(0);
+        let sequence = self.sequence.ok_or_else(|| {
+            ClientError::InvalidArgument("sequence not set (call with_sequence)".to_string())
+        })?;
         let correlation_id = self
             .correlation_id
             .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -446,10 +449,9 @@ mod tests {
     }
 
     #[test]
-    fn test_command_builder_build_missing_sequence_defaults_to_zero() {
-        // Missing sequence is no longer an error — it defaults to 0 to
-        // match Python's CommandBuilder contract. Missing type_url /
-        // payload still produce InvalidArgument errors.
+    fn test_command_builder_build_missing_sequence_is_invalid_argument() {
+        // Sequence is required, matching Python builder.py:83-84 which
+        // raises InvalidArgumentError("sequence not set (call with_sequence)").
         let client = MockGatewayClient {
             response: CommandResponse::default(),
         };
@@ -458,17 +460,13 @@ mod tests {
             seconds: 42,
             nanos: 0,
         };
-        let cmd = CommandBuilder::new(&client, "orders", root)
+        let result = CommandBuilder::new(&client, "orders", root)
             .with_command("type.googleapis.com/test.Command", &msg)
-            .build()
-            .expect("build should succeed with default sequence=0");
+            .build();
 
-        let page = &cmd.pages[0];
-        use crate::proto::page_header::SequenceType;
-        match page.header.as_ref().and_then(|h| h.sequence_type.as_ref()) {
-            Some(SequenceType::Sequence(s)) => assert_eq!(*s, 0),
-            other => panic!("expected Sequence(0), got {:?}", other),
-        }
+        let err = result.expect_err("build should fail when sequence is unset");
+        assert!(err.is_invalid_argument(), "expected InvalidArgument, got {:?}", err);
+        assert!(err.to_string().contains("sequence not set"));
     }
 
     // QueryBuilder tests
