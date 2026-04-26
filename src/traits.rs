@@ -10,7 +10,7 @@ use crate::error::Result;
 use crate::proto::{
     CommandBook, CommandResponse, EventBook, ProcessManagerHandleResponse, Projection, Query,
     SagaResponse, SpeculateCommandHandlerRequest, SpeculatePmRequest, SpeculateProjectorRequest,
-    SpeculateSagaRequest,
+    SpeculateSagaRequest, SyncMode,
 };
 
 /// Trait for gateway client operations (command execution).
@@ -21,6 +21,22 @@ use crate::proto::{
 pub trait GatewayClient: Send + Sync {
     /// Execute a command asynchronously (fire and forget).
     async fn execute(&self, command: CommandBook) -> Result<CommandResponse>;
+
+    /// Execute a command with the given sync mode.
+    ///
+    /// Default implementation discards `_sync_mode` and falls back to
+    /// [`GatewayClient::execute`], which is safe for mock impls that
+    /// don't differentiate. Real transport-backed impls (e.g.
+    /// `CommandHandlerClient`) override this to send a `CommandRequest`
+    /// with the chosen mode. Mirrors Python's
+    /// `CommandBuilder.execute(sync_mode=...)` (`builder.py:104`).
+    async fn execute_with_sync_mode(
+        &self,
+        command: CommandBook,
+        _sync_mode: SyncMode,
+    ) -> Result<CommandResponse> {
+        self.execute(command).await
+    }
 }
 
 /// Trait for speculative execution operations.

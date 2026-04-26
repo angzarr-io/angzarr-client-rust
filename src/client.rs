@@ -259,6 +259,20 @@ impl traits::GatewayClient for CommandHandlerClient {
     async fn execute(&self, command: CommandBook) -> Result<CommandResponse> {
         self.handle(command).await
     }
+
+    async fn execute_with_sync_mode(
+        &self,
+        command: CommandBook,
+        sync_mode: SyncMode,
+    ) -> Result<CommandResponse> {
+        self.handle_command(CommandRequest {
+            command: Some(command),
+            sync_mode: sync_mode as i32,
+            cascade_error_mode: CascadeErrorMode::CascadeErrorFailFast as i32,
+            cascade_id: None,
+        })
+        .await
+    }
 }
 
 /// Per-domain client combining command execution, event querying, and speculative operations.
@@ -377,6 +391,16 @@ impl DomainClient {
 impl traits::GatewayClient for DomainClient {
     async fn execute(&self, command: CommandBook) -> Result<CommandResponse> {
         self.execute(command).await
+    }
+
+    async fn execute_with_sync_mode(
+        &self,
+        command: CommandBook,
+        sync_mode: SyncMode,
+    ) -> Result<CommandResponse> {
+        self.command_handler
+            .execute_with_sync_mode(command, sync_mode)
+            .await
     }
 }
 

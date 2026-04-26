@@ -21,6 +21,7 @@ pub struct CommandBuilder<'a, C: traits::GatewayClient> {
     merge_strategy: crate::proto::MergeStrategy,
     type_url: Option<String>,
     payload: Option<Vec<u8>>,
+    sync_mode: crate::proto::SyncMode,
 }
 
 impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
@@ -38,6 +39,7 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
             merge_strategy: crate::proto::MergeStrategy::MergeCommutative,
             type_url: None,
             payload: None,
+            sync_mode: crate::proto::SyncMode::Async,
         }
     }
 
@@ -64,6 +66,18 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
     /// Defaults to `MergeCommutative`.
     pub fn with_merge_strategy(mut self, strategy: crate::proto::MergeStrategy) -> Self {
         self.merge_strategy = strategy;
+        self
+    }
+
+    /// Set the execution sync mode.
+    ///
+    /// Defaults to `SyncMode::Async` (fire-and-forget). Use
+    /// `SyncMode::Simple` to wait for sync projectors, or
+    /// `SyncMode::Cascade` for full sync including saga cascade.
+    /// Mirrors Python's `CommandBuilder.execute(sync_mode=...)`
+    /// (`builder.py:104`). P2.4b / audit finding #13.
+    pub fn with_sync_mode(mut self, mode: crate::proto::SyncMode) -> Self {
+        self.sync_mode = mode;
         self
     }
 
@@ -117,11 +131,13 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
         })
     }
 
-    /// Execute the command.
+    /// Execute the command using the configured sync mode (default
+    /// `SyncMode::Async`).
     pub async fn execute(self) -> Result<CommandResponse> {
         let client = self.client;
+        let sync_mode = self.sync_mode;
         let command = self.build()?;
-        client.execute(command).await
+        client.execute_with_sync_mode(command, sync_mode).await
     }
 }
 
@@ -315,11 +331,30 @@ mod tests {
     // Mock client for testing CommandBuilder
     struct MockGatewayClient {
         response: CommandResponse,
+        last_sync_mode: std::sync::Mutex<Option<crate::proto::SyncMode>>,
+    }
+
+    impl MockGatewayClient {
+        fn new(response: CommandResponse) -> Self {
+            Self {
+                response,
+                last_sync_mode: std::sync::Mutex::new(None),
+            }
+        }
     }
 
     #[async_trait]
     impl traits::GatewayClient for MockGatewayClient {
         async fn execute(&self, _command: CommandBook) -> Result<CommandResponse> {
+            Ok(self.response.clone())
+        }
+
+        async fn execute_with_sync_mode(
+            &self,
+            _command: CommandBook,
+            sync_mode: crate::proto::SyncMode,
+        ) -> Result<CommandResponse> {
+            *self.last_sync_mode.lock().unwrap() = Some(sync_mode);
             Ok(self.response.clone())
         }
     }
@@ -338,9 +373,7 @@ mod tests {
     // CommandBuilder tests
     #[test]
     fn test_command_builder_with_correlation_id() {
-        let client = MockGatewayClient {
-            response: CommandResponse::default(),
-        };
+        let client = MockGatewayClient::new(CommandResponse::default());
         let root = Uuid::new_v4();
         let builder = CommandBuilder::new(&client, "orders", root).with_correlation_id("corr-123");
 
@@ -349,9 +382,7 @@ mod tests {
 
     #[test]
     fn test_command_builder_with_sequence() {
-        let client = MockGatewayClient {
-            response: CommandResponse::default(),
-        };
+        let client = MockGatewayClient::new(CommandResponse::default());
         let root = Uuid::new_v4();
         let builder = CommandBuilder::new(&client, "orders", root).with_sequence(42);
 
@@ -360,9 +391,7 @@ mod tests {
 
     #[test]
     fn test_command_builder_with_command() {
-        let client = MockGatewayClient {
-            response: CommandResponse::default(),
-        };
+        let client = MockGatewayClient::new(CommandResponse::default());
         let root = Uuid::new_v4();
         let msg = prost_types::Duration {
             seconds: 42,
@@ -380,9 +409,7 @@ mod tests {
 
     #[test]
     fn test_command_builder_build_success() {
-        let client = MockGatewayClient {
-            response: CommandResponse::default(),
-        };
+        let client = MockGatewayClient::new(CommandResponse::default());
         let root = Uuid::new_v4();
         let msg = prost_types::Duration {
             seconds: 42,
@@ -410,9 +437,7 @@ mod tests {
 
     #[test]
     fn test_command_builder_build_generates_correlation_id() {
-        let client = MockGatewayClient {
-            response: CommandResponse::default(),
-        };
+        let client = MockGatewayClient::new(CommandResponse::default());
         let root = Uuid::new_v4();
         let msg = prost_types::Duration {
             seconds: 42,
@@ -430,9 +455,7 @@ mod tests {
 
     #[test]
     fn test_command_builder_build_missing_type_url() {
-        let client = MockGatewayClient {
-            response: CommandResponse::default(),
-        };
+        let client = MockGatewayClient::new(CommandResponse::default());
         let root = Uuid::new_v4();
         let result = CommandBuilder::new(&client, "orders", root)
             .with_sequence(0)
@@ -445,9 +468,7 @@ mod tests {
 
     #[test]
     fn test_command_builder_build_missing_payload() {
-        let client = MockGatewayClient {
-            response: CommandResponse::default(),
-        };
+        let client = MockGatewayClient::new(CommandResponse::default());
         let root = Uuid::new_v4();
         let mut builder = CommandBuilder::new(&client, "orders", root);
         builder.type_url = Some("type.googleapis.com/test".to_string());
@@ -461,9 +482,7 @@ mod tests {
     fn test_command_builder_build_missing_sequence_is_invalid_argument() {
         // Sequence is required, matching Python builder.py:83-84 which
         // raises InvalidArgumentError("sequence not set (call with_sequence)").
-        let client = MockGatewayClient {
-            response: CommandResponse::default(),
-        };
+        let client = MockGatewayClient::new(CommandResponse::default());
         let root = Uuid::new_v4();
         let msg = prost_types::Duration {
             seconds: 42,
@@ -476,6 +495,47 @@ mod tests {
         let err = result.expect_err("build should fail when sequence is unset");
         assert!(err.is_invalid_argument(), "expected InvalidArgument, got {:?}", err);
         assert!(err.to_string().contains("sequence not set"));
+    }
+
+    #[tokio::test]
+    async fn test_command_builder_default_sync_mode_is_async() {
+        // P2.4b / audit finding #13: builder defaults to ASYNC,
+        // matching Python's `CommandBuilder.execute(sync_mode=ASYNC)`.
+        let client = MockGatewayClient::new(CommandResponse::default());
+        let root = Uuid::new_v4();
+        let msg = prost_types::Duration {
+            seconds: 1,
+            nanos: 0,
+        };
+        let _ = CommandBuilder::new(&client, "orders", root)
+            .with_sequence(0)
+            .with_command("type.googleapis.com/test.Command", &msg)
+            .execute()
+            .await;
+        assert_eq!(
+            *client.last_sync_mode.lock().unwrap(),
+            Some(crate::proto::SyncMode::Async)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_command_builder_with_sync_mode_overrides_default() {
+        let client = MockGatewayClient::new(CommandResponse::default());
+        let root = Uuid::new_v4();
+        let msg = prost_types::Duration {
+            seconds: 1,
+            nanos: 0,
+        };
+        let _ = CommandBuilder::new(&client, "orders", root)
+            .with_sequence(0)
+            .with_sync_mode(crate::proto::SyncMode::Cascade)
+            .with_command("type.googleapis.com/test.Command", &msg)
+            .execute()
+            .await;
+        assert_eq!(
+            *client.last_sync_mode.lock().unwrap(),
+            Some(crate::proto::SyncMode::Cascade)
+        );
     }
 
     // QueryBuilder tests
@@ -757,9 +817,7 @@ mod tests {
     // Extension trait tests
     #[test]
     fn test_command_builder_ext_command() {
-        let client = MockGatewayClient {
-            response: CommandResponse::default(),
-        };
+        let client = MockGatewayClient::new(CommandResponse::default());
         let root = Uuid::new_v4();
         let builder = client.command("orders", root);
 
@@ -769,9 +827,7 @@ mod tests {
 
     #[test]
     fn test_command_builder_with_merge_strategy() {
-        let client = MockGatewayClient {
-            response: CommandResponse::default(),
-        };
+        let client = MockGatewayClient::new(CommandResponse::default());
         let root = Uuid::new_v4();
         let builder = CommandBuilder::new(&client, "orders", root)
             .with_merge_strategy(crate::proto::MergeStrategy::MergeStrict);
