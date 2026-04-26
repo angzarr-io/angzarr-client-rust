@@ -205,11 +205,24 @@ async fn when_build_without_merge_strategy(world: &mut CommandBuilderWorld) {
 
 #[when(expr = "I build a command with merge strategy STRICT")]
 async fn when_build_with_strict_strategy(world: &mut CommandBuilderWorld) {
-    // Default is COMMUTATIVE, STRICT would require API extension
-    world.domain = "test".to_string();
-    world.type_url_set = true;
-    world.payload_set = true;
-    world.try_build();
+    // Materialize via the real builder with `with_merge_strategy(MergeStrict)`.
+    // Previous simulation never called with_merge_strategy and the
+    // matching Then-step asserted COMMUTATIVE — a fake that papered
+    // over the API. Now the page actually carries MERGE_STRICT.
+    let cmd = TestCommand {
+        data: "test".to_string(),
+    };
+    let result = world
+        .mock_client
+        .command("test", Uuid::new_v4())
+        .with_sequence(0)
+        .with_merge_strategy(MergeStrategy::MergeStrict)
+        .with_command("type.googleapis.com/test.TestCommand", &cmd)
+        .build();
+    match result {
+        Ok(book) => world.built_command = Some(book),
+        Err(e) => world.build_error = Some(e),
+    }
 }
 
 #[when("I build a command using fluent chaining:")]
@@ -332,11 +345,15 @@ async fn then_command_has_root(world: &mut CommandBuilderWorld, _expected: Strin
     assert!(cover.root.is_some());
 }
 
-#[then("the built command should have no root")]
-async fn then_command_has_no_root(world: &mut CommandBuilderWorld) {
-    let cmd = world.built_command.as_ref().expect("command not built");
-    let cover = cmd.cover.as_ref().expect("cover missing");
-    assert!(cover.root.is_none());
+#[then("the caller did not specify an explicit root")]
+async fn then_caller_no_explicit_root(world: &mut CommandBuilderWorld) {
+    // The scenario went through `command_new`, which doesn't take a
+    // root. Whether the materialized CommandBook has root unset (Rust)
+    // or auto-generated (Python) is per-language pending PARITY_AUDIT.md
+    // plan item P2.4a / finding #20. This assertion only pins that the
+    // caller did not pass a root.
+    assert!(world.built_command.is_some());
+    assert!(world.root.is_none());
 }
 
 #[then(expr = "the built command should have type URL containing {string}")]
@@ -436,12 +453,9 @@ async fn then_merge_commutative(world: &mut CommandBuilderWorld) {
 
 #[then(expr = "the command page should have MERGE_STRICT strategy")]
 async fn then_merge_strict(world: &mut CommandBuilderWorld) {
-    // Default implementation uses COMMUTATIVE; STRICT would need API extension
-    // For now, we verify the test infrastructure works
     let cmd = world.built_command.as_ref().expect("command not built");
     let page = cmd.pages.first().expect("no pages");
-    // This would fail if STRICT was actually set
-    assert_eq!(page.merge_strategy, MergeStrategy::MergeCommutative as i32);
+    assert_eq!(page.merge_strategy, MergeStrategy::MergeStrict as i32);
 }
 
 #[then("each command should have its own root")]
@@ -464,10 +478,16 @@ async fn then_receive_command_builder(world: &mut CommandBuilderWorld) {
     assert!(!cover.domain.is_empty());
 }
 
-#[then("I should receive a CommandBuilder with no root set")]
-async fn then_receive_builder_no_root(world: &mut CommandBuilderWorld) {
+#[then(
+    regex = r"^I should receive a CommandBuilder for that domain \(root convention is per-language\)$"
+)]
+async fn then_receive_builder_command_new(world: &mut CommandBuilderWorld) {
+    // P2.4a / finding #20: command_new's root materialization is
+    // per-language (Rust unset, Python auto-UUID). The shortcut here
+    // returned a builder for the named domain — that's all this step
+    // pins at the contract level.
     assert!(world.built_command.is_some());
     let cmd = world.built_command.as_ref().unwrap();
     let cover = cmd.cover.as_ref().expect("cover missing");
-    assert!(cover.root.is_none());
+    assert!(!cover.domain.is_empty());
 }
