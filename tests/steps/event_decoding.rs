@@ -243,7 +243,7 @@ async fn given_event_any_empty_value(world: &mut EventDecodingWorld) {
     ));
 }
 
-#[given(expr = "the decode_event<T>\\(event, type_suffix\\) function")]
+#[given(expr = "the decode_event<T>\\(event, full_type_name\\) function")]
 async fn given_decode_event_function(world: &mut EventDecodingWorld) {
     // Create a test event for the decode_event function test
     let event = OrderCreated {
@@ -358,10 +358,13 @@ async fn when_decode_as_order_created(world: &mut EventDecodingWorld) {
     }
 }
 
-#[when(expr = "I decode looking for suffix {string}")]
-async fn when_decode_with_suffix(world: &mut EventDecodingWorld, suffix: String) {
+#[when(expr = "I decode the event with full_type_name {string}")]
+async fn when_decode_with_full_name(world: &mut EventDecodingWorld, full_name: String) {
+    // Per finding #25: exact match only, no suffix. Bare suffixes
+    // like "OrderCreated" no longer decode against
+    // "type.googleapis.com/orders.OrderCreated".
     if let Some(ref event) = world.current_event {
-        let result: Option<OrderCreated> = decode_event(event, &suffix);
+        let result: Option<OrderCreated> = decode_event(event, &full_name);
         if let Some(decoded) = result {
             world.decode_result = Some(decoded);
         } else {

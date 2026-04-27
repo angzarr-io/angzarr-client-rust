@@ -336,10 +336,12 @@ async fn when_query_range(
 ) {
     let key = format!("{}:{}", domain, root);
     if let Some(book) = world.aggregates.get(&key) {
+        // Inclusive upper bound — matches `range_to(lower, upper)`
+        // docstring (`builder.rs:170`) and audit finding #27.
         let filtered_events: Vec<_> = book
             .events
             .iter()
-            .filter(|e| e.sequence >= start && e.sequence < end)
+            .filter(|e| e.sequence >= start && e.sequence <= end)
             .cloned()
             .collect();
         world.result = Some(MockEventBook {
