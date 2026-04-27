@@ -246,12 +246,18 @@ pub trait CommandBuilderExt: traits::GatewayClient + Sized {
         CommandBuilder::new(self, domain, root)
     }
 
-    /// Start building a command for a new aggregate. The resulting
-    /// CommandBook has no root set — the coordinator assigns one on
-    /// first persistence. Use [`command`](Self::command) when the root
-    /// is already known.
+    /// Start building a command for a new aggregate.
+    ///
+    /// Auto-generates a fresh UUID v4 for the aggregate root — the
+    /// caller cannot reference a new aggregate without one. Mirrors
+    /// Python's `command_new(client, domain)` (`builder.py:223`).
+    /// Cross-language convention locked in audit P2.4a / finding #20:
+    /// roots are always client-assigned.
+    ///
+    /// Use [`command`](Self::command) when the root is already known
+    /// (existing aggregate or test fixtures).
     fn command_new(&self, domain: impl Into<String>) -> CommandBuilder<'_, Self> {
-        CommandBuilder::new_rootless(self, domain)
+        CommandBuilder::new(self, domain, Uuid::new_v4())
     }
 }
 
@@ -535,6 +541,59 @@ mod tests {
         assert_eq!(
             *client.last_sync_mode.lock().unwrap(),
             Some(crate::proto::SyncMode::Cascade)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_command_new_auto_generates_uuid_v4_root() {
+        // P2.4a / finding #20 closed: command_new auto-generates a
+        // UUID v4 client-side. Aggregate roots are always
+        // client-assigned across all six languages.
+        let client = MockGatewayClient::new(CommandResponse::default());
+        let msg = prost_types::Duration {
+            seconds: 1,
+            nanos: 0,
+        };
+        let book = client
+            .command_new("orders")
+            .with_sequence(0)
+            .with_command("type.googleapis.com/test.Cmd", &msg)
+            .build()
+            .expect("build should succeed — command_new auto-fills root");
+        let cover = book.cover.expect("cover must be set");
+        let root = cover.root.expect("root must be auto-generated");
+        assert_eq!(root.value.len(), 16, "UUID v4 must be 16 bytes");
+        let bytes: [u8; 16] = root.value.as_slice().try_into().unwrap();
+        let parsed = Uuid::from_bytes(bytes);
+        assert_eq!(parsed.get_version_num(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_command_new_each_call_yields_independent_root() {
+        // command_new called twice must produce two distinct UUIDs —
+        // mirrors Python's `uuid4()` behavior where each call gets a
+        // fresh random UUID.
+        let client = MockGatewayClient::new(CommandResponse::default());
+        let msg = prost_types::Duration {
+            seconds: 1,
+            nanos: 0,
+        };
+        let a = client
+            .command_new("orders")
+            .with_sequence(0)
+            .with_command("type.googleapis.com/test.Cmd", &msg)
+            .build()
+            .unwrap();
+        let b = client
+            .command_new("orders")
+            .with_sequence(0)
+            .with_command("type.googleapis.com/test.Cmd", &msg)
+            .build()
+            .unwrap();
+        assert_ne!(
+            a.cover.unwrap().root.unwrap().value,
+            b.cover.unwrap().root.unwrap().value,
+            "each command_new call must yield a fresh UUID"
         );
     }
 

@@ -345,15 +345,36 @@ async fn then_command_has_root(world: &mut CommandBuilderWorld, _expected: Strin
     assert!(cover.root.is_some());
 }
 
-#[then("the caller did not specify an explicit root")]
-async fn then_caller_no_explicit_root(world: &mut CommandBuilderWorld) {
-    // The scenario went through `command_new`, which doesn't take a
-    // root. Whether the materialized CommandBook has root unset (Rust)
-    // or auto-generated (Python) is per-language pending PARITY_AUDIT.md
-    // plan item P2.4a / finding #20. This assertion only pins that the
-    // caller did not pass a root.
-    assert!(world.built_command.is_some());
-    assert!(world.root.is_none());
+#[then("the built command should have an auto-generated UUID root")]
+async fn then_command_has_auto_root(world: &mut CommandBuilderWorld) {
+    // P2.4a / finding #20 closed: command_new auto-generates a UUID v4
+    // for the root. The materialized CommandBook's cover must have a
+    // populated root (16 bytes).
+    let cmd = world.built_command.as_ref().expect("command not built");
+    let cover = cmd.cover.as_ref().expect("cover missing");
+    let root = cover.root.as_ref().expect("root must be auto-generated");
+    assert_eq!(root.value.len(), 16, "UUID v4 must be 16 bytes");
+    assert!(world.root.is_none(), "scenario went through command_new — caller didn't pass a root");
+}
+
+#[then("the auto-generated root should be a valid UUID")]
+async fn then_auto_root_is_valid_uuid(world: &mut CommandBuilderWorld) {
+    let cmd = world.built_command.as_ref().expect("command not built");
+    let cover = cmd.cover.as_ref().expect("cover missing");
+    let root = cover.root.as_ref().expect("root present");
+    let bytes: [u8; 16] = root
+        .value
+        .as_slice()
+        .try_into()
+        .expect("UUID must be exactly 16 bytes");
+    let parsed = Uuid::from_bytes(bytes);
+    // Sanity: a real UUID v4 has the version nibble set to 4.
+    assert_eq!(
+        parsed.get_version_num(),
+        4,
+        "command_new must produce UUID v4, got version {}",
+        parsed.get_version_num()
+    );
 }
 
 #[then(expr = "the built command should have type URL containing {string}")]
@@ -478,16 +499,12 @@ async fn then_receive_command_builder(world: &mut CommandBuilderWorld) {
     assert!(!cover.domain.is_empty());
 }
 
-#[then(
-    regex = r"^I should receive a CommandBuilder for that domain \(root convention is per-language\)$"
-)]
+#[then("I should receive a CommandBuilder for that domain and an auto-generated root")]
 async fn then_receive_builder_command_new(world: &mut CommandBuilderWorld) {
-    // P2.4a / finding #20: command_new's root materialization is
-    // per-language (Rust unset, Python auto-UUID). The shortcut here
-    // returned a builder for the named domain — that's all this step
-    // pins at the contract level.
-    assert!(world.built_command.is_some());
-    let cmd = world.built_command.as_ref().unwrap();
+    // P2.4a / finding #20 closed: command_new auto-generates a UUID v4.
+    let cmd = world.built_command.as_ref().expect("command not built");
     let cover = cmd.cover.as_ref().expect("cover missing");
     assert!(!cover.domain.is_empty());
+    let root = cover.root.as_ref().expect("auto-generated root must be present");
+    assert_eq!(root.value.len(), 16, "UUID v4 must be 16 bytes");
 }
