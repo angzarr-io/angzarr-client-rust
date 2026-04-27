@@ -22,8 +22,9 @@ use steps::domain_client::DomainClientWorld;
 use steps::error_handling::ErrorHandlingWorld;
 use steps::event_decoding::EventDecodingWorld;
 use steps::fact_flow::FactFlowWorld;
-use steps::identity::IdentityWorld;
 use steps::merge_strategy::MergeStrategyWorld;
+use steps::state_building::StateBuildingWorld;
+use steps::identity::IdentityWorld;
 use steps::multi_handler::MultiHandlerWorld;
 use steps::parity::ParityWorld;
 use steps::process_manager::ProcessManagerWorld;
@@ -35,7 +36,6 @@ use steps::rejection::RejectionWorld;
 use steps::retry::RetryWorld;
 use steps::saga::SagaWorld;
 use steps::speculative_client::SpeculativeClientWorld;
-use steps::state_building::StateBuildingWorld;
 use steps::testing::TestingWorld;
 use steps::upcaster::UpcasterWorld;
 use steps::validation::ValidationWorld;
@@ -99,20 +99,6 @@ async fn main() {
         .run("angzarr-project/features/client/speculative_client.feature")
         .await;
 
-    // Run FactFlow tests
-    println!("\n=== Running FactFlow Tests ===\n");
-    FactFlowWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/fact_flow.feature")
-        .await;
-
-    // Run MergeStrategy tests
-    println!("\n=== Running MergeStrategy Tests ===\n");
-    MergeStrategyWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/merge_strategy.feature")
-        .await;
-
     // Run CommandBuilder tests
     println!("\n=== Running CommandBuilder Tests ===\n");
     CommandBuilderWorld::cucumber()
@@ -139,13 +125,6 @@ async fn main() {
     // multi_handler / process_manager / projector / rejection / saga /
     // rejected_compensation / validation). The feature file remains in
     // angzarr-project for other languages.
-
-    // Run StateBuildingWorld tests
-    println!("\n=== Running StateBuilding Tests ===\n");
-    StateBuildingWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/state_building.feature")
-        .await;
 
     // Run EventDecoding tests
     println!("\n=== Running EventDecoding Tests ===\n");
@@ -245,6 +224,38 @@ async fn main() {
     WireParityWorld::cucumber()
         .fail_on_skipped()
         .run("angzarr-project/features/client/wire_parity.feature")
+        .await;
+
+    // ------------------------------------------------------------------
+    // Coordinator-contract simulations.
+    //
+    // These three suites describe coordinator-side behavior that the
+    // client cannot directly exercise (no public API matches the
+    // documented surface). The features moved to
+    // `features/coordinator-contract/` per audit findings #22, #26,
+    // #28; the step files are explicit simulations of the
+    // coordinator's contract — kept here so the cucumber prose
+    // doesn't bit-rot. When a coordinator-tier suite exists in its
+    // own repo, these become the canonical reference. See
+    // PARITY_AUDIT.md for context.
+    // ------------------------------------------------------------------
+
+    println!("\n=== Running FactFlow (coordinator-contract sim) ===\n");
+    FactFlowWorld::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/coordinator-contract/fact_flow.feature")
+        .await;
+
+    println!("\n=== Running MergeStrategy (coordinator-contract sim) ===\n");
+    MergeStrategyWorld::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/coordinator-contract/merge_strategy.feature")
+        .await;
+
+    println!("\n=== Running StateBuilding (coordinator-contract sim) ===\n");
+    StateBuildingWorld::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/coordinator-contract/state_building.feature")
         .await;
 
     // Run Destinations query-surface tests (C-0132..C-0134)
