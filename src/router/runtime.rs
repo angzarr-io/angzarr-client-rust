@@ -49,11 +49,10 @@ impl CommandHandlerRouter {
             return self.dispatch_rejection(cmd);
         }
 
-        // Audit finding #46: the routing key is `(domain, type_url)`, not
-        // `type_url` alone. Extract the incoming cover domain and skip
-        // factories whose declared `domain` differs — matches Python's
-        // `dispatch_command:238-243` and the Upcaster/Projector dispatchers
-        // that already filter this way.
+        // Audit finding #46: routing key is `(domain, type_url)`, not
+        // `type_url` alone. Audit finding #18: at most one handler per
+        // `(domain, type_url)` — enforced at build time, so this loop
+        // either finds zero or one match.
         let cover_domain = cmd
             .command
             .as_ref()
@@ -62,20 +61,7 @@ impl CommandHandlerRouter {
             .unwrap_or("")
             .to_string();
 
-        // Threaded sequence — starts at the prior-events' next_sequence and
-        // advances by each handler's emitted page count.
-        let initial_next_seq = cmd.events.as_ref().map(|eb| eb.next_sequence).unwrap_or(0);
-        let mut running_seq = initial_next_seq;
-
-        let mut merged = EventBook {
-            next_sequence: initial_next_seq,
-            ..Default::default()
-        };
-        let mut matched = 0u32;
-
         for factory in &self.factories {
-            // One factory call per factory: the instance serves both the
-            // config peek and (if matched) the dispatch call.
             let handler: Box<dyn Handler> = (factory.produce)();
             let (declared_domain, handles) = match handler.config() {
                 HandlerConfig::CommandHandler {
@@ -90,15 +76,7 @@ impl CommandHandlerRouter {
                 continue;
             }
 
-            // Hand each successive handler a ContextualCommand whose
-            // events.next_sequence reflects prior emissions from earlier
-            // handlers in the merged stream.
-            let mut scoped_cmd = cmd.clone();
-            if let Some(eb) = scoped_cmd.events.as_mut() {
-                eb.next_sequence = running_seq;
-            }
-
-            let response = handler.dispatch(HandlerRequest::CommandHandler(scoped_cmd))?;
+            let response = handler.dispatch(HandlerRequest::CommandHandler(cmd))?;
             let HandlerResponse::CommandHandler(br) = response else {
                 return Err(ClientError::invalid_argument(
                     crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
@@ -106,41 +84,27 @@ impl CommandHandlerRouter {
                     [(crate::error_codes::keys::EXPECTED_KIND, "CommandHandler")],
                 ));
             };
-            if let Some(business_response::Result::Events(events)) = br.result {
-                running_seq += events.pages.len() as u32;
-                merged.pages.extend(events.pages);
-                if merged.cover.is_none() {
-                    merged.cover = events.cover;
-                }
-            }
-            matched += 1;
+            return Ok(br);
         }
 
-        if matched == 0 {
-            // Mirror Python's wording (`dispatch.py:246-249`): include
-            // both domain and type_url so the user can distinguish
-            // "wrong domain" from "wrong command type". P2.6 / audit
-            // finding #11.
-            let domain = cmd
-                .command
-                .as_ref()
-                .and_then(|cb| cb.cover.as_ref())
-                .map(|c| c.domain.as_str())
-                .unwrap_or("<missing>");
-            return Err(ClientError::invalid_argument(
-                crate::error_codes::codes::NO_HANDLER_REGISTERED,
-                crate::error_codes::messages::NO_HANDLER_REGISTERED,
-                [
-                    (crate::error_codes::keys::DOMAIN, domain.to_string()),
-                    (crate::error_codes::keys::TYPE_URL, type_url.clone()),
-                ],
-            ));
-        }
-
-        merged.next_sequence = running_seq;
-        Ok(BusinessResponse {
-            result: Some(business_response::Result::Events(merged)),
-        })
+        // No matching handler. Mirror Python's wording
+        // (`dispatch.py:246-249`): include both domain and type_url so
+        // the caller can distinguish "wrong domain" from "wrong command
+        // type". P2.6 / audit finding #11.
+        let domain = cmd
+            .command
+            .as_ref()
+            .and_then(|cb| cb.cover.as_ref())
+            .map(|c| c.domain.as_str())
+            .unwrap_or("<missing>");
+        Err(ClientError::invalid_argument(
+            crate::error_codes::codes::NO_HANDLER_REGISTERED,
+            crate::error_codes::messages::NO_HANDLER_REGISTERED,
+            [
+                (crate::error_codes::keys::DOMAIN, domain.to_string()),
+                (crate::error_codes::keys::TYPE_URL, type_url.clone()),
+            ],
+        ))
     }
 
     /// Notification path: fan out to every handler whose `#[rejected]` set

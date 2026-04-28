@@ -76,6 +76,8 @@ impl Router {
     ///
     /// - Empty → `Err(BuildError::Empty)`.
     /// - Mixed kinds → `Err(BuildError::MixedKinds)`.
+    /// - Two CommandHandlers covering the same `(domain, command_type)` →
+    ///   `Err(BuildError::DuplicateCommandHandler)` (audit finding #18).
     /// - Homogeneous → `Ok(Built::<kind>(<runtime router>))`.
     pub fn build(self) -> Result<Built, BuildError> {
         let first_kind = self
@@ -87,6 +89,29 @@ impl Router {
         for f in &self.factories {
             if f.kind != first_kind {
                 return Err(BuildError::MixedKinds(first_kind, f.kind));
+            }
+        }
+
+        // Audit #18: at most one CommandHandler per (domain, command_type)
+        // within a Router. Saga / PM / projector / upcaster fan-out is
+        // unaffected (those kinds legitimately broadcast).
+        if first_kind == Kind::CommandHandler {
+            use crate::router::HandlerConfig;
+            use std::collections::HashSet;
+            let mut seen: HashSet<(String, String)> = HashSet::new();
+            for f in &self.factories {
+                let handler = (f.produce)();
+                if let HandlerConfig::CommandHandler { domain, handled, .. } = handler.config() {
+                    for type_url in handled {
+                        let key = (domain.clone(), type_url.clone());
+                        if !seen.insert(key) {
+                            return Err(BuildError::DuplicateCommandHandler {
+                                domain,
+                                type_url,
+                            });
+                        }
+                    }
+                }
             }
         }
 

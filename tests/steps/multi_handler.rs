@@ -273,6 +273,10 @@ pub struct MultiHandlerWorld {
     response: Option<angzarr_client::proto::BusinessResponse>,
     saga_response: Option<SagaResponse>,
     pm_response: Option<ProcessManagerHandleResponse>,
+    // Audit #18: build-result capture for the negative + positive
+    // build scenarios. Thread-locals don't survive cucumber's async
+    // task hops; the World does.
+    build_result: Option<std::result::Result<Built, angzarr_client::router::BuildError>>,
 }
 
 impl std::fmt::Debug for MultiHandlerWorld {
@@ -296,6 +300,7 @@ impl MultiHandlerWorld {
             response: None,
             saga_response: None,
             pm_response: None,
+            build_result: None,
         }
     }
 }
@@ -440,9 +445,20 @@ fn dispatch_commands(world: &mut MultiHandlerWorld) {
 
 #[when("an OrderCreated event is dispatched to the saga router")]
 async fn when_dispatch_saga(world: &mut MultiHandlerWorld) {
+    // Audit #18 reframe: alpha_calls / beta_calls were originally used
+    // by the deleted multi-handler CH scenarios. Now repurposed to
+    // count saga factory invocations for C-0087.
+    let a = Arc::clone(&world.alpha_calls);
+    let b = Arc::clone(&world.beta_calls);
     let built = Router::new("s")
-        .with_handler(|| SagaA)
-        .with_handler(|| SagaB)
+        .with_handler(move || {
+            a.fetch_add(1, Ordering::SeqCst);
+            SagaA
+        })
+        .with_handler(move || {
+            b.fetch_add(1, Ordering::SeqCst);
+            SagaB
+        })
         .build()
         .expect("build");
     let Built::Saga(router) = built else {
@@ -617,4 +633,168 @@ async fn then_beta_invoked(world: &mut MultiHandlerWorld, n: u32) {
 fn _linker() {
     let _ = full_type_url::<ReserveStock>();
     let _ = full_type_url::<CreateShipment>();
+}
+
+// ---------------------------------------------------------------------------
+// Audit #18: forbid multi-handler CH dispatch (C-0010..C-0012 reframed).
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct RegisterPlayer {}
+impl ::prost::Name for RegisterPlayer {
+    const NAME: &'static str = "RegisterPlayer";
+    const PACKAGE: &'static str = "player";
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct DepositFunds {}
+impl ::prost::Name for DepositFunds {
+    const NAME: &'static str = "DepositFunds";
+    const PACKAGE: &'static str = "player";
+}
+
+// Cross-domain CH pair for C-0011: same command type in two different domains.
+struct AlphaA;
+#[command_handler(domain = "orderA", state = S)]
+impl AlphaA {
+    #[handles(CreateOrder)]
+    #[allow(unused_variables, dead_code)]
+    fn on(&self, _cmd: CreateOrder, _state: &S, _seq: u32) -> CommandResult<EventBook> {
+        Ok(EventBook::default())
+    }
+}
+struct BetaB;
+#[command_handler(domain = "orderB", state = S)]
+impl BetaB {
+    #[handles(CreateOrder)]
+    #[allow(unused_variables, dead_code)]
+    fn on(&self, _cmd: CreateOrder, _state: &S, _seq: u32) -> CommandResult<EventBook> {
+        Ok(EventBook::default())
+    }
+}
+
+// Single CH with multiple handled types for C-0012.
+struct Player;
+#[command_handler(domain = "player", state = S)]
+impl Player {
+    #[handles(RegisterPlayer)]
+    #[allow(unused_variables, dead_code)]
+    fn on_register(
+        &self,
+        _cmd: RegisterPlayer,
+        _state: &S,
+        _seq: u32,
+    ) -> CommandResult<EventBook> {
+        Ok(EventBook::default())
+    }
+    #[handles(DepositFunds)]
+    #[allow(unused_variables, dead_code)]
+    fn on_deposit(
+        &self,
+        _cmd: DepositFunds,
+        _state: &S,
+        _seq: u32,
+    ) -> CommandResult<EventBook> {
+        Ok(EventBook::default())
+    }
+}
+
+#[given("both handle CreateOrder")]
+async fn given_both_handle_create_order(_world: &mut MultiHandlerWorld) {}
+
+#[given(expr = "a command handler Alpha for domain {string} handling CreateOrder")]
+async fn given_cross_alpha(_world: &mut MultiHandlerWorld, _domain: String) {}
+
+#[given(expr = "a command handler Beta for domain {string} handling CreateOrder")]
+async fn given_cross_beta(_world: &mut MultiHandlerWorld, _domain: String) {}
+
+#[given(expr = "a command handler Player for domain {string} handling RegisterPlayer and DepositFunds")]
+async fn given_player_two_types(_world: &mut MultiHandlerWorld, _domain: String) {}
+
+#[when("the router is built with Alpha then Beta")]
+async fn when_built_alpha_beta_capture(world: &mut MultiHandlerWorld) {
+    // C-0010: same-domain Alpha/Beta pair (both `domain = "order"` per
+    // their `#[command_handler]` decoration). Builder must reject as
+    // DuplicateCommandHandler.
+    world.build_result = Some(
+        Router::new("multi-ch-test")
+            .with_handler(|| Alpha)
+            .with_handler(|| Beta)
+            .build(),
+    );
+}
+
+#[when("the router is built with Alpha then Beta across domains")]
+async fn when_built_alpha_beta_cross(world: &mut MultiHandlerWorld) {
+    // C-0011: AlphaA in "orderA", BetaB in "orderB", both handle
+    // CreateOrder. Different domain keys → no duplicate.
+    world.build_result = Some(
+        Router::new("multi-ch-cross")
+            .with_handler(|| AlphaA)
+            .with_handler(|| BetaB)
+            .build(),
+    );
+}
+
+#[when("the router is built with Player")]
+async fn when_built_player(world: &mut MultiHandlerWorld) {
+    world.build_result = Some(
+        Router::new("multi-ch-player")
+            .with_handler(|| Player)
+            .build(),
+    );
+}
+
+#[then(expr = "build fails with DuplicateCommandHandler for domain {string} and {word}")]
+async fn then_build_fails_duplicate(
+    world: &mut MultiHandlerWorld,
+    domain: String,
+    cmd_type: String,
+) {
+    let result = world
+        .build_result
+        .take()
+        .expect("build was not attempted in a When step");
+    let err = result.expect_err("build should have failed");
+    let angzarr_client::router::BuildError::DuplicateCommandHandler {
+        domain: d,
+        type_url: u,
+    } = err
+    else {
+        panic!("expected DuplicateCommandHandler, got {err:?}");
+    };
+    assert_eq!(d, domain);
+    let cmd_full = match cmd_type.as_str() {
+        "CreateOrder" => full_type_url::<CreateOrder>(),
+        other => panic!("test fixture missing for command type {other}"),
+    };
+    assert_eq!(u, cmd_full);
+}
+
+#[then("build succeeds with a CommandHandlerRouter")]
+async fn then_build_succeeds_ch(world: &mut MultiHandlerWorld) {
+    let result = world
+        .build_result
+        .take()
+        .expect("build was not attempted in a When step");
+    let built = result.expect("build should have succeeded");
+    assert!(matches!(built, Built::CommandHandler(_)));
+}
+
+// C-0087 (audit #18 reframe — saga factory invocation count).
+
+#[given("each saga factory counts invocations")]
+async fn given_each_saga_factory_counts(_world: &mut MultiHandlerWorld) {
+    // when_dispatch_saga always installs counting closures; the Given
+    // step is documentation here.
+}
+
+#[then(expr = "SagaA's factory was invoked exactly {int} time")]
+async fn then_saga_a_invoked(world: &mut MultiHandlerWorld, n: u32) {
+    assert_eq!(world.alpha_calls.load(Ordering::SeqCst), n);
+}
+
+#[then(expr = "SagaB's factory was invoked exactly {int} time")]
+async fn then_saga_b_invoked(world: &mut MultiHandlerWorld, n: u32) {
+    assert_eq!(world.beta_calls.load(Ordering::SeqCst), n);
 }

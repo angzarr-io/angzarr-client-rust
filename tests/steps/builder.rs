@@ -331,6 +331,9 @@ fn needle_matches_variant(e: &BuildError, needle: &str) -> bool {
         BuildError::Empty => lower.contains("no handler") || lower.contains("empty"),
         BuildError::MixedKinds(_, _) => lower.contains("mix") || lower.contains("cannot mix"),
         BuildError::WrongKind { .. } => lower.contains("wrong") || lower.contains("kind"),
+        BuildError::DuplicateCommandHandler { .. } => {
+            lower.contains("duplicate") || lower.contains("command handler")
+        }
     }
 }
 

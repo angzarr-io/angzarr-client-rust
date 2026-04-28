@@ -121,6 +121,13 @@ pub enum BuildError {
     MixedKinds(Kind, Kind),
     #[error("router built as {expected:?} but requested as {requested:?}")]
     WrongKind { expected: Kind, requested: Kind },
+    /// Audit finding #51 (reframed as #18): two CommandHandlers register
+    /// for the same `(domain, command_type_url)` pair within one Router.
+    /// Multi-handler CH dispatch is forbidden — each `(domain, type)` key
+    /// admits exactly one handler. Saga / PM / projector / upcaster fan-
+    /// out is still allowed (those kinds legitimately broadcast).
+    #[error("duplicate CommandHandler registration for domain={domain:?} type_url={type_url:?}")]
+    DuplicateCommandHandler { domain: String, type_url: String },
 }
 
 /// Error raised by runtime dispatch (handler routing, request translation).
