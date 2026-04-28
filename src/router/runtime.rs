@@ -551,53 +551,84 @@ pub struct ProjectorRouter {
 impl ProjectorRouter {
     /// Dispatch an `EventBook` through every registered projector.
     ///
-    /// Projector semantics differ from the other kinds: each projector's
-    /// `Handler::dispatch` iterates every page in the book against its single
-    /// instance, so projectors can batch side effects. The runtime does not
-    /// merge handler outputs; it returns a skeleton `Projection` carrying the
-    /// book's cover and the last registered projector's name.
+    /// Audit finding #52: page-level outer loop, projector inner loop —
+    /// matches Python's `dispatch_projector` semantics
+    /// (`dispatch.py:608-640`). Each matching projector is instantiated
+    /// once and reused across pages. Handler responses are explicitly
+    /// ignored: projectors are side-effect-only, the framework returns
+    /// a synthetic `Projection` carrying the book's cover and
+    /// next_sequence regardless of how many projectors registered.
+    ///
+    /// Two consequences vs the previous "per-projector with full book"
+    /// model:
+    ///   1. Hand-rolled `Handler::dispatch` projectors that don't
+    ///      iterate `book.pages` internally now still see every page
+    ///      (the framework iterates).
+    ///   2. Multi-projector responses no longer privilege the last
+    ///      projector's `Projection` — every projector contributes its
+    ///      side effects, none gets to dictate the response payload.
     pub fn dispatch(&self, book: EventBook) -> Result<Projection, ClientError> {
-        let mut last_projection: Option<Projection> = None;
         // Only filter by domain when the book explicitly carries a cover.
         // Coverless books (used by tests that don't assert domain scoping)
         // pass through to every projector unchanged.
         let incoming_domain = book.cover.as_ref().map(|c| c.domain.clone());
+        let cover = book.cover.clone();
+        let next_sequence = book.next_sequence;
 
+        // Instantiate each matching projector once and hold across the
+        // page loop. Mirrors Python's
+        // `[cls() for cls, factory in self._factories if domain matches]`.
+        let mut matched: Vec<Box<dyn Handler>> = Vec::new();
         for factory in &self.factories {
             let handler: Box<dyn Handler> = (factory.produce)();
             let declared_domains = match handler.config() {
                 HandlerConfig::Projector { domains, .. } => domains,
                 _ => continue,
             };
-
-            // Skip projectors whose declared domains don't cover the
-            // incoming book's domain. Wildcard "*" matches any.
+            // Wildcard "*" matches any.
             if let Some(ref d) = incoming_domain {
                 let matches = declared_domains.iter().any(|x| x == d || x == "*");
                 if !matches {
                     continue;
                 }
             }
-
-            let response = handler.dispatch(HandlerRequest::Projector(book.clone()))?;
-            let HandlerResponse::Projector(pr) = response else {
-                return Err(ClientError::invalid_argument(
-                    crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
-                    crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
-                    [(crate::error_codes::keys::EXPECTED_KIND, "Projector")],
-                ));
-            };
-            last_projection = Some(pr);
+            matched.push(handler);
         }
 
-        // If no projectors registered, return an empty Projection carrying
-        // the book's cover so callers still get a valid proto back.
-        Ok(last_projection.unwrap_or(Projection {
-            cover: book.cover,
+        // Per-page outer loop. Each projector sees one page at a time
+        // via a single-page book; the framework drives the iteration so
+        // hand-rolled Handler::dispatch implementations don't silently
+        // miss pages 2..N.
+        for page in book.pages.iter() {
+            let page_book = EventBook {
+                cover: cover.clone(),
+                pages: vec![page.clone()],
+                next_sequence,
+                ..book.clone()
+            };
+            for handler in &matched {
+                let response = handler.dispatch(HandlerRequest::Projector(page_book.clone()))?;
+                // Validate response variant but DROP the payload —
+                // projectors are side-effect-only.
+                let HandlerResponse::Projector(_) = response else {
+                    return Err(ClientError::invalid_argument(
+                        crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
+                        crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
+                        [(crate::error_codes::keys::EXPECTED_KIND, "Projector")],
+                    ));
+                };
+            }
+        }
+
+        // Synthetic response. Always carries the book's cover and
+        // next_sequence; `projector` left empty since no single
+        // projector "owns" the response anymore.
+        Ok(Projection {
+            cover,
             projector: String::new(),
-            sequence: book.next_sequence,
+            sequence: next_sequence,
             projection: None,
-        }))
+        })
     }
 }
 
