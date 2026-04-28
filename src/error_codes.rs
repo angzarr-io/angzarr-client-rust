@@ -46,6 +46,8 @@ pub mod codes {
     pub const CONNECTION_FAILED_MAX_RETRIES: &str = "CONNECTION_FAILED_MAX_RETRIES";
     pub const TRANSPORT_ERROR: &str = "TRANSPORT_ERROR";
     pub const GRPC_ERROR: &str = "GRPC_ERROR";
+    pub const INVALID_TRANSPORT_MODE: &str = "INVALID_TRANSPORT_MODE";
+    pub const INVALID_PORT: &str = "INVALID_PORT";
 
     // Dispatch — common
     pub const HANDLER_WRONG_RESPONSE_KIND: &str = "HANDLER_WRONG_RESPONSE_KIND";
@@ -112,6 +114,8 @@ pub mod messages {
     pub const ENDPOINT_INVALID_URI: &str = "endpoint URI is invalid";
     pub const CONNECTION_FAILED: &str = "connection failed";
     pub const CONNECTION_FAILED_MAX_RETRIES: &str = "connection failed after max retries";
+    pub const INVALID_TRANSPORT_MODE: &str = "invalid transport mode env value";
+    pub const INVALID_PORT: &str = "invalid port env value";
 
     // Dispatch — common
     pub const HANDLER_WRONG_RESPONSE_KIND: &str = "handler returned wrong response kind";
@@ -170,4 +174,5 @@ pub mod keys {
     pub const HANDLER_CLASS: &str = "handler_class";
     pub const HANDLER_KIND: &str = "handler_kind";
     pub const ACTUAL_RETURN_TYPE: &str = "actual_return_type";
+    pub const ENV_VAR: &str = "env_var";
 }

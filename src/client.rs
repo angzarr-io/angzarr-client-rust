@@ -381,7 +381,8 @@ impl DomainClient {
     /// let player = DomainClient::for_domain("player", Some(TransportMode::Standalone)).await?;
     /// ```
     pub async fn for_domain(domain: &str, mode: Option<TransportMode>) -> Result<Self> {
-        Self::connect(&resolve_ch_endpoint(domain, mode, None, None, None)).await
+        let endpoint = resolve_ch_endpoint(domain, mode, None, None, None)?;
+        Self::connect(&endpoint).await
     }
 
     /// Create a client from an existing channel.

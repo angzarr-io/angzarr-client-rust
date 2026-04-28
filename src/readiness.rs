@@ -119,9 +119,17 @@ enum Endpoint {
 
 impl OutputDomainProbe {
     /// Resolve the coordinator endpoint for `domain` and build a probe.
+    ///
+    /// Audit #40: a malformed `ANGZARR_MODE` / `ANGZARR_CH_PORT` env
+    /// var here aborts startup with a clear panic message — readiness
+    /// probes are configured once at startup and cannot run with a bad
+    /// transport config. The underlying `resolve_ch_endpoint` returns
+    /// `Result`; we surface the error via `expect` so operators see the
+    /// typo before the server starts serving traffic.
     pub fn for_domain(domain: impl Into<String>) -> Self {
         let domain = domain.into();
-        let raw = crate::transport::resolve_ch_endpoint(&domain, None, None, None, None);
+        let raw = crate::transport::resolve_ch_endpoint(&domain, None, None, None, None)
+            .expect("readiness probe: ANGZARR_MODE / ANGZARR_CH_PORT env config invalid");
         let endpoint = if let Some(path) = raw.strip_prefix("unix:") {
             Endpoint::Uds(PathBuf::from(path))
         } else if raw.starts_with('/') {

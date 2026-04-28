@@ -9,8 +9,18 @@
 //! - `ANGZARR_UDS_BASE`: base path for Unix domain sockets. Default: `/tmp/angzarr`.
 //! - `ANGZARR_NAMESPACE`: Kubernetes namespace. Default: `angzarr`.
 //! - `ANGZARR_CH_PORT`: gRPC port for distributed mode. Default: 1310.
+//!
+//! Audit finding #40: env-var bad-input policy is loud-fail. An unset
+//! variable falls through to its default; a SET-but-unrecognized value
+//! returns `Err(ClientError)` so operator typos
+//! (`ANGZARR_MODE=Distrib`, `ANGZARR_CH_PORT=1310 `) surface at startup
+//! instead of silently misrouting. Mirrors Python's `ValueError` raise
+//! on unrecognized mode / non-numeric port.
 
 use std::env;
+
+use crate::error::{ClientError, Result};
+use crate::error_codes::{codes, keys, messages};
 
 /// Transport mode for gRPC connections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,13 +47,28 @@ pub const ENV_NAMESPACE: &str = "ANGZARR_NAMESPACE";
 pub const ENV_CH_PORT: &str = "ANGZARR_CH_PORT";
 
 impl TransportMode {
-    /// Resolve mode from the `ANGZARR_MODE` env var, falling back to
-    /// `DEFAULT_TRANSPORT_MODE` when unset or unrecognized.
-    pub fn from_env() -> Self {
-        match env::var(ENV_MODE).ok().as_deref() {
-            Some("standalone") => TransportMode::Standalone,
-            Some("distributed") => TransportMode::Distributed,
-            _ => DEFAULT_TRANSPORT_MODE,
+    /// Resolve mode from the `ANGZARR_MODE` env var.
+    ///
+    /// - Unset → [`DEFAULT_TRANSPORT_MODE`].
+    /// - `"standalone"` / `"distributed"` → corresponding variant.
+    /// - Anything else → `Err(ClientError::invalid_argument)`.
+    ///
+    /// Audit finding #40: loud-fail on operator typos.
+    pub fn from_env() -> Result<Self> {
+        match env::var(ENV_MODE) {
+            Ok(s) => match s.as_str() {
+                "standalone" => Ok(TransportMode::Standalone),
+                "distributed" => Ok(TransportMode::Distributed),
+                _ => Err(ClientError::invalid_argument(
+                    codes::INVALID_TRANSPORT_MODE,
+                    messages::INVALID_TRANSPORT_MODE,
+                    [
+                        (keys::INPUT, s),
+                        (keys::ENV_VAR, ENV_MODE.to_string()),
+                    ],
+                )),
+            },
+            Err(_) => Ok(DEFAULT_TRANSPORT_MODE),
         }
     }
 }
@@ -66,9 +91,12 @@ pub fn resolve_ch_endpoint(
     uds_base: Option<&str>,
     namespace: Option<&str>,
     port: Option<u16>,
-) -> String {
-    let mode = mode.unwrap_or_else(TransportMode::from_env);
-    match mode {
+) -> Result<String> {
+    let mode = match mode {
+        Some(m) => m,
+        None => TransportMode::from_env()?,
+    };
+    Ok(match mode {
         TransportMode::Standalone => {
             let base = env::var(ENV_UDS_BASE)
                 .ok()
@@ -81,14 +109,25 @@ pub fn resolve_ch_endpoint(
                 .ok()
                 .or_else(|| namespace.map(|s| s.to_string()))
                 .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string());
-            let p = env::var(ENV_CH_PORT)
-                .ok()
-                .and_then(|p| p.parse::<u16>().ok())
-                .or(port)
-                .unwrap_or(DEFAULT_CH_PORT);
+            // Audit #40: a SET but non-numeric ANGZARR_CH_PORT errors
+            // loudly. An unset env var falls through to `port` arg,
+            // then the default.
+            let p = match env::var(ENV_CH_PORT) {
+                Ok(s) => s.parse::<u16>().map_err(|_| {
+                    ClientError::invalid_argument(
+                        codes::INVALID_PORT,
+                        messages::INVALID_PORT,
+                        [
+                            (keys::INPUT, s),
+                            (keys::ENV_VAR, ENV_CH_PORT.to_string()),
+                        ],
+                    )
+                })?,
+                Err(_) => port.unwrap_or(DEFAULT_CH_PORT),
+            };
             format!("ch-{}.{}.svc:{}", domain, ns, p)
         }
-    }
+    })
 }
 
 #[cfg(test)]
@@ -110,7 +149,8 @@ mod tests {
     fn standalone_uds_base_defaults_when_no_env_no_arg() {
         let _g = ENV_LOCK.lock().unwrap();
         clear_env();
-        let ep = resolve_ch_endpoint("player", Some(TransportMode::Standalone), None, None, None);
+        let ep = resolve_ch_endpoint("player", Some(TransportMode::Standalone), None, None, None)
+            .expect("resolve");
         assert_eq!(ep, "/tmp/angzarr/ch-player.sock");
     }
 
@@ -124,7 +164,8 @@ mod tests {
             Some("/srv/sockets"),
             None,
             None,
-        );
+        )
+        .expect("resolve");
         assert_eq!(ep, "/srv/sockets/ch-player.sock");
     }
 
@@ -139,7 +180,8 @@ mod tests {
             Some("/arg/base"),
             None,
             None,
-        );
+        )
+        .expect("resolve");
         assert_eq!(ep, "/env/base/ch-player.sock");
         clear_env();
     }
@@ -148,7 +190,8 @@ mod tests {
     fn distributed_ns_and_port_defaults() {
         let _g = ENV_LOCK.lock().unwrap();
         clear_env();
-        let ep = resolve_ch_endpoint("player", Some(TransportMode::Distributed), None, None, None);
+        let ep = resolve_ch_endpoint("player", Some(TransportMode::Distributed), None, None, None)
+            .expect("resolve");
         assert_eq!(ep, "ch-player.angzarr.svc:1310");
     }
 
@@ -162,7 +205,8 @@ mod tests {
             None,
             Some("my-ns"),
             Some(2222),
-        );
+        )
+        .expect("resolve");
         assert_eq!(ep, "ch-player.my-ns.svc:2222");
     }
 
@@ -178,8 +222,55 @@ mod tests {
             None,
             Some("arg-ns"),
             Some(2222),
-        );
+        )
+        .expect("resolve");
         assert_eq!(ep, "ch-player.env-ns.svc:5555");
+        clear_env();
+    }
+
+    // Audit #40: loud-fail on bad env-var input.
+
+    #[test]
+    fn from_env_unset_returns_default() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        assert_eq!(TransportMode::from_env().unwrap(), DEFAULT_TRANSPORT_MODE);
+    }
+
+    #[test]
+    fn from_env_unrecognized_mode_errors() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        env::set_var(ENV_MODE, "Distrib"); // operator typo
+        let err = TransportMode::from_env().unwrap_err();
+        assert_eq!(err.code(), codes::INVALID_TRANSPORT_MODE);
+        clear_env();
+    }
+
+    #[test]
+    fn resolve_unrecognized_mode_propagates_error() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        env::set_var(ENV_MODE, "garbage");
+        let err = resolve_ch_endpoint("player", None, None, None, None).unwrap_err();
+        assert_eq!(err.code(), codes::INVALID_TRANSPORT_MODE);
+        clear_env();
+    }
+
+    #[test]
+    fn resolve_non_numeric_port_errors() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        env::set_var(ENV_CH_PORT, "1310 "); // trailing space typo
+        let err = resolve_ch_endpoint(
+            "player",
+            Some(TransportMode::Distributed),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), codes::INVALID_PORT);
         clear_env();
     }
 }
