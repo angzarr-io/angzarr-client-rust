@@ -18,7 +18,6 @@ use crate::retry::RetryPolicy;
 use crate::traits;
 use crate::transport::{resolve_ch_endpoint, TransportMode};
 use async_trait::async_trait;
-use backon::{BackoffBuilder, ExponentialBuilder};
 use tonic::transport::{Channel, Endpoint, Uri};
 use tracing::warn;
 
@@ -59,22 +58,27 @@ fn detect_uds_path(endpoint: &str) -> Option<String> {
 }
 
 /// Retries connection with the provided `RetryPolicy` on failure.
+///
+/// Audit finding #44: backoff math comes from
+/// [`RetryPolicy::compute_delay`] (the cross-language helper exported as
+/// the public `RetryPolicy::execute` API) so the connection-retry path
+/// uses the same formula and the same `rand`-based jitter (post-#29) as
+/// every other retry call site. The previously-used `backon` dep is
+/// dropped — single source of truth for retry semantics, no per-call-
+/// site divergence between the public retry helper and the channel
+/// connector.
 async fn create_channel(endpoint: &str, retry: &RetryPolicy) -> Result<Channel> {
     let uds_path = detect_uds_path(endpoint);
 
-    let mut builder = ExponentialBuilder::default()
-        .with_min_delay(retry.min_delay)
-        .with_max_delay(retry.max_delay)
-        .with_max_times(retry.max_attempts.saturating_sub(1) as usize);
-    if retry.jitter {
-        builder = builder.with_jitter();
-    }
-    let backoff = builder.build();
-
     let mut last_error: Option<ClientError> = None;
 
-    for (attempt, delay) in std::iter::once(Duration::ZERO).chain(backoff).enumerate() {
+    for attempt in 0..retry.max_attempts {
         if attempt > 0 {
+            // RetryPolicy::compute_delay(N) = the delay before the N+1-th
+            // attempt. attempt=1 sleeps compute_delay(0) = min_delay,
+            // attempt=2 sleeps compute_delay(1) = 2 * min_delay, capped
+            // at max_delay, optionally jittered.
+            let delay = retry.compute_delay(attempt - 1);
             warn!(
                 endpoint = %endpoint,
                 attempt = attempt,
