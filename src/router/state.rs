@@ -8,7 +8,9 @@
 
 use indexmap::IndexMap;
 
-use crate::proto::CommandBook;
+use crate::proto::{
+    page_header::SequenceType, AngzarrDeferredSequence, CommandBook, Cover, PageHeader,
+};
 
 /// Wraps the `destination_sequences` map from a saga/PM request and exposes
 /// helpers for stamping outbound commands with the correct sequence.
@@ -69,6 +71,26 @@ impl Destinations {
         self.sequences.get(domain).copied()
     }
 
+    /// Build a `PageHeader` carrying an `AngzarrDeferredSequence`.
+    ///
+    /// Use this on saga-produced commands so the framework can dedupe
+    /// on `(source.root, source_seq, target.root)`. AMQP at-least-once
+    /// redelivery of the trigger event becomes a no-op at the
+    /// destination aggregate's pipeline (cached events returned without
+    /// re-invoking business logic), instead of relying on a business
+    /// guard that surfaces as an idempotent-failure-shaped retry storm.
+    ///
+    /// Mirrors Python's `Destinations.deferred_header(source_cover, source_seq)`
+    /// (`destinations.py:113-131`).
+    pub fn deferred_header(source_cover: Cover, source_seq: u32) -> PageHeader {
+        PageHeader {
+            sequence_type: Some(SequenceType::AngzarrDeferred(AngzarrDeferredSequence {
+                source: Some(source_cover),
+                source_seq,
+            })),
+        }
+    }
+
     /// Stamp a command with the correct sequence for the destination domain.
     ///
     /// Sets the sequence number on all command pages for the given domain.
@@ -77,8 +99,6 @@ impl Destinations {
     ///
     /// Returns an error if no sequence is available for this domain.
     pub fn stamp_command(&self, cmd: &mut CommandBook, domain: &str) -> Result<(), String> {
-        use crate::proto::page_header::SequenceType;
-
         let seq = self.sequences.get(domain).ok_or_else(|| {
             format!(
                 "No sequence for domain '{}' - check output_domains config",
@@ -202,8 +222,36 @@ mod tests {
     }
 
     #[test]
+    fn deferred_header_carries_source_and_seq() {
+        // Mirrors Python's `Destinations.deferred_header(source_cover, source_seq)`
+        // (`destinations.py:113-131`). Audit finding #31.
+        use crate::proto::Uuid as ProtoUuid;
+        let source = Cover {
+            domain: "orders".into(),
+            root: Some(ProtoUuid {
+                value: vec![7u8; 16],
+            }),
+            correlation_id: "corr-1".into(),
+            edition: None,
+        };
+
+        let header = Destinations::deferred_header(source.clone(), 9);
+
+        let Some(SequenceType::AngzarrDeferred(d)) = header.sequence_type else {
+            panic!("expected AngzarrDeferred variant, got {:?}", header.sequence_type);
+        };
+        assert_eq!(d.source_seq, 9);
+        let s = d.source.expect("source must be set");
+        assert_eq!(s.domain, "orders");
+        assert_eq!(s.correlation_id, "corr-1");
+        assert_eq!(s.root.expect("root").value, vec![7u8; 16]);
+    }
+
+    #[test]
     fn destinations_stamp_command() {
-        use crate::proto::{page_header::SequenceType, CommandPage, PageHeader};
+        use crate::proto::CommandPage;
+        use crate::proto::PageHeader;
+        use crate::proto::page_header::SequenceType;
 
         let mut seqs = HashMap::new();
         seqs.insert("order".to_string(), 42u32);
