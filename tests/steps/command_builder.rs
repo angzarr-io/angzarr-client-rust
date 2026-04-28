@@ -3,6 +3,7 @@
 use angzarr_client::proto::{CommandBook, CommandResponse, MergeStrategy};
 use angzarr_client::proto_ext::CommandPageExt;
 use angzarr_client::traits::GatewayClient;
+use angzarr_client::error_codes::{codes, messages};
 use angzarr_client::{ClientError, CommandBuilderExt, Result};
 use async_trait::async_trait;
 use cucumber::{given, then, when, World};
@@ -104,13 +105,17 @@ impl CommandBuilderWorld {
             }
         } else if self.type_url_set && !self.payload_set {
             // Type set but no payload - simulate the error
-            self.build_error = Some(ClientError::InvalidArgument(
-                "command payload not set".to_string(),
+            self.build_error = Some(ClientError::invalid_argument(
+                codes::COMMAND_PAYLOAD_MISSING,
+                messages::COMMAND_PAYLOAD_MISSING,
+                ::std::iter::empty::<(&str, ::std::string::String)>(),
             ));
         } else if !self.type_url_set && self.payload_set {
             // Payload set but no type - simulate the error
-            self.build_error = Some(ClientError::InvalidArgument(
-                "command type_url not set".to_string(),
+            self.build_error = Some(ClientError::invalid_argument(
+                codes::COMMAND_TYPE_URL_MISSING,
+                messages::COMMAND_TYPE_URL_MISSING,
+                ::std::iter::empty::<(&str, ::std::string::String)>(),
             ));
         } else {
             // Neither set - try to build (will fail)

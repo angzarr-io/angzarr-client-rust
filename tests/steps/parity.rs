@@ -107,9 +107,10 @@ const EXPORTED: &[&str] = &[
     "emit_compensation_events",
     "pm_delegate_to_framework",
     "pm_emit_compensation_events",
-    // Event packing
-    "pack_event",
-    "pack_events",
+    // Event packing — pack_event/pack_events removed in audit #57
+    // (zero production callers; per-language helpers had divergent
+    // contracts). Production code uses inline `Any { type_url, value }`
+    // or `testing::pack_event(msg)` for fixtures.
     "new_event_book",
     "new_event_book_multi",
     // Builders (direct types, distinct from *Ext traits)
@@ -190,7 +191,7 @@ mod compile_probe {
         emit_compensation_events, fulfillment_root, get_transport_config, handles,
         inventory_product_root, inventory_root, make_command_book, make_command_page, make_cover,
         make_event_book, make_event_page, make_timestamp, new_event_book, new_event_book_multi,
-        order_root, pack_event, pack_events, pm_delegate_to_framework, pm_emit_compensation_events,
+        order_root, pm_delegate_to_framework, pm_emit_compensation_events,
         process_manager, product_root, projector, rejected, require_exists, require_non_negative,
         require_not_empty, require_not_empty_str, require_not_exists, require_positive,
         require_status, require_status_not, run_server, saga, state_factory, to_proto_bytes,

@@ -1,6 +1,7 @@
 //! Conversion helpers for protobuf types.
 
 use crate::error::{ClientError, Result};
+use crate::error_codes::{codes, keys, messages};
 use crate::proto::Uuid as ProtoUuid;
 use chrono::{DateTime, Utc};
 use prost::Name;
@@ -18,27 +19,49 @@ pub const META_ANGZARR_DOMAIN: &str = "_angzarr";
 pub const PROJECTION_DOMAIN_PREFIX: &str = "_projection";
 pub const PROJECTION_TYPE_URL: &str = "angzarr_client.proto.angzarr.Projection";
 
-/// Rust-only package prefix produced by prost from the `angzarr_client.proto.*`
-/// proto packages. Wire type URLs omit this prefix so that other clients
-/// (Go/Python/Java) see the short cross-language names.
+/// Proto package prefix used by the angzarr_client.proto.* proto package
+/// declarations. **NOT** stripped from proto-Any `type_url`s — per the
+/// `google.protobuf.Any` spec the URL must contain the *fully qualified*
+/// type name (i.e., the value of `Message::DESCRIPTOR.full_name()`),
+/// which includes the package prefix verbatim. Audit finding #58.
+///
+/// Retained because the angzarr-internal `type.angzarr.io/` routing
+/// scheme (`proto_ext::type_url`) intentionally uses a short form for
+/// readability — that's a different URL contract from Any's.
 pub const INTERNAL_PACKAGE_PREFIX: &str = "angzarr_client.proto.";
 
-/// Strip the Rust-only package prefix to get the wire-format name.
+/// Strip the `angzarr_client.proto.` package prefix from a full proto
+/// type name. Used **only** by the angzarr-internal
+/// `type.angzarr.io/` URL scheme (`proto_ext::type_url::for_type`),
+/// where short forms are deliberate. **Do not call from any code that
+/// builds a `type.googleapis.com/...` proto-Any URL** — Any URLs must
+/// carry the fully qualified type name per spec (audit finding #58).
 pub fn wire_name(full_name: &str) -> &str {
     full_name
         .strip_prefix(INTERNAL_PACKAGE_PREFIX)
         .unwrap_or(full_name)
 }
 
-/// Build a fully-qualified type URL from a message type name.
+/// Build a fully-qualified `type.googleapis.com/...` URL from a message's
+/// fully-qualified proto type name.
+///
+/// Per `google.protobuf.Any` spec, the URL's last path segment **must**
+/// be the message's fully qualified name (`<package>.<MessageName>`).
+/// Audit finding #58: this used to incorrectly strip the
+/// `angzarr_client.proto.` prefix via `wire_name`, producing
+/// non-spec-compliant URLs that diverged from Python's emission. The
+/// strip has been removed.
 ///
 /// # Examples
 /// ```
 /// use angzarr_client::convert::type_url;
-/// assert_eq!(type_url("angzarr_client.proto.examples.AddItemToCart"), "type.googleapis.com/examples.AddItemToCart");
+/// assert_eq!(
+///     type_url("angzarr_client.proto.examples.AddItemToCart"),
+///     "type.googleapis.com/angzarr_client.proto.examples.AddItemToCart"
+/// );
 /// ```
 pub fn type_url(type_name: &str) -> String {
-    format!("{}{}", TYPE_URL_PREFIX, wire_name(type_name))
+    format!("{}{}", TYPE_URL_PREFIX, type_name)
 }
 
 /// Extract the wire-format type name from a type URL.
@@ -52,16 +75,20 @@ pub fn type_name_from_url(type_url: &str) -> &str {
 
 /// Check if a type URL matches the given fully-qualified type name exactly.
 ///
+/// Audit finding #58: comparison uses the spec-compliant fully qualified
+/// name verbatim — no `wire_name` strip — so it matches Python's
+/// emission and the `google.protobuf.Any` contract.
+///
 /// # Examples
 /// ```
 /// use angzarr_client::convert::type_url_matches_exact;
 /// assert!(type_url_matches_exact(
-///     "type.googleapis.com/examples.PlayerRegistered",
+///     "type.googleapis.com/angzarr_client.proto.examples.PlayerRegistered",
 ///     "angzarr_client.proto.examples.PlayerRegistered"
 /// ));
 /// ```
 pub fn type_url_matches_exact(type_url: &str, full_type_name: &str) -> bool {
-    type_url == format!("{}{}", TYPE_URL_PREFIX, wire_name(full_type_name))
+    type_url == format!("{}{}", TYPE_URL_PREFIX, full_type_name)
 }
 
 /// Python-canonical name for [`type_url_matches_exact`]. Python exposes
@@ -107,13 +134,25 @@ pub fn try_unpack<T: prost::Message + Default + Name>(any: &Any) -> Option<T> {
 pub fn unpack<T: prost::Message + Default + Name>(any: &Any) -> Result<T> {
     let expected = full_type_url::<T>();
     if any.type_url != expected {
-        return Err(ClientError::InvalidArgument(format!(
-            "type mismatch: expected {}, got {}",
-            expected, any.type_url
-        )));
+        return Err(ClientError::invalid_argument(
+            codes::ANY_TYPE_MISMATCH,
+            messages::ANY_TYPE_MISMATCH,
+            [
+                (keys::EXPECTED, expected),
+                (keys::ACTUAL, any.type_url.clone()),
+            ],
+        ));
     }
-    T::decode(any.value.as_slice())
-        .map_err(|e| ClientError::InvalidArgument(format!("decode error: {}", e)))
+    T::decode(any.value.as_slice()).map_err(|e| {
+        ClientError::invalid_argument(
+            codes::ANY_DECODE_FAILED,
+            messages::ANY_DECODE_FAILED,
+            [
+                (keys::EXPECTED, expected.clone()),
+                (keys::CAUSE, e.to_string()),
+            ],
+        )
+    })
 }
 
 /// Get the full type URL for message type T.
@@ -129,7 +168,9 @@ pub fn unpack<T: prost::Message + Default + Name>(any: &Any) -> Result<T> {
 /// );
 /// ```
 pub fn full_type_url<T: Name>() -> String {
-    format!("{}{}", TYPE_URL_PREFIX, wire_name(&T::full_name()))
+    // Audit finding #58: emit the fully qualified name verbatim per
+    // `google.protobuf.Any` spec — no `wire_name` strip.
+    format!("{}{}", TYPE_URL_PREFIX, T::full_name())
 }
 
 /// Get the fully-qualified type name for message type T (without URL prefix).
@@ -146,8 +187,13 @@ pub fn uuid_to_proto(uuid: Uuid) -> ProtoUuid {
 
 /// Convert a protobuf UUID to a standard UUID.
 pub fn proto_to_uuid(proto: &ProtoUuid) -> Result<Uuid> {
-    Uuid::from_slice(&proto.value)
-        .map_err(|e| ClientError::InvalidArgument(format!("invalid UUID: {}", e)))
+    Uuid::from_slice(&proto.value).map_err(|e| {
+        ClientError::invalid_argument(
+            codes::PROTO_UUID_INVALID,
+            messages::PROTO_UUID_INVALID,
+            [(keys::CAUSE, e.to_string())],
+        )
+    })
 }
 
 /// Parse an RFC3339 timestamp string into a protobuf Timestamp.
@@ -159,9 +205,16 @@ pub fn proto_to_uuid(proto: &ProtoUuid) -> Result<Uuid> {
 /// assert_eq!(ts.seconds, 1705314600);
 /// ```
 pub fn parse_timestamp(rfc3339: &str) -> Result<Timestamp> {
-    let dt: DateTime<Utc> = rfc3339
-        .parse()
-        .map_err(|e| ClientError::InvalidTimestamp(format!("{}: {}", rfc3339, e)))?;
+    let dt: DateTime<Utc> = rfc3339.parse().map_err(|e: chrono::ParseError| {
+        ClientError::invalid_timestamp(
+            codes::TIMESTAMP_PARSE_FAILED,
+            messages::TIMESTAMP_PARSE_FAILED,
+            [
+                (keys::INPUT, rfc3339.to_string()),
+                (keys::CAUSE, e.to_string()),
+            ],
+        )
+    })?;
 
     Ok(Timestamp {
         seconds: dt.timestamp(),
@@ -187,34 +240,43 @@ mod tests {
 
     #[test]
     fn test_type_url() {
+        // Audit finding #58: per `google.protobuf.Any` spec the URL
+        // carries the fully qualified type name verbatim (package
+        // prefix retained).
         assert_eq!(
             type_url("angzarr_client.proto.examples.AddItemToCart"),
-            "type.googleapis.com/examples.AddItemToCart"
+            "type.googleapis.com/angzarr_client.proto.examples.AddItemToCart"
         );
     }
 
     #[test]
     fn test_type_name_from_url() {
         assert_eq!(
-            type_name_from_url("type.googleapis.com/examples.AddItemToCart"),
-            "examples.AddItemToCart"
+            type_name_from_url("type.googleapis.com/angzarr_client.proto.examples.AddItemToCart"),
+            "angzarr_client.proto.examples.AddItemToCart"
         );
         assert_eq!(type_name_from_url("AddItemToCart"), "AddItemToCart");
     }
 
     #[test]
     fn test_type_url_matches_exact() {
+        // Audit finding #58: match on the fully qualified name.
         assert!(type_url_matches_exact(
-            "type.googleapis.com/examples.AddItemToCart",
+            "type.googleapis.com/angzarr_client.proto.examples.AddItemToCart",
             "angzarr_client.proto.examples.AddItemToCart"
         ));
         assert!(!type_url_matches_exact(
-            "type.googleapis.com/examples.AddItemToCart",
+            "type.googleapis.com/angzarr_client.proto.examples.AddItemToCart",
             "angzarr_client.proto.examples.RemoveItem"
         ));
-        // Suffix matching should NOT work with exact matching
+        // Short-form URLs no longer match (was the pre-#58 incorrect behavior).
         assert!(!type_url_matches_exact(
             "type.googleapis.com/examples.AddItemToCart",
+            "angzarr_client.proto.examples.AddItemToCart"
+        ));
+        // Suffix matching never worked.
+        assert!(!type_url_matches_exact(
+            "type.googleapis.com/angzarr_client.proto.examples.AddItemToCart",
             "AddItemToCart"
         ));
     }
@@ -223,11 +285,11 @@ mod tests {
     fn type_url_matches_is_alias_for_exact() {
         // Python-canonical name. Must behave identically to type_url_matches_exact.
         assert!(type_url_matches(
-            "type.googleapis.com/examples.AddItemToCart",
+            "type.googleapis.com/angzarr_client.proto.examples.AddItemToCart",
             "angzarr_client.proto.examples.AddItemToCart"
         ));
         assert!(!type_url_matches(
-            "type.googleapis.com/examples.AddItemToCart",
+            "type.googleapis.com/angzarr_client.proto.examples.AddItemToCart",
             "AddItemToCart"
         ));
     }

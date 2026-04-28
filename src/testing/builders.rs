@@ -3,7 +3,7 @@
 //! Simplified constructors for `EventBook`, `CommandBook`, `Cover`, and
 //! related proto types. Mirrors Python's `angzarr_client.testing.builders`.
 
-use prost::Message;
+use prost::{Message, Name};
 use prost_types::{Any, Timestamp};
 
 use crate::proto::{
@@ -16,12 +16,20 @@ pub fn make_timestamp() -> Timestamp {
     crate::now()
 }
 
-/// Pack a protobuf message into an `Any` using the given type-URL prefix.
-/// Mirrors Python's `pack_event(msg, type_url_prefix)`. `type_name` should be
-/// the message's fully-qualified proto type name (e.g. `"orders.OrderCreated"`).
-pub fn pack_event<M: Message>(msg: &M, type_name: &str) -> Any {
+/// Pack a protobuf message into an `Any` with the canonical type URL.
+///
+/// The type URL is derived from `M::full_name()` (the proto descriptor),
+/// prefixed with the standard `type.googleapis.com/` per the
+/// `google.protobuf.Any` spec.
+///
+/// Audit finding #47 (Option C — drop the second arg, derive name from
+/// the message): mirrors Python's `testing.builders.pack_event(msg)`.
+/// Removes the previous `type_name` string parameter (which was both a
+/// typo-prone footgun and diverged in meaning from Python's 2nd-arg
+/// convention).
+pub fn pack_event<M: Message + Name>(msg: &M) -> Any {
     Any {
-        type_url: crate::type_url(type_name),
+        type_url: crate::type_url(&M::full_name()),
         value: msg.encode_to_vec(),
     }
 }

@@ -171,12 +171,14 @@ impl ProjectorService for ProjectorGrpc {
 }
 
 fn client_error_to_status(err: ClientError) -> Status {
+    // Audit #59: only the static `message` rides in `Status::message`.
+    // Structured details remain client-language-internal for now.
     match err {
-        ClientError::InvalidArgument(msg) => Status::invalid_argument(msg),
-        ClientError::Connection(msg) => Status::unavailable(msg),
+        ClientError::InvalidArgument(d) => Status::invalid_argument(d.message),
+        ClientError::Connection(d) => Status::unavailable(d.message),
         ClientError::Transport(e) => Status::unavailable(e.to_string()),
         ClientError::Grpc(s) => *s,
-        ClientError::InvalidTimestamp(msg) => Status::invalid_argument(msg),
+        ClientError::InvalidTimestamp(d) => Status::invalid_argument(d.message),
         ClientError::Rejected(r) => r.into(),
     }
 }

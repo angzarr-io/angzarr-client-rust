@@ -1,8 +1,11 @@
 //! Error handling step definitions.
 
+use angzarr_client::error_codes::{codes, messages};
 use angzarr_client::ClientError;
 use cucumber::{given, then, when, World};
 use tonic::{Code, Status};
+
+const NO_DETAILS: [(&str, ::std::string::String); 0] = [];
 
 /// Test context for error handling scenarios.
 #[derive(Debug, World)]
@@ -25,13 +28,13 @@ impl ErrorHandlingWorld {
 
 #[given("the server is unreachable")]
 async fn given_server_unreachable(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::Connection("connection refused".to_string()));
+    world.current_error = Some(ClientError::connection(codes::CONNECTION_FAILED, messages::CONNECTION_FAILED, NO_DETAILS));
 }
 
 #[given("the connection drops mid-request")]
 async fn given_connection_drops(world: &mut ErrorHandlingWorld) {
     // Simulate transport error with a mock error
-    world.current_error = Some(ClientError::Connection("connection reset".to_string()));
+    world.current_error = Some(ClientError::connection(codes::CONNECTION_FAILED, messages::CONNECTION_FAILED, NO_DETAILS));
 }
 
 #[given("the server returns a gRPC error")]
@@ -79,7 +82,7 @@ async fn given_operation_timeout(world: &mut ErrorHandlingWorld) {
 
 #[given("any client error")]
 async fn given_any_client_error(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::Connection("test error".to_string()));
+    world.current_error = Some(ClientError::connection(codes::CONNECTION_FAILED, messages::CONNECTION_FAILED, NO_DETAILS));
 }
 
 #[given(expr = "a gRPC error with status NOT_FOUND")]
@@ -90,7 +93,7 @@ async fn given_grpc_not_found(world: &mut ErrorHandlingWorld) {
 
 #[given("a connection error")]
 async fn given_connection_error(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::Connection("connection failed".to_string()));
+    world.current_error = Some(ClientError::connection(codes::CONNECTION_FAILED, messages::CONNECTION_FAILED, NO_DETAILS));
 }
 
 #[given("a gRPC error with detailed status")]
@@ -101,7 +104,7 @@ async fn given_grpc_detailed_status(world: &mut ErrorHandlingWorld) {
 
 #[given("an invalid argument error")]
 async fn given_invalid_argument_error(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::InvalidArgument("missing field".to_string()));
+    world.current_error = Some(ClientError::invalid_argument(codes::COMMAND_PAYLOAD_MISSING, messages::COMMAND_PAYLOAD_MISSING, NO_DETAILS));
 }
 
 #[given("different error types")]
@@ -111,15 +114,15 @@ async fn given_different_error_types(world: &mut ErrorHandlingWorld) {
         ClientError::from(Status::failed_precondition("precondition failed")),
         ClientError::from(Status::invalid_argument("invalid")),
         ClientError::from(Status::internal("internal")),
-        ClientError::Connection("connection".to_string()),
-        ClientError::InvalidArgument("invalid arg".to_string()),
+        ClientError::connection(codes::CONNECTION_FAILED, messages::CONNECTION_FAILED, NO_DETAILS),
+        ClientError::invalid_argument(codes::COMMAND_PAYLOAD_MISSING, messages::COMMAND_PAYLOAD_MISSING, NO_DETAILS),
     ];
 }
 
 #[given("various error types")]
 async fn given_various_error_types(world: &mut ErrorHandlingWorld) {
     world.error_variants = vec![
-        ClientError::Connection("connection failed".to_string()),
+        ClientError::connection(codes::CONNECTION_FAILED, messages::CONNECTION_FAILED, NO_DETAILS),
         ClientError::from(Status::unavailable("service unavailable")),
         ClientError::from(Status::resource_exhausted("rate limited")),
         ClientError::from(Status::invalid_argument("bad input")),
@@ -157,12 +160,12 @@ async fn when_execute_mock_at_sequence(_world: &mut ErrorHandlingWorld, _seq: u3
 
 #[when("I build a command without required fields")]
 async fn when_build_without_required(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::InvalidArgument("type_url not set".to_string()));
+    world.current_error = Some(ClientError::invalid_argument(codes::COMMAND_TYPE_URL_MISSING, messages::COMMAND_TYPE_URL_MISSING, NO_DETAILS));
 }
 
 #[when("I build a query with invalid timestamp format")]
 async fn when_build_invalid_timestamp(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::InvalidTimestamp("invalid format".to_string()));
+    world.current_error = Some(ClientError::invalid_timestamp(codes::TIMESTAMP_PARSE_FAILED, messages::TIMESTAMP_PARSE_FAILED, NO_DETAILS));
 }
 
 #[when("I send a malformed request to the server")]
@@ -287,7 +290,7 @@ async fn then_is_not_found_true(world: &mut ErrorHandlingWorld) {
 #[then("code should return NOT_FOUND")]
 async fn then_code_not_found(world: &mut ErrorHandlingWorld) {
     let err = world.current_error.as_ref().expect("no error");
-    assert_eq!(err.code(), Some(Code::NotFound));
+    assert_eq!(err.grpc_code(), Some(Code::NotFound));
 }
 
 #[then("is_precondition_failed should return true")]
@@ -299,7 +302,7 @@ async fn then_is_precondition_failed_true(world: &mut ErrorHandlingWorld) {
 #[then("code should return FAILED_PRECONDITION")]
 async fn then_code_failed_precondition(world: &mut ErrorHandlingWorld) {
     let err = world.current_error.as_ref().expect("no error");
-    assert_eq!(err.code(), Some(Code::FailedPrecondition));
+    assert_eq!(err.grpc_code(), Some(Code::FailedPrecondition));
 }
 
 #[then("the error indicates optimistic lock failure")]
@@ -311,13 +314,13 @@ async fn then_indicates_optimistic_lock(world: &mut ErrorHandlingWorld) {
 #[then("code should return INVALID_ARGUMENT")]
 async fn then_code_invalid_argument(world: &mut ErrorHandlingWorld) {
     let err = world.current_error.as_ref().expect("no error");
-    assert_eq!(err.code(), Some(Code::InvalidArgument));
+    assert_eq!(err.grpc_code(), Some(Code::InvalidArgument));
 }
 
 #[then("code should return PERMISSION_DENIED")]
 async fn then_code_permission_denied(world: &mut ErrorHandlingWorld) {
     let err = world.current_error.as_ref().expect("no error");
-    assert_eq!(err.code(), Some(Code::PermissionDenied));
+    assert_eq!(err.grpc_code(), Some(Code::PermissionDenied));
 }
 
 #[then("the error message should describe access denial")]
@@ -330,19 +333,19 @@ async fn then_message_describes_access_denial(world: &mut ErrorHandlingWorld) {
 #[then("code should return INTERNAL")]
 async fn then_code_internal(world: &mut ErrorHandlingWorld) {
     let err = world.current_error.as_ref().expect("no error");
-    assert_eq!(err.code(), Some(Code::Internal));
+    assert_eq!(err.grpc_code(), Some(Code::Internal));
 }
 
 #[then("the error should indicate server-side failure")]
 async fn then_indicates_server_failure(world: &mut ErrorHandlingWorld) {
     let err = world.current_error.as_ref().expect("no error");
-    assert_eq!(err.code(), Some(Code::Internal));
+    assert_eq!(err.grpc_code(), Some(Code::Internal));
 }
 
 #[then("code should return DEADLINE_EXCEEDED")]
 async fn then_code_deadline_exceeded(world: &mut ErrorHandlingWorld) {
     let err = world.current_error.as_ref().expect("no error");
-    assert_eq!(err.code(), Some(Code::DeadlineExceeded));
+    assert_eq!(err.grpc_code(), Some(Code::DeadlineExceeded));
 }
 
 #[then("I should get a non-empty string")]
@@ -360,7 +363,7 @@ async fn then_message_describes_error(world: &mut ErrorHandlingWorld) {
 #[then(expr = "I should get Some\\(NOT_FOUND\\)")]
 async fn then_get_some_not_found(world: &mut ErrorHandlingWorld) {
     let err = world.current_error.as_ref().expect("no error");
-    assert_eq!(err.code(), Some(Code::NotFound));
+    assert_eq!(err.grpc_code(), Some(Code::NotFound));
 }
 
 #[then("I should get None")]
@@ -371,7 +374,7 @@ async fn then_get_none(world: &mut ErrorHandlingWorld) {
         err,
         ClientError::Connection(..) | ClientError::InvalidArgument(..)
     ) {
-        assert!(err.code().is_none());
+        assert!(err.grpc_code().is_none());
     }
 }
 
@@ -394,7 +397,7 @@ async fn then_not_found_has_is_not_found(world: &mut ErrorHandlingWorld) {
     let not_found = world
         .error_variants
         .iter()
-        .find(|e| e.code() == Some(Code::NotFound))
+        .find(|e| e.grpc_code() == Some(Code::NotFound))
         .expect("not_found variant missing");
     assert!(not_found.is_not_found());
 }
@@ -414,7 +417,7 @@ async fn then_internal_has_is_not_found_false(world: &mut ErrorHandlingWorld) {
     let internal = world
         .error_variants
         .iter()
-        .find(|e| e.code() == Some(Code::Internal))
+        .find(|e| e.grpc_code() == Some(Code::Internal))
         .expect("internal variant missing");
     assert!(!internal.is_not_found());
 }
@@ -424,7 +427,7 @@ async fn then_failed_precondition_true(world: &mut ErrorHandlingWorld) {
     let fp = world
         .error_variants
         .iter()
-        .find(|e| e.code() == Some(Code::FailedPrecondition))
+        .find(|e| e.grpc_code() == Some(Code::FailedPrecondition))
         .expect("failed_precondition variant missing");
     assert!(fp.is_precondition_failed());
 }
@@ -434,7 +437,7 @@ async fn then_not_found_precondition_false(world: &mut ErrorHandlingWorld) {
     let nf = world
         .error_variants
         .iter()
-        .find(|e| e.code() == Some(Code::NotFound))
+        .find(|e| e.grpc_code() == Some(Code::NotFound))
         .expect("not_found variant missing");
     assert!(!nf.is_precondition_failed());
 }
@@ -454,7 +457,7 @@ async fn then_invalid_argument_grpc_true(world: &mut ErrorHandlingWorld) {
     let ia = world
         .error_variants
         .iter()
-        .find(|e| e.code() == Some(Code::InvalidArgument))
+        .find(|e| e.grpc_code() == Some(Code::InvalidArgument))
         .expect("invalid_argument variant missing");
     assert!(ia.is_invalid_argument());
 }
@@ -474,7 +477,7 @@ async fn then_not_found_invalid_argument_false(world: &mut ErrorHandlingWorld) {
     let nf = world
         .error_variants
         .iter()
-        .find(|e| e.code() == Some(Code::NotFound))
+        .find(|e| e.grpc_code() == Some(Code::NotFound))
         .expect("not_found variant missing");
     assert!(!nf.is_invalid_argument());
 }
@@ -526,9 +529,9 @@ async fn then_unavailable_retryable(world: &mut ErrorHandlingWorld) {
     let unavailable = world
         .error_variants
         .iter()
-        .find(|e| e.code() == Some(Code::Unavailable))
+        .find(|e| e.grpc_code() == Some(Code::Unavailable))
         .expect("unavailable variant missing");
-    assert_eq!(unavailable.code(), Some(Code::Unavailable));
+    assert_eq!(unavailable.grpc_code(), Some(Code::Unavailable));
 }
 
 #[then("RESOURCE_EXHAUSTED should be retryable with backoff")]
@@ -536,9 +539,9 @@ async fn then_resource_exhausted_retryable(world: &mut ErrorHandlingWorld) {
     let exhausted = world
         .error_variants
         .iter()
-        .find(|e| e.code() == Some(Code::ResourceExhausted))
+        .find(|e| e.grpc_code() == Some(Code::ResourceExhausted))
         .expect("resource_exhausted variant missing");
-    assert_eq!(exhausted.code(), Some(Code::ResourceExhausted));
+    assert_eq!(exhausted.grpc_code(), Some(Code::ResourceExhausted));
 }
 
 #[then("INVALID_ARGUMENT should NOT be retryable")]
@@ -546,7 +549,7 @@ async fn then_invalid_argument_not_retryable(world: &mut ErrorHandlingWorld) {
     let ia = world
         .error_variants
         .iter()
-        .find(|e| e.code() == Some(Code::InvalidArgument))
+        .find(|e| e.grpc_code() == Some(Code::InvalidArgument))
         .expect("invalid_argument variant missing");
     // Invalid argument means bad input - retry won't help
     assert!(ia.is_invalid_argument());
@@ -557,7 +560,7 @@ async fn then_failed_precondition_retryable(world: &mut ErrorHandlingWorld) {
     let fp = world
         .error_variants
         .iter()
-        .find(|e| e.code() == Some(Code::FailedPrecondition))
+        .find(|e| e.grpc_code() == Some(Code::FailedPrecondition))
         .expect("failed_precondition variant missing");
     assert!(fp.is_precondition_failed());
 }

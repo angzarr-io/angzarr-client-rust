@@ -2,6 +2,7 @@
 
 use crate::convert::{parse_timestamp, uuid_to_proto};
 use crate::error::{ClientError, Result};
+use crate::error_codes::{codes, messages};
 use crate::proto::{
     page_header::SequenceType, query::Selection, temporal_query::PointInTime, CommandBook,
     CommandPage, CommandResponse, Cover, Edition, EventBook, EventPage, PageHeader, Query,
@@ -96,14 +97,26 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
     /// (`builder.py:83-84`). `correlation_id` defaults to a fresh random
     /// UUID when unset.
     pub fn build(self) -> Result<CommandBook> {
-        let type_url = self
-            .type_url
-            .ok_or_else(|| ClientError::InvalidArgument("command type_url not set".to_string()))?;
-        let payload = self
-            .payload
-            .ok_or_else(|| ClientError::InvalidArgument("command payload not set".to_string()))?;
+        let type_url = self.type_url.ok_or_else(|| {
+            ClientError::invalid_argument(
+                codes::COMMAND_TYPE_URL_MISSING,
+                messages::COMMAND_TYPE_URL_MISSING,
+                std::iter::empty::<(String, String)>(),
+            )
+        })?;
+        let payload = self.payload.ok_or_else(|| {
+            ClientError::invalid_argument(
+                codes::COMMAND_PAYLOAD_MISSING,
+                messages::COMMAND_PAYLOAD_MISSING,
+                std::iter::empty::<(String, String)>(),
+            )
+        })?;
         let sequence = self.sequence.ok_or_else(|| {
-            ClientError::InvalidArgument("sequence not set (call with_sequence)".to_string())
+            ClientError::invalid_argument(
+                codes::COMMAND_SEQUENCE_MISSING,
+                messages::COMMAND_SEQUENCE_MISSING,
+                std::iter::empty::<(String, String)>(),
+            )
         })?;
         let correlation_id = self
             .correlation_id

@@ -48,8 +48,11 @@ impl ScenarioContext {
     }
 
     /// Pack `event_msg` and append to history.
-    pub fn add_event<M: Message>(&mut self, event_msg: &M, type_name: &str) {
-        self.events.push(pack_event(event_msg, type_name));
+    ///
+    /// Audit finding #47: the type URL is derived from `M::full_name()`
+    /// — no string-typed `type_name` argument.
+    pub fn add_event<M: prost::Message + prost::Name>(&mut self, event_msg: &M) {
+        self.events.push(pack_event(event_msg));
     }
 
     /// Clear all events from history.

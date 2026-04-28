@@ -19,7 +19,7 @@
 //! }
 //! ```
 
-use crate::convert::{wire_name, TYPE_URL_PREFIX};
+use crate::convert::TYPE_URL_PREFIX;
 use crate::proto::{
     business_response, command_page, page_header, BusinessResponse, CommandBook, Cover, EventBook,
     Notification, RejectionNotification, RevocationResponse,
@@ -230,8 +230,12 @@ pub fn pm_emit_compensation_events(
 // =============================================================================
 
 /// Check if a type URL refers to a rejection Notification.
+///
+/// Audit finding #58: matches against the fully qualified type name per
+/// `google.protobuf.Any` spec — no `wire_name` strip. The previous
+/// short-form expectation diverged from Python-emitted URLs.
 pub fn is_notification(type_url: &str) -> bool {
-    type_url == format!("{}{}", TYPE_URL_PREFIX, wire_name(NOTIFICATION_TYPE_NAME))
+    type_url == format!("{}{}", TYPE_URL_PREFIX, NOTIFICATION_TYPE_NAME)
 }
 
 #[cfg(test)]
@@ -439,14 +443,19 @@ mod tests {
 
     #[test]
     fn is_notification_matches_correct_type_url() {
-        assert!(is_notification("type.googleapis.com/angzarr.Notification"));
+        // Audit finding #58: spec-compliant fully qualified name.
+        assert!(is_notification(
+            "type.googleapis.com/angzarr_client.proto.angzarr.Notification"
+        ));
     }
 
     #[test]
     fn is_notification_rejects_wrong_type_url() {
         assert!(!is_notification(
-            "type.googleapis.com/angzarr.RejectionNotification"
+            "type.googleapis.com/angzarr_client.proto.angzarr.RejectionNotification"
         ));
+        // Pre-#58 short form is no longer accepted.
+        assert!(!is_notification("type.googleapis.com/angzarr.Notification"));
         assert!(!is_notification(
             "angzarr_client.proto.angzarr.Notification"
         ));

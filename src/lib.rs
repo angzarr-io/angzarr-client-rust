@@ -61,6 +61,7 @@ pub mod client;
 pub mod compensation;
 pub mod convert;
 pub mod error;
+pub mod error_codes;
 pub mod handler;
 pub mod identity;
 #[path = "proto.rs"]
@@ -122,8 +123,6 @@ pub use router::{
     event_page,
     new_event_book,
     new_event_book_multi,
-    pack_event,
-    pack_events,
     // Tier 5 unified Handler contract
     BuildError,
     Built,

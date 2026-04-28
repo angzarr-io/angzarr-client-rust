@@ -234,11 +234,16 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
             quote! {
                 if *type_url == ::angzarr_client::full_type_url::<#cmd_ty>() {
                     let cmd_val = <#cmd_ty as ::prost::Message>::decode(payload.value.as_slice())
-                        .map_err(|e| ::angzarr_client::ClientError::InvalidArgument(
-                            ::std::format!("decode error for {}: {}", type_url, e)
+                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
+                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
+                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
+                            [
+                                (::angzarr_client::error_codes::keys::TYPE_URL, type_url.clone()),
+                                (::angzarr_client::error_codes::keys::CAUSE, e.to_string()),
+                            ],
                         ))?;
                     let events = self.#method_ident(cmd_val, &state, seq)
-                        .map_err(|e| ::angzarr_client::ClientError::InvalidArgument(e.reason))?;
+                        .map_err(::angzarr_client::ClientError::Rejected)?;
                     return ::std::result::Result::Ok(
                         ::angzarr_client::router::HandlerResponse::CommandHandler(
                             ::angzarr_client::proto::BusinessResponse {
@@ -262,8 +267,13 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
             quote! {
                 if *evt_type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
                     let evt_val = <#evt_ty as ::prost::Message>::decode(evt_any.value.as_slice())
-                        .map_err(|e| ::angzarr_client::ClientError::InvalidArgument(
-                            ::std::format!("decode error for {}: {}", evt_type_url, e)
+                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
+                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
+                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
+                            [
+                                (::angzarr_client::error_codes::keys::TYPE_URL, evt_type_url.clone()),
+                                (::angzarr_client::error_codes::keys::CAUSE, e.to_string()),
+                            ],
                         ))?;
                     <#self_ty_for_applies>::#method_ident(&mut state, evt_val);
                     continue;
@@ -291,7 +301,7 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
             quote! {
                 if target_domain == #rej_domain && target_command_suffix == #rej_command {
                     let response = self.#method_ident(&notification, &state)
-                        .map_err(|e| ::angzarr_client::ClientError::InvalidArgument(e.reason))?;
+                        .map_err(::angzarr_client::ClientError::Rejected)?;
                     return ::std::result::Result::Ok(
                         ::angzarr_client::router::HandlerResponse::CommandHandler(response),
                     );
@@ -331,18 +341,31 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
                     ::angzarr_client::router::HandlerRequest::CommandHandler(c) => c,
                     _ => {
                         return ::std::result::Result::Err(
-                            ::angzarr_client::ClientError::InvalidArgument(
-                                "command_handler dispatch requires HandlerRequest::CommandHandler".into(),
+                            ::angzarr_client::ClientError::invalid_argument(
+                                ::angzarr_client::error_codes::codes::HANDLER_WRONG_REQUEST_KIND,
+                                ::angzarr_client::error_codes::messages::HANDLER_WRONG_REQUEST_KIND,
+                                [(
+                                    ::angzarr_client::error_codes::keys::EXPECTED_KIND,
+                                    "CommandHandler",
+                                )],
                             ),
                         );
                     }
                 };
 
                 let cmd_book = ctx_cmd.command.as_ref().ok_or_else(|| {
-                    ::angzarr_client::ClientError::InvalidArgument("missing command book".into())
+                    ::angzarr_client::ClientError::invalid_argument(
+                        ::angzarr_client::error_codes::codes::MISSING_COMMAND_BOOK,
+                        ::angzarr_client::error_codes::messages::MISSING_COMMAND_BOOK,
+                        ::std::iter::empty::<(&str, ::std::string::String)>(),
+                    )
                 })?;
                 let cmd_page = cmd_book.pages.first().ok_or_else(|| {
-                    ::angzarr_client::ClientError::InvalidArgument("missing command page".into())
+                    ::angzarr_client::ClientError::invalid_argument(
+                        ::angzarr_client::error_codes::codes::MISSING_COMMAND_PAGE,
+                        ::angzarr_client::error_codes::messages::MISSING_COMMAND_PAGE,
+                        ::std::iter::empty::<(&str, ::std::string::String)>(),
+                    )
                 })?;
                 let payload = match &cmd_page.payload {
                     ::std::option::Option::Some(
@@ -350,8 +373,10 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
                     ) => c,
                     _ => {
                         return ::std::result::Result::Err(
-                            ::angzarr_client::ClientError::InvalidArgument(
-                                "missing command payload".into(),
+                            ::angzarr_client::ClientError::invalid_argument(
+                                ::angzarr_client::error_codes::codes::MISSING_COMMAND_PAYLOAD,
+                                ::angzarr_client::error_codes::messages::MISSING_COMMAND_PAYLOAD,
+                                ::std::iter::empty::<(&str, ::std::string::String)>(),
                             ),
                         );
                     }
@@ -385,8 +410,10 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
                         <::angzarr_client::proto::Notification as ::prost::Message>::decode(
                             payload.value.as_slice(),
                         )
-                        .map_err(|e| ::angzarr_client::ClientError::InvalidArgument(
-                            ::std::format!("failed to decode Notification: {}", e),
+                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
+                            ::angzarr_client::error_codes::codes::NOTIFICATION_DECODE_FAILED,
+                            ::angzarr_client::error_codes::messages::NOTIFICATION_DECODE_FAILED,
+                            [(::angzarr_client::error_codes::keys::CAUSE, e.to_string())],
                         ))?;
 
                     let rejection = match notification.payload.as_ref() {
@@ -394,8 +421,10 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
                             <::angzarr_client::proto::RejectionNotification as ::prost::Message>::decode(
                                 p.value.as_slice(),
                             )
-                            .map_err(|e| ::angzarr_client::ClientError::InvalidArgument(
-                                ::std::format!("failed to decode RejectionNotification: {}", e),
+                            .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
+                                ::angzarr_client::error_codes::codes::REJECTION_NOTIFICATION_DECODE_FAILED,
+                                ::angzarr_client::error_codes::messages::REJECTION_NOTIFICATION_DECODE_FAILED,
+                                [(::angzarr_client::error_codes::keys::CAUSE, e.to_string())],
                             ))?
                         }
                         ::std::option::Option::None =>
@@ -449,8 +478,10 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
                 #(#dispatch_arms)*
 
                 ::std::result::Result::Err(
-                    ::angzarr_client::ClientError::InvalidArgument(
-                        ::std::format!("no handler for type: {}", type_url),
+                    ::angzarr_client::ClientError::invalid_argument(
+                        ::angzarr_client::error_codes::codes::NO_HANDLER_REGISTERED,
+                        ::angzarr_client::error_codes::messages::NO_HANDLER_REGISTERED,
+                        [(::angzarr_client::error_codes::keys::TYPE_URL, type_url.clone())],
                     ),
                 )
             }
@@ -760,11 +791,16 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
             quote! {
                 if event_any.type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
                     let evt = <#evt_ty as ::prost::Message>::decode(event_any.value.as_slice())
-                        .map_err(|e| ::angzarr_client::ClientError::InvalidArgument(
-                            ::std::format!("decode error for {}: {}", event_any.type_url, e)
+                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
+                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
+                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
+                            [
+                                (::angzarr_client::error_codes::keys::TYPE_URL, event_any.type_url.clone()),
+                                (::angzarr_client::error_codes::keys::CAUSE, e.to_string()),
+                            ],
                         ))?;
                     let response = self.#method_ident(evt)
-                        .map_err(|e| ::angzarr_client::ClientError::InvalidArgument(e.reason))?;
+                        .map_err(::angzarr_client::ClientError::Rejected)?;
                     return ::std::result::Result::Ok(
                         ::angzarr_client::router::HandlerResponse::Saga(response),
                     );
@@ -804,18 +840,31 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
                     ::angzarr_client::router::HandlerRequest::Saga(r) => r,
                     _ => {
                         return ::std::result::Result::Err(
-                            ::angzarr_client::ClientError::InvalidArgument(
-                                "saga dispatch requires HandlerRequest::Saga".into(),
+                            ::angzarr_client::ClientError::invalid_argument(
+                                ::angzarr_client::error_codes::codes::HANDLER_WRONG_REQUEST_KIND,
+                                ::angzarr_client::error_codes::messages::HANDLER_WRONG_REQUEST_KIND,
+                                [(
+                                    ::angzarr_client::error_codes::keys::EXPECTED_KIND,
+                                    "Saga",
+                                )],
                             ),
                         );
                     }
                 };
 
                 let source_book = saga_req.source.as_ref().ok_or_else(|| {
-                    ::angzarr_client::ClientError::InvalidArgument("missing saga source".into())
+                    ::angzarr_client::ClientError::invalid_argument(
+                        ::angzarr_client::error_codes::codes::MISSING_SAGA_SOURCE,
+                        ::angzarr_client::error_codes::messages::MISSING_SAGA_SOURCE,
+                        ::std::iter::empty::<(&str, ::std::string::String)>(),
+                    )
                 })?;
                 let event_page = source_book.pages.last().ok_or_else(|| {
-                    ::angzarr_client::ClientError::InvalidArgument("empty saga source".into())
+                    ::angzarr_client::ClientError::invalid_argument(
+                        ::angzarr_client::error_codes::codes::EMPTY_SAGA_SOURCE,
+                        ::angzarr_client::error_codes::messages::EMPTY_SAGA_SOURCE,
+                        ::std::iter::empty::<(&str, ::std::string::String)>(),
+                    )
                 })?;
                 let event_any = match &event_page.payload {
                     ::std::option::Option::Some(
@@ -823,8 +872,10 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
                     ) => e,
                     _ => {
                         return ::std::result::Result::Err(
-                            ::angzarr_client::ClientError::InvalidArgument(
-                                "missing event payload".into(),
+                            ::angzarr_client::ClientError::invalid_argument(
+                                ::angzarr_client::error_codes::codes::MISSING_SAGA_EVENT_PAYLOAD,
+                                ::angzarr_client::error_codes::messages::MISSING_SAGA_EVENT_PAYLOAD,
+                                ::std::iter::empty::<(&str, ::std::string::String)>(),
                             ),
                         );
                     }
@@ -992,11 +1043,16 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
             quote! {
                 if event_any.type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
                     let evt = <#evt_ty as ::prost::Message>::decode(event_any.value.as_slice())
-                        .map_err(|e| ::angzarr_client::ClientError::InvalidArgument(
-                            ::std::format!("decode error for {}: {}", event_any.type_url, e)
+                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
+                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
+                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
+                            [
+                                (::angzarr_client::error_codes::keys::TYPE_URL, event_any.type_url.clone()),
+                                (::angzarr_client::error_codes::keys::CAUSE, e.to_string()),
+                            ],
                         ))?;
                     let response = self.#method_ident(evt, &state)
-                        .map_err(|e| ::angzarr_client::ClientError::InvalidArgument(e.reason))?;
+                        .map_err(::angzarr_client::ClientError::Rejected)?;
                     return ::std::result::Result::Ok(
                         ::angzarr_client::router::HandlerResponse::ProcessManager(response),
                     );
@@ -1012,8 +1068,13 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
             quote! {
                 if *evt_type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
                     let evt_val = <#evt_ty as ::prost::Message>::decode(evt_any.value.as_slice())
-                        .map_err(|e| ::angzarr_client::ClientError::InvalidArgument(
-                            ::std::format!("decode error for {}: {}", evt_type_url, e)
+                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
+                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
+                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
+                            [
+                                (::angzarr_client::error_codes::keys::TYPE_URL, evt_type_url.clone()),
+                                (::angzarr_client::error_codes::keys::CAUSE, e.to_string()),
+                            ],
                         ))?;
                     <#self_ty_for_applies>::#method_ident(&mut state, evt_val);
                     continue;
@@ -1068,8 +1129,13 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
                     ::angzarr_client::router::HandlerRequest::ProcessManager(r) => r,
                     _ => {
                         return ::std::result::Result::Err(
-                            ::angzarr_client::ClientError::InvalidArgument(
-                                "process_manager dispatch requires HandlerRequest::ProcessManager".into(),
+                            ::angzarr_client::ClientError::invalid_argument(
+                                ::angzarr_client::error_codes::codes::HANDLER_WRONG_REQUEST_KIND,
+                                ::angzarr_client::error_codes::messages::HANDLER_WRONG_REQUEST_KIND,
+                                [(
+                                    ::angzarr_client::error_codes::keys::EXPECTED_KIND,
+                                    "ProcessManager",
+                                )],
                             ),
                         );
                     }
@@ -1091,10 +1157,18 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
 
                 // Extract triggering event from trigger EventBook's last page.
                 let trigger = pm_req.trigger.as_ref().ok_or_else(|| {
-                    ::angzarr_client::ClientError::InvalidArgument("missing PM trigger".into())
+                    ::angzarr_client::ClientError::invalid_argument(
+                        ::angzarr_client::error_codes::codes::MISSING_PM_TRIGGER,
+                        ::angzarr_client::error_codes::messages::MISSING_PM_TRIGGER,
+                        ::std::iter::empty::<(&str, ::std::string::String)>(),
+                    )
                 })?;
                 let event_page = trigger.pages.last().ok_or_else(|| {
-                    ::angzarr_client::ClientError::InvalidArgument("empty PM trigger".into())
+                    ::angzarr_client::ClientError::invalid_argument(
+                        ::angzarr_client::error_codes::codes::EMPTY_PM_TRIGGER,
+                        ::angzarr_client::error_codes::messages::EMPTY_PM_TRIGGER,
+                        ::std::iter::empty::<(&str, ::std::string::String)>(),
+                    )
                 })?;
                 let event_any = match &event_page.payload {
                     ::std::option::Option::Some(
@@ -1102,8 +1176,10 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
                     ) => e,
                     _ => {
                         return ::std::result::Result::Err(
-                            ::angzarr_client::ClientError::InvalidArgument(
-                                "missing event payload on PM trigger".into(),
+                            ::angzarr_client::ClientError::invalid_argument(
+                                ::angzarr_client::error_codes::codes::MISSING_PM_EVENT_PAYLOAD,
+                                ::angzarr_client::error_codes::messages::MISSING_PM_EVENT_PAYLOAD,
+                                ::std::iter::empty::<(&str, ::std::string::String)>(),
                             ),
                         );
                     }
@@ -1212,11 +1288,16 @@ fn expand_projector(args: ProjectorArgs, mut input: ItemImpl) -> TokenStream2 {
             quote! {
                 if event_any.type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
                     let evt = <#evt_ty as ::prost::Message>::decode(event_any.value.as_slice())
-                        .map_err(|e| ::angzarr_client::ClientError::InvalidArgument(
-                            ::std::format!("decode error for {}: {}", event_any.type_url, e)
+                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
+                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
+                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
+                            [
+                                (::angzarr_client::error_codes::keys::TYPE_URL, event_any.type_url.clone()),
+                                (::angzarr_client::error_codes::keys::CAUSE, e.to_string()),
+                            ],
                         ))?;
                     self.#method_ident(evt)
-                        .map_err(|e| ::angzarr_client::ClientError::InvalidArgument(e.reason))?;
+                        .map_err(::angzarr_client::ClientError::Rejected)?;
                     continue;
                 }
             }
@@ -1252,8 +1333,13 @@ fn expand_projector(args: ProjectorArgs, mut input: ItemImpl) -> TokenStream2 {
                     ::angzarr_client::router::HandlerRequest::Projector(b) => b,
                     _ => {
                         return ::std::result::Result::Err(
-                            ::angzarr_client::ClientError::InvalidArgument(
-                                "projector dispatch requires HandlerRequest::Projector".into(),
+                            ::angzarr_client::ClientError::invalid_argument(
+                                ::angzarr_client::error_codes::codes::HANDLER_WRONG_REQUEST_KIND,
+                                ::angzarr_client::error_codes::messages::HANDLER_WRONG_REQUEST_KIND,
+                                [(
+                                    ::angzarr_client::error_codes::keys::EXPECTED_KIND,
+                                    "Projector",
+                                )],
                             ),
                         );
                     }
@@ -1500,8 +1586,13 @@ fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
             quote! {
                 if event_any.type_url == ::angzarr_client::full_type_url::<#from>() {
                     let old = <#from as ::prost::Message>::decode(event_any.value.as_slice())
-                        .map_err(|e| ::angzarr_client::ClientError::InvalidArgument(
-                            format!("upcaster decode {}: {}", stringify!(#from), e)
+                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
+                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
+                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
+                            [
+                                (::angzarr_client::error_codes::keys::TYPE_URL, event_any.type_url.clone()),
+                                (::angzarr_client::error_codes::keys::CAUSE, e.to_string()),
+                            ],
                         ))?;
                     let new: #to = <#self_ty>::#method_ident(old);
                     let new_any = ::prost_types::Any {
@@ -1546,8 +1637,13 @@ fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
                 let req = match request {
                     ::angzarr_client::HandlerRequest::Upcaster(r) => r,
                     _ => {
-                        return Err(::angzarr_client::ClientError::InvalidArgument(
-                            "upcaster handler received non-Upcaster request".into(),
+                        return Err(::angzarr_client::ClientError::invalid_argument(
+                            ::angzarr_client::error_codes::codes::HANDLER_WRONG_REQUEST_KIND,
+                            ::angzarr_client::error_codes::messages::HANDLER_WRONG_REQUEST_KIND,
+                            [(
+                                ::angzarr_client::error_codes::keys::EXPECTED_KIND,
+                                "Upcaster",
+                            )],
                         ));
                     }
                 };

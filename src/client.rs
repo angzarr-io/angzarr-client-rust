@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use crate::error::{ClientError, Result};
+use crate::error_codes::{codes, keys, messages};
 use crate::proto::{
     command_handler_coordinator_service_client::CommandHandlerCoordinatorServiceClient as TonicCommandHandlerClient,
     event_query_service_client::EventQueryServiceClient as TonicQueryClient,
@@ -62,7 +63,13 @@ async fn create_channel(endpoint: &str, retry: &RetryPolicy) -> Result<Channel> 
             // We use a dummy URI and override the connector to use UnixStream.
             let path = path.clone();
             Endpoint::try_from("http://[::]:50051")
-                .map_err(|e| ClientError::Connection(e.to_string()))?
+                .map_err(|e| {
+                    ClientError::connection(
+                        codes::ENDPOINT_PARSE_FAILED,
+                        messages::ENDPOINT_PARSE_FAILED,
+                        [(keys::CAUSE, e.to_string())],
+                    )
+                })?
                 .connect_with_connector(tower::service_fn(move |_: Uri| {
                     let path = path.clone();
                     async move {
@@ -78,7 +85,14 @@ async fn create_channel(endpoint: &str, retry: &RetryPolicy) -> Result<Channel> 
                 Ok(ep) => ep.connect().await,
                 Err(e) => {
                     // Invalid URI is not retryable
-                    return Err(ClientError::Connection(e.to_string()));
+                    return Err(ClientError::connection(
+                        codes::ENDPOINT_INVALID_URI,
+                        messages::ENDPOINT_INVALID_URI,
+                        [
+                            (keys::ENDPOINT, endpoint.to_string()),
+                            (keys::CAUSE, e.to_string()),
+                        ],
+                    ));
                 }
             }
         };
@@ -86,13 +100,24 @@ async fn create_channel(endpoint: &str, retry: &RetryPolicy) -> Result<Channel> 
         match result {
             Ok(channel) => return Ok(channel),
             Err(e) => {
-                last_error = Some(ClientError::Connection(format!("Connection failed: {}", e)));
+                last_error = Some(ClientError::connection(
+                    codes::CONNECTION_FAILED,
+                    messages::CONNECTION_FAILED,
+                    [
+                        (keys::ENDPOINT, endpoint.to_string()),
+                        (keys::CAUSE, e.to_string()),
+                    ],
+                ));
             }
         }
     }
 
     Err(last_error.unwrap_or_else(|| {
-        ClientError::Connection("Connection failed after max retries".to_string())
+        ClientError::connection(
+            codes::CONNECTION_FAILED_MAX_RETRIES,
+            messages::CONNECTION_FAILED_MAX_RETRIES,
+            [(keys::ENDPOINT, endpoint.to_string())],
+        )
     }))
 }
 

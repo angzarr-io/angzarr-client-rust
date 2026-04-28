@@ -102,8 +102,10 @@ impl UpcasterRouter {
                 };
                 let response = handler.dispatch(HandlerRequest::Upcaster(single))?;
                 let HandlerResponse::Upcaster(r) = response else {
-                    return Err(ClientError::InvalidArgument(
-                        "upcaster handler returned non-Upcaster response".into(),
+                    return Err(ClientError::invalid_argument(
+                        crate::error_codes::codes::UPCASTER_WRONG_RESPONSE_KIND,
+                        crate::error_codes::messages::UPCASTER_WRONG_RESPONSE_KIND,
+                        [(crate::error_codes::keys::EXPECTED_KIND, "Upcaster")],
                     ));
                 };
                 if let Some(transformed) = r.events.into_iter().next() {

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use cucumber::{given, then, when, World};
 
+use angzarr_client::error_codes::{codes, keys};
 use angzarr_client::{default_retry_policy, CommandRejectedError, ExponentialBackoffRetry};
 
 #[derive(Default, World)]
@@ -146,7 +147,14 @@ async fn then_on_retry_count(world: &mut RetryWorld, n: u32) {
     regex = r#"^I construct a CommandRejectedError via precondition_failed with reason "([^"]*)"$"#
 )]
 async fn when_precondition_failed(world: &mut RetryWorld, reason: String) {
-    world.rejected = Some(CommandRejectedError::precondition_failed(reason));
+    // Audit #59: static message + structured detail. The cucumber-supplied
+    // `reason` rides as a detail value rather than being interpolated into
+    // the message string.
+    world.rejected = Some(CommandRejectedError::precondition_failed(
+        codes::STATUS_MISMATCH,
+        "precondition failed",
+        [(keys::CONTEXT, reason)],
+    ));
 }
 
 #[then("the error's is_precondition_failed predicate is true")]

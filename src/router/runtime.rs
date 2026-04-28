@@ -49,6 +49,19 @@ impl CommandHandlerRouter {
             return self.dispatch_rejection(cmd);
         }
 
+        // Audit finding #46: the routing key is `(domain, type_url)`, not
+        // `type_url` alone. Extract the incoming cover domain and skip
+        // factories whose declared `domain` differs — matches Python's
+        // `dispatch_command:238-243` and the Upcaster/Projector dispatchers
+        // that already filter this way.
+        let cover_domain = cmd
+            .command
+            .as_ref()
+            .and_then(|cb| cb.cover.as_ref())
+            .map(|c| c.domain.as_str())
+            .unwrap_or("")
+            .to_string();
+
         // Threaded sequence — starts at the prior-events' next_sequence and
         // advances by each handler's emitted page count.
         let initial_next_seq = cmd.events.as_ref().map(|eb| eb.next_sequence).unwrap_or(0);
@@ -64,10 +77,15 @@ impl CommandHandlerRouter {
             // One factory call per factory: the instance serves both the
             // config peek and (if matched) the dispatch call.
             let handler: Box<dyn Handler> = (factory.produce)();
-            let handles = match handler.config() {
-                HandlerConfig::CommandHandler { handled, .. } => handled,
+            let (declared_domain, handles) = match handler.config() {
+                HandlerConfig::CommandHandler {
+                    domain, handled, ..
+                } => (domain, handled),
                 _ => continue,
             };
+            if declared_domain != cover_domain {
+                continue;
+            }
             if !handles.iter().any(|u| u == &type_url) {
                 continue;
             }
@@ -82,8 +100,10 @@ impl CommandHandlerRouter {
 
             let response = handler.dispatch(HandlerRequest::CommandHandler(scoped_cmd))?;
             let HandlerResponse::CommandHandler(br) = response else {
-                return Err(ClientError::InvalidArgument(
-                    "handler returned non-CommandHandler response".into(),
+                return Err(ClientError::invalid_argument(
+                    crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
+                    crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
+                    [(crate::error_codes::keys::EXPECTED_KIND, "CommandHandler")],
                 ));
             };
             if let Some(business_response::Result::Events(events)) = br.result {
@@ -107,10 +127,14 @@ impl CommandHandlerRouter {
                 .and_then(|cb| cb.cover.as_ref())
                 .map(|c| c.domain.as_str())
                 .unwrap_or("<missing>");
-            return Err(ClientError::InvalidArgument(format!(
-                "no handler registered for domain={:?} type_url={:?}",
-                domain, type_url
-            )));
+            return Err(ClientError::invalid_argument(
+                crate::error_codes::codes::NO_HANDLER_REGISTERED,
+                crate::error_codes::messages::NO_HANDLER_REGISTERED,
+                [
+                    (crate::error_codes::keys::DOMAIN, domain.to_string()),
+                    (crate::error_codes::keys::TYPE_URL, type_url.clone()),
+                ],
+            ));
         }
 
         merged.next_sequence = running_seq;
@@ -152,8 +176,10 @@ impl CommandHandlerRouter {
 
             let response = handler.dispatch(HandlerRequest::CommandHandler(scoped_cmd))?;
             let HandlerResponse::CommandHandler(br) = response else {
-                return Err(ClientError::InvalidArgument(
-                    "handler returned non-CommandHandler response".into(),
+                return Err(ClientError::invalid_argument(
+                    crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
+                    crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
+                    [(crate::error_codes::keys::EXPECTED_KIND, "CommandHandler")],
                 ));
             };
             if let Some(business_response::Result::Events(events)) = br.result {
@@ -173,28 +199,46 @@ impl CommandHandlerRouter {
 /// rejection key `(target_domain, target_command_suffix)` to match against
 /// `#[rejected(domain, command)]` entries.
 fn extract_rejection_key(cmd: &ContextualCommand) -> Result<(String, String), ClientError> {
-    let book = cmd
-        .command
-        .as_ref()
-        .ok_or_else(|| ClientError::InvalidArgument("missing command book".into()))?;
-    let page = book
-        .pages
-        .first()
-        .ok_or_else(|| ClientError::InvalidArgument("missing command page".into()))?;
+    use crate::error_codes::{codes, keys, messages};
+
+    let book = cmd.command.as_ref().ok_or_else(|| {
+        ClientError::invalid_argument(
+            codes::MISSING_COMMAND_BOOK,
+            messages::MISSING_COMMAND_BOOK,
+            std::iter::empty::<(String, String)>(),
+        )
+    })?;
+    let page = book.pages.first().ok_or_else(|| {
+        ClientError::invalid_argument(
+            codes::MISSING_COMMAND_PAGE,
+            messages::MISSING_COMMAND_PAGE,
+            std::iter::empty::<(String, String)>(),
+        )
+    })?;
     let payload = match &page.payload {
         Some(crate::proto::command_page::Payload::Command(c)) => c,
         _ => {
-            return Err(ClientError::InvalidArgument(
-                "missing command payload".into(),
+            return Err(ClientError::invalid_argument(
+                codes::MISSING_COMMAND_PAYLOAD,
+                messages::MISSING_COMMAND_PAYLOAD,
+                std::iter::empty::<(String, String)>(),
             ));
         }
     };
     let notif = Notification::decode(payload.value.as_slice()).map_err(|e| {
-        ClientError::InvalidArgument(format!("failed to decode Notification: {}", e))
+        ClientError::invalid_argument(
+            codes::NOTIFICATION_DECODE_FAILED,
+            messages::NOTIFICATION_DECODE_FAILED,
+            [(keys::CAUSE, e.to_string())],
+        )
     })?;
     let rejection = match notif.payload.as_ref() {
         Some(p) => RejectionNotification::decode(p.value.as_slice()).map_err(|e| {
-            ClientError::InvalidArgument(format!("failed to decode RejectionNotification: {}", e))
+            ClientError::invalid_argument(
+                codes::REJECTION_NOTIFICATION_DECODE_FAILED,
+                messages::REJECTION_NOTIFICATION_DECODE_FAILED,
+                [(keys::CAUSE, e.to_string())],
+            )
         })?,
         None => RejectionNotification::default(),
     };
@@ -228,19 +272,29 @@ fn extract_rejection_key(cmd: &ContextualCommand) -> Result<(String, String), Cl
 /// Pull the command's `type_url` from a `ContextualCommand`, or error on
 /// any missing nesting layer.
 fn extract_command_type_url(cmd: &ContextualCommand) -> Result<String, ClientError> {
-    let book = cmd
-        .command
-        .as_ref()
-        .ok_or_else(|| ClientError::InvalidArgument("missing command book".into()))?;
-    let page = book
-        .pages
-        .first()
-        .ok_or_else(|| ClientError::InvalidArgument("missing command page".into()))?;
+    use crate::error_codes::{codes, messages};
+
+    let book = cmd.command.as_ref().ok_or_else(|| {
+        ClientError::invalid_argument(
+            codes::MISSING_COMMAND_BOOK,
+            messages::MISSING_COMMAND_BOOK,
+            std::iter::empty::<(String, String)>(),
+        )
+    })?;
+    let page = book.pages.first().ok_or_else(|| {
+        ClientError::invalid_argument(
+            codes::MISSING_COMMAND_PAGE,
+            messages::MISSING_COMMAND_PAGE,
+            std::iter::empty::<(String, String)>(),
+        )
+    })?;
     let payload = match &page.payload {
         Some(crate::proto::command_page::Payload::Command(c)) => c,
         _ => {
-            return Err(ClientError::InvalidArgument(
-                "missing command payload".into(),
+            return Err(ClientError::invalid_argument(
+                codes::MISSING_COMMAND_PAYLOAD,
+                messages::MISSING_COMMAND_PAYLOAD,
+                std::iter::empty::<(String, String)>(),
             ));
         }
     };
@@ -263,23 +317,43 @@ impl SagaRouter {
     pub fn dispatch(&self, request: SagaHandleRequest) -> Result<SagaResponse, ClientError> {
         let type_url = extract_saga_event_type_url(&request)?;
 
+        // Audit finding #46: filter by the saga's declared `source` domain
+        // before type_url matching. Mirrors Python's
+        // `dispatch_saga:387-389` (`if cls.__angzarr_meta__.get("source")
+        // != source_domain: continue`). The source-book cover supplies
+        // the runtime domain.
+        let source_domain = request
+            .source
+            .as_ref()
+            .and_then(|eb| eb.cover.as_ref())
+            .map(|c| c.domain.as_str())
+            .unwrap_or("")
+            .to_string();
+
         let mut merged = SagaResponse::default();
         let mut matched = 0u32;
 
         for factory in &self.factories {
             let handler: Box<dyn Handler> = (factory.produce)();
-            let handles = match handler.config() {
-                HandlerConfig::Saga { handled, .. } => handled,
+            let (declared_source, handles) = match handler.config() {
+                HandlerConfig::Saga {
+                    source, handled, ..
+                } => (source, handled),
                 _ => continue,
             };
+            if declared_source != source_domain {
+                continue;
+            }
             if !handles.iter().any(|u| u == &type_url) {
                 continue;
             }
 
             let response = handler.dispatch(HandlerRequest::Saga(request.clone()))?;
             let HandlerResponse::Saga(sr) = response else {
-                return Err(ClientError::InvalidArgument(
-                    "handler returned non-Saga response".into(),
+                return Err(ClientError::invalid_argument(
+                    crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
+                    crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
+                    [(crate::error_codes::keys::EXPECTED_KIND, "Saga")],
                 ));
             };
             merged.commands.extend(sr.commands);
@@ -287,11 +361,15 @@ impl SagaRouter {
             matched += 1;
         }
 
+        // P2.5 / audit finding #36: "no handler matched" is a normal
+        // runtime condition (no saga subscribed to this event type), not
+        // a failure. Log at info-level for observability and return an
+        // empty SagaResponse — matches Python's silent return.
         if matched == 0 {
-            return Err(ClientError::InvalidArgument(format!(
-                "no saga handler registered for event type: {}",
-                type_url
-            )));
+            tracing::info!(
+                type_url = %type_url,
+                "no saga handler registered for event type — returning empty SagaResponse"
+            );
         }
 
         Ok(merged)
@@ -299,20 +377,44 @@ impl SagaRouter {
 }
 
 fn extract_saga_event_type_url(request: &SagaHandleRequest) -> Result<String, ClientError> {
-    let book = request
-        .source
-        .as_ref()
-        .ok_or_else(|| ClientError::InvalidArgument("missing saga source".into()))?;
-    let page = book
-        .pages
-        .last()
-        .ok_or_else(|| ClientError::InvalidArgument("empty saga source".into()))?;
+    use crate::convert::TYPE_URL_PREFIX;
+    use crate::error_codes::{codes, keys, messages};
+
+    let book = request.source.as_ref().ok_or_else(|| {
+        ClientError::invalid_argument(
+            codes::MISSING_SAGA_SOURCE,
+            messages::MISSING_SAGA_SOURCE,
+            std::iter::empty::<(String, String)>(),
+        )
+    })?;
+    let page = book.pages.last().ok_or_else(|| {
+        ClientError::invalid_argument(
+            codes::EMPTY_SAGA_SOURCE,
+            messages::EMPTY_SAGA_SOURCE,
+            std::iter::empty::<(String, String)>(),
+        )
+    })?;
     let payload = match &page.payload {
         Some(crate::proto::event_page::Payload::Event(e)) => e,
         _ => {
-            return Err(ClientError::InvalidArgument("missing event payload".into()));
+            return Err(ClientError::invalid_argument(
+                codes::MISSING_SAGA_EVENT_PAYLOAD,
+                messages::MISSING_SAGA_EVENT_PAYLOAD,
+                std::iter::empty::<(String, String)>(),
+            ));
         }
     };
+    // P2.5 / audit finding #35: explicit-over-tolerant. Reject empty or
+    // non-googleapis type URLs the same way Python does — surfaces
+    // wire-protocol violations as INVALID_ARGUMENT rather than letting
+    // them fall through to the generic "no handler registered" path.
+    if payload.type_url.is_empty() || !payload.type_url.starts_with(TYPE_URL_PREFIX) {
+        return Err(ClientError::invalid_argument(
+            codes::SAGA_INVALID_TYPE_URL,
+            messages::SAGA_INVALID_TYPE_URL,
+            [(keys::TYPE_URL, payload.type_url.clone())],
+        ));
+    }
     Ok(payload.type_url.clone())
 }
 
@@ -333,23 +435,43 @@ impl ProcessManagerRouter {
     ) -> Result<ProcessManagerHandleResponse, ClientError> {
         let type_url = extract_pm_event_type_url(&request)?;
 
+        // Audit finding #46: filter by the PM's declared `sources` list
+        // before type_url matching. Mirrors Python's
+        // `dispatch_process_manager:444-446` (`if trigger_domain not in
+        // sources: continue`). The trigger-book cover supplies the
+        // runtime domain.
+        let trigger_domain = request
+            .trigger
+            .as_ref()
+            .and_then(|eb| eb.cover.as_ref())
+            .map(|c| c.domain.as_str())
+            .unwrap_or("")
+            .to_string();
+
         let mut merged = ProcessManagerHandleResponse::default();
         let mut matched = 0u32;
 
         for factory in &self.factories {
             let handler: Box<dyn Handler> = (factory.produce)();
-            let handles = match handler.config() {
-                HandlerConfig::ProcessManager { handled, .. } => handled,
+            let (declared_sources, handles) = match handler.config() {
+                HandlerConfig::ProcessManager {
+                    sources, handled, ..
+                } => (sources, handled),
                 _ => continue,
             };
+            if !declared_sources.iter().any(|s| s == &trigger_domain) {
+                continue;
+            }
             if !handles.iter().any(|u| u == &type_url) {
                 continue;
             }
 
             let response = handler.dispatch(HandlerRequest::ProcessManager(request.clone()))?;
             let HandlerResponse::ProcessManager(pr) = response else {
-                return Err(ClientError::InvalidArgument(
-                    "handler returned non-ProcessManager response".into(),
+                return Err(ClientError::invalid_argument(
+                    crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
+                    crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
+                    [(crate::error_codes::keys::EXPECTED_KIND, "ProcessManager")],
                 ));
             };
             merged.commands.extend(pr.commands);
@@ -363,11 +485,15 @@ impl ProcessManagerRouter {
             matched += 1;
         }
 
+        // Audit findings #36/#37: "no handler matched" is normal — no PM
+        // subscribed to this event type. Log at info-level and return the
+        // empty merged response instead of erroring. Matches Python's
+        // silent return in `dispatch_process_manager`.
         if matched == 0 {
-            return Err(ClientError::InvalidArgument(format!(
-                "no process-manager handler registered for event type: {}",
-                type_url
-            )));
+            tracing::info!(
+                type_url = %type_url,
+                "no process-manager handler registered for event type — returning empty response"
+            );
         }
 
         Ok(merged)
@@ -375,22 +501,44 @@ impl ProcessManagerRouter {
 }
 
 fn extract_pm_event_type_url(request: &ProcessManagerHandleRequest) -> Result<String, ClientError> {
-    let book = request
-        .trigger
-        .as_ref()
-        .ok_or_else(|| ClientError::InvalidArgument("missing PM trigger".into()))?;
-    let page = book
-        .pages
-        .last()
-        .ok_or_else(|| ClientError::InvalidArgument("empty PM trigger".into()))?;
+    use crate::convert::TYPE_URL_PREFIX;
+    use crate::error_codes::{codes, keys, messages};
+
+    let book = request.trigger.as_ref().ok_or_else(|| {
+        ClientError::invalid_argument(
+            codes::MISSING_PM_TRIGGER,
+            messages::MISSING_PM_TRIGGER,
+            std::iter::empty::<(String, String)>(),
+        )
+    })?;
+    let page = book.pages.last().ok_or_else(|| {
+        ClientError::invalid_argument(
+            codes::EMPTY_PM_TRIGGER,
+            messages::EMPTY_PM_TRIGGER,
+            std::iter::empty::<(String, String)>(),
+        )
+    })?;
     let payload = match &page.payload {
         Some(crate::proto::event_page::Payload::Event(e)) => e,
         _ => {
-            return Err(ClientError::InvalidArgument(
-                "missing event payload on PM trigger".into(),
+            return Err(ClientError::invalid_argument(
+                codes::MISSING_PM_EVENT_PAYLOAD,
+                messages::MISSING_PM_EVENT_PAYLOAD,
+                std::iter::empty::<(String, String)>(),
             ));
         }
     };
+    // Audit finding #37: explicit-over-tolerant 4th check for parity with
+    // saga (`extract_saga_event_type_url`). Empty or non-googleapis type
+    // URLs raise INVALID_ARGUMENT instead of falling through to the
+    // generic "no handler registered" path.
+    if payload.type_url.is_empty() || !payload.type_url.starts_with(TYPE_URL_PREFIX) {
+        return Err(ClientError::invalid_argument(
+            codes::PM_INVALID_TYPE_URL,
+            messages::PM_INVALID_TYPE_URL,
+            [(keys::TYPE_URL, payload.type_url.clone())],
+        ));
+    }
     Ok(payload.type_url.clone())
 }
 
@@ -433,8 +581,10 @@ impl ProjectorRouter {
 
             let response = handler.dispatch(HandlerRequest::Projector(book.clone()))?;
             let HandlerResponse::Projector(pr) = response else {
-                return Err(ClientError::InvalidArgument(
-                    "handler returned non-Projector response".into(),
+                return Err(ClientError::invalid_argument(
+                    crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
+                    crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
+                    [(crate::error_codes::keys::EXPECTED_KIND, "Projector")],
                 ));
             };
             last_projection = Some(pr);
@@ -550,5 +700,175 @@ impl ProjectorRouter {
     /// Projectors are read-side; no outbound destinations.
     pub fn output_domains(&self) -> Vec<String> {
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::{event_page, EventBook, EventPage, PageHeader};
+    use prost_types::Any as ProtoAny;
+
+    fn saga_request_with_event(type_url: &str) -> SagaHandleRequest {
+        SagaHandleRequest {
+            source: Some(EventBook {
+                pages: vec![EventPage {
+                    header: Some(PageHeader::default()),
+                    payload: Some(event_page::Payload::Event(ProtoAny {
+                        type_url: type_url.to_string(),
+                        value: vec![],
+                    })),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Audit finding #35: P2.5 explicit-over-tolerant — Rust now rejects
+    /// invalid type URLs in saga triggers, matching Python's four-case
+    /// validation in `dispatch_saga`.
+    #[test]
+    fn extract_saga_rejects_empty_type_url() {
+        let req = saga_request_with_event("");
+        let err = extract_saga_event_type_url(&req).expect_err("empty type_url must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid type_url"),
+            "expected message to mention 'invalid type_url', got: {msg}"
+        );
+        assert!(matches!(err, ClientError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn extract_saga_rejects_non_googleapis_prefix() {
+        let req = saga_request_with_event("type.example.com/foo.Bar");
+        let err = extract_saga_event_type_url(&req)
+            .expect_err("non-googleapis prefix must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid type_url"),
+            "expected message to mention 'invalid type_url', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn extract_saga_accepts_valid_googleapis_url() {
+        let req = saga_request_with_event("type.googleapis.com/examples.OrderCreated");
+        let url =
+            extract_saga_event_type_url(&req).expect("valid type_url must succeed");
+        assert_eq!(url, "type.googleapis.com/examples.OrderCreated");
+    }
+
+    #[test]
+    fn extract_saga_missing_source_message() {
+        let req = SagaHandleRequest::default();
+        let err = extract_saga_event_type_url(&req).expect_err("must error");
+        assert!(err.to_string().contains("missing saga source"));
+    }
+
+    #[test]
+    fn extract_saga_empty_source_message() {
+        let req = SagaHandleRequest {
+            source: Some(EventBook::default()),
+            ..Default::default()
+        };
+        let err = extract_saga_event_type_url(&req).expect_err("must error");
+        assert!(err.to_string().contains("empty saga source"));
+    }
+
+    #[test]
+    fn extract_saga_missing_event_payload_message() {
+        let req = SagaHandleRequest {
+            source: Some(EventBook {
+                pages: vec![EventPage {
+                    header: Some(PageHeader::default()),
+                    payload: None,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let err = extract_saga_event_type_url(&req).expect_err("must error");
+        assert!(err.to_string().contains("missing event payload"));
+    }
+
+    // ----- PM trigger malformed-input parity (audit finding #37) -----
+
+    fn pm_request_with_event(type_url: &str) -> ProcessManagerHandleRequest {
+        ProcessManagerHandleRequest {
+            trigger: Some(EventBook {
+                pages: vec![EventPage {
+                    header: Some(PageHeader::default()),
+                    payload: Some(event_page::Payload::Event(ProtoAny {
+                        type_url: type_url.to_string(),
+                        value: vec![],
+                    })),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn extract_pm_rejects_empty_type_url() {
+        let req = pm_request_with_event("");
+        let err = extract_pm_event_type_url(&req).expect_err("empty type_url must error");
+        assert!(err.to_string().contains("invalid type_url"));
+    }
+
+    #[test]
+    fn extract_pm_rejects_non_googleapis_prefix() {
+        let req = pm_request_with_event("type.example.com/foo.Bar");
+        let err = extract_pm_event_type_url(&req)
+            .expect_err("non-googleapis prefix must error");
+        assert!(err.to_string().contains("invalid type_url"));
+    }
+
+    #[test]
+    fn extract_pm_accepts_valid_googleapis_url() {
+        let req = pm_request_with_event("type.googleapis.com/examples.OrderCreated");
+        let url = extract_pm_event_type_url(&req).expect("valid type_url must succeed");
+        assert_eq!(url, "type.googleapis.com/examples.OrderCreated");
+    }
+
+    #[test]
+    fn extract_pm_missing_trigger_message() {
+        let req = ProcessManagerHandleRequest::default();
+        let err = extract_pm_event_type_url(&req).expect_err("must error");
+        assert!(err.to_string().contains("missing PM trigger"));
+    }
+
+    #[test]
+    fn extract_pm_empty_trigger_message() {
+        let req = ProcessManagerHandleRequest {
+            trigger: Some(EventBook::default()),
+            ..Default::default()
+        };
+        let err = extract_pm_event_type_url(&req).expect_err("must error");
+        assert!(err.to_string().contains("empty PM trigger"));
+    }
+
+    #[test]
+    fn extract_pm_missing_event_payload_message() {
+        let req = ProcessManagerHandleRequest {
+            trigger: Some(EventBook {
+                pages: vec![EventPage {
+                    header: Some(PageHeader::default()),
+                    payload: None,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let err = extract_pm_event_type_url(&req).expect_err("must error");
+        assert!(err
+            .to_string()
+            .contains("missing event payload on PM trigger"));
     }
 }

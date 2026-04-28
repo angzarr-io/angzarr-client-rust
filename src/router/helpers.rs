@@ -1,6 +1,5 @@
 //! Helper functions for building events and commands.
 
-use prost::Message;
 use prost_types::Any;
 
 use crate::proto::{
@@ -53,22 +52,13 @@ pub fn new_event_book_multi(
     event_book_from(command_book, pages)
 }
 
-/// Pack a protobuf message into an Any with the given type URL.
-pub fn pack_event<M: Message>(msg: &M, type_name: &str) -> Any {
-    Any {
-        type_url: crate::type_url(type_name),
-        value: msg.encode_to_vec(),
-    }
-}
-
-/// Pack a list of messages sharing a single type name.
-///
-/// Useful for multi-event command handlers that emit multiple events of
-/// the same type (e.g., a batch of `ItemAdded`). Mirrors Python's
-/// plural `pack_events(events, type_url_prefix)`.
-pub fn pack_events<M: Message>(msgs: &[M], type_name: &str) -> Vec<Any> {
-    msgs.iter().map(|m| pack_event(m, type_name)).collect()
-}
+// Audit finding #57 (Option D): the low-level `pack_event(msg, type_name)`
+// and `pack_events(msgs, type_name)` helpers in this module were deleted
+// — they had no production callers (only sibling tests in this module),
+// and the call shape is now `Any { type_url: full_type_url::<M>(), value:
+// msg.encode_to_vec() }` inline, OR via `testing::builders::pack_event(msg)`
+// in test fixtures. The naming also collided with Python's high-level
+// `pack_event(cover, event, seq) -> EventBook` (also deleted in #57).
 
 #[cfg(test)]
 mod tests {
