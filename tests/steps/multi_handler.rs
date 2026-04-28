@@ -416,6 +416,11 @@ fn dispatch_commands(world: &mut MultiHandlerWorld) {
     };
     let ctx = ContextualCommand {
         command: Some(CommandBook {
+            // Audit #46: dispatch filters by handler-declared domain.
+            cover: Some(Cover {
+                domain: "order".to_string(),
+                ..Default::default()
+            }),
             pages: vec![CommandPage {
                 payload: Some(command_page::Payload::Command(Any {
                     type_url: full_type_url::<CreateOrder>(),
@@ -445,6 +450,11 @@ async fn when_dispatch_saga(world: &mut MultiHandlerWorld) {
     };
     let req = SagaHandleRequest {
         source: Some(EventBook {
+            // Audit #46: saga dispatch filters by handler-declared source.
+            cover: Some(Cover {
+                domain: "order".to_string(),
+                ..Default::default()
+            }),
             pages: vec![EventPage {
                 payload: Some(event_page::Payload::Event(Any {
                     type_url: full_type_url::<OrderCreated>(),
@@ -471,6 +481,11 @@ async fn when_dispatch_pm(world: &mut MultiHandlerWorld) {
     };
     let req = ProcessManagerHandleRequest {
         trigger: Some(EventBook {
+            // Audit #46: PM dispatch filters by handler-declared sources.
+            cover: Some(Cover {
+                domain: "order".to_string(),
+                ..Default::default()
+            }),
             pages: vec![EventPage {
                 payload: Some(event_page::Payload::Event(Any {
                     type_url: full_type_url::<OrderCreated>(),

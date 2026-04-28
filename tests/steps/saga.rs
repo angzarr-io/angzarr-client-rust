@@ -183,6 +183,11 @@ async fn when_dispatch_order(world: &mut SagaWorld) {
     let r = build_saga(world);
     let req = SagaHandleRequest {
         source: Some(EventBook {
+            // Audit #46: saga dispatch filters by handler-declared source.
+            cover: Some(Cover {
+                domain: "order".to_string(),
+                ..Default::default()
+            }),
             pages: vec![page_of(OrderCreated {})],
             ..Default::default()
         }),
@@ -197,14 +202,20 @@ async fn when_dispatch_stock(world: &mut SagaWorld) {
     let r = build_saga(world);
     let req = SagaHandleRequest {
         source: Some(EventBook {
+            // Use the saga's declared source domain so the dispatch
+            // reaches the per-handler match step (which then fails to
+            // find an OrderCreated handler for StockReserved).
+            cover: Some(Cover {
+                domain: "order".to_string(),
+                ..Default::default()
+            }),
             pages: vec![page_of(StockReserved {})],
             ..Default::default()
         }),
         destination_sequences: world.destination_sequences.clone(),
         ..Default::default()
     };
-    // No matching handler surfaces as an InvalidArgument in the current
-    // runtime; treat that as "no commands emitted".
+    // No matching handler surfaces as an empty SagaResponse post-#36.
     world.response = Some(r.dispatch(req).unwrap_or_default());
 }
 

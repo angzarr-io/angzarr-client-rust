@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use angzarr_client::proto::{
     business_response, command_page, event_page, CommandBook, CommandPage, ContextualCommand,
-    EventBook, EventPage,
+    Cover, EventBook, EventPage,
 };
 use angzarr_client::router::{Built, Router};
 use angzarr_client::{command_handler, full_type_url, CommandResult};
@@ -203,6 +203,13 @@ fn make_ctx<T: prost::Message + prost::Name>(cmd: T, prior: EventBook) -> Contex
     };
     ContextualCommand {
         command: Some(CommandBook {
+            // Audit #46: dispatch filters factories by handler-declared
+            // domain. The handlers in this test register domain="order",
+            // so the cover must carry the matching value.
+            cover: Some(Cover {
+                domain: "order".to_string(),
+                ..Default::default()
+            }),
             pages: vec![CommandPage {
                 payload: Some(command_page::Payload::Command(any)),
                 ..Default::default()

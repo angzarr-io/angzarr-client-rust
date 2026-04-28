@@ -176,6 +176,13 @@ async fn when_dispatch_order_created(world: &mut ProcessManagerWorld) {
     let router = build_router();
     let req = ProcessManagerHandleRequest {
         trigger: Some(EventBook {
+            // Audit #46: PM dispatch filters by handler-declared sources.
+            // The Fulfillment PM declares sources=["order","inventory"];
+            // pick "order" to match the OrderCreated trigger.
+            cover: Some(Cover {
+                domain: "order".to_string(),
+                ..Default::default()
+            }),
             pages: vec![event_page(OrderCreated {})],
             ..Default::default()
         }),
