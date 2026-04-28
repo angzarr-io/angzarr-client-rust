@@ -220,19 +220,23 @@ pub trait AngzarrDeferredSequenceExt {
     /// Format: `{source.edition}:{source.domain}:{source.root_hex}:{source_seq}`
     ///
     /// Example: `angzarr:order:550e8400e29b41d4a716446655440000:7`
-    fn idempotency_key(&self) -> String;
+    ///
+    /// Returns `Err("source required")` when the deferred sequence has no
+    /// source cover — a malformed wire input is a recoverable error, not a
+    /// process abort. Audit finding #55.
+    fn idempotency_key(&self) -> Result<String, &'static str>;
 }
 
 impl AngzarrDeferredSequenceExt for AngzarrDeferredSequence {
-    fn idempotency_key(&self) -> String {
+    fn idempotency_key(&self) -> Result<String, &'static str> {
         use super::cover::CoverExt;
-        let source = self.source.as_ref().expect("source required");
-        format!(
+        let source = self.source.as_ref().ok_or("source required")?;
+        Ok(format!(
             "{}:{}:{}:{}",
             source.edition(),
             source.domain,
             source.root_id_hex().unwrap_or_default(),
             self.source_seq
-        )
+        ))
     }
 }
