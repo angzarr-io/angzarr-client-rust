@@ -12,9 +12,8 @@ use crate::proto::{
     process_manager_service_server::ProcessManagerService,
     projector_service_server::ProjectorService, saga_service_server::SagaService,
     upcaster_service_server::UpcasterService, BusinessResponse, ContextualCommand, EventBook,
-    ProcessManagerHandleRequest, ProcessManagerHandleResponse, ProcessManagerPrepareRequest,
-    ProcessManagerPrepareResponse, Projection, SagaHandleRequest, SagaResponse, UpcastRequest,
-    UpcastResponse,
+    ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, SagaHandleRequest,
+    SagaResponse, UpcastRequest, UpcastResponse,
 };
 use crate::router::runtime::{
     CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter,
@@ -122,15 +121,6 @@ impl ProcessManagerGrpc {
 
 #[tonic::async_trait]
 impl ProcessManagerService for ProcessManagerGrpc {
-    async fn prepare(
-        &self,
-        _request: Request<ProcessManagerPrepareRequest>,
-    ) -> Result<Response<ProcessManagerPrepareResponse>, Status> {
-        Err(Status::unimplemented(
-            "PM prepare not implemented in Tier 5 runtime",
-        ))
-    }
-
     async fn handle(
         &self,
         request: Request<ProcessManagerHandleRequest>,
