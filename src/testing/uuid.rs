@@ -26,6 +26,25 @@ pub fn uuid_obj_for(name: &str, namespace: Uuid) -> Uuid {
     Uuid::new_v5(&namespace, name.as_bytes())
 }
 
+/// Generate a deterministic 16-byte UUID using `DEFAULT_TEST_NAMESPACE`.
+///
+/// Ergonomic wrapper for the common test case. Mirrors Python's
+/// `uuid_for(name)` defaulted-namespace form (`testing/uuid.py:14-32`).
+/// Audit finding #50.
+pub fn uuid_for_default(name: &str) -> [u8; 16] {
+    uuid_for(name, DEFAULT_TEST_NAMESPACE)
+}
+
+/// Generate a deterministic UUID string using `DEFAULT_TEST_NAMESPACE`.
+pub fn uuid_str_for_default(name: &str) -> String {
+    uuid_str_for(name, DEFAULT_TEST_NAMESPACE)
+}
+
+/// Generate a deterministic `Uuid` using `DEFAULT_TEST_NAMESPACE`.
+pub fn uuid_obj_for_default(name: &str) -> Uuid {
+    uuid_obj_for(name, DEFAULT_TEST_NAMESPACE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,6 +78,24 @@ mod tests {
         assert_eq!(
             DEFAULT_TEST_NAMESPACE.to_string(),
             "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        );
+    }
+
+    #[test]
+    fn uuid_for_default_equals_explicit_namespace_call() {
+        // Audit finding #50: `uuid_for_default(name)` is the ergonomic
+        // wrapper matching Python's `uuid_for(name)` defaulted form.
+        assert_eq!(
+            uuid_for_default("alice"),
+            uuid_for("alice", DEFAULT_TEST_NAMESPACE)
+        );
+    }
+
+    #[test]
+    fn uuid_str_for_default_equals_explicit_namespace_call() {
+        assert_eq!(
+            uuid_str_for_default("alice"),
+            uuid_str_for("alice", DEFAULT_TEST_NAMESPACE)
         );
     }
 }
