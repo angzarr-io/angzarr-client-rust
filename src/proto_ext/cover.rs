@@ -15,10 +15,18 @@ pub trait CoverExt {
     /// Get the cover, if present.
     fn cover(&self) -> Option<&Cover>;
 
-    /// Get the domain from the cover, or [`UNKNOWN_DOMAIN`] if missing.
+    /// Get the domain from the cover, or [`UNKNOWN_DOMAIN`] if missing
+    /// or empty.
+    ///
+    /// Audit finding #54: empty-domain covers (partially-constructed
+    /// Cover during testing, malformed wire input, etc.) are treated as
+    /// missing. Mirrors Python's `helpers.py::domain` which falls back
+    /// for either `c is None` OR `not c.domain`. Postel's Law:
+    /// normalize ambiguous-shaped data.
     fn domain(&self) -> &str {
         self.cover()
             .map(|c| c.domain.as_str())
+            .filter(|d| !d.is_empty())
             .unwrap_or(UNKNOWN_DOMAIN)
     }
 
@@ -132,5 +140,38 @@ impl Cover {
                 divergences: vec![],
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::EventBook;
+
+    // Audit #54: domain() falls back to UNKNOWN_DOMAIN for both
+    // cover-missing and cover-with-empty-domain cases.
+
+    #[test]
+    fn domain_falls_back_when_cover_missing() {
+        let book = EventBook { cover: None, ..Default::default() };
+        assert_eq!(book.domain(), UNKNOWN_DOMAIN);
+    }
+
+    #[test]
+    fn domain_falls_back_when_domain_is_empty() {
+        let book = EventBook {
+            cover: Some(Cover { domain: String::new(), ..Default::default() }),
+            ..Default::default()
+        };
+        assert_eq!(book.domain(), UNKNOWN_DOMAIN);
+    }
+
+    #[test]
+    fn domain_returns_set_value() {
+        let book = EventBook {
+            cover: Some(Cover { domain: "order".to_string(), ..Default::default() }),
+            ..Default::default()
+        };
+        assert_eq!(book.domain(), "order");
     }
 }
