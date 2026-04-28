@@ -101,14 +101,14 @@ impl Router {
             let mut seen: HashSet<(String, String)> = HashSet::new();
             for f in &self.factories {
                 let handler = (f.produce)();
-                if let HandlerConfig::CommandHandler { domain, handled, .. } = handler.config() {
+                if let HandlerConfig::CommandHandler {
+                    domain, handled, ..
+                } = handler.config()
+                {
                     for type_url in handled {
                         let key = (domain.clone(), type_url.clone());
                         if !seen.insert(key) {
-                            return Err(BuildError::DuplicateCommandHandler {
-                                domain,
-                                type_url,
-                            });
+                            return Err(BuildError::DuplicateCommandHandler { domain, type_url });
                         }
                     }
                 }

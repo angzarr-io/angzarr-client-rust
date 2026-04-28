@@ -131,9 +131,7 @@ pub async fn run_server(
         crate::router::Built::ProcessManager(router) => {
             run_process_manager_server(router, default_port).await
         }
-        crate::router::Built::Projector(router) => {
-            run_projector_server(router, default_port).await
-        }
+        crate::router::Built::Projector(router) => run_projector_server(router, default_port).await,
         crate::router::Built::Upcaster(router) => run_upcaster_server(router, default_port).await,
     }
 }

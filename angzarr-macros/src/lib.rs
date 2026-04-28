@@ -87,10 +87,7 @@ fn require_non_empty_str(opt: Option<String>, field: &str) -> syn::Result<String
 /// Take a parsed Option<Vec<String>> and reject absence, emptiness, or any
 /// empty element, mirroring Python's `_require_non_empty_list`
 /// (`router/validation.py:48-50`).
-fn require_non_empty_str_list(
-    opt: Option<Vec<String>>,
-    field: &str,
-) -> syn::Result<Vec<String>> {
+fn require_non_empty_str_list(opt: Option<Vec<String>>, field: &str) -> syn::Result<Vec<String>> {
     match opt {
         None => Err(syn::Error::new(
             proc_macro2::Span::call_site(),

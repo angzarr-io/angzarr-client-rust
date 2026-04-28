@@ -47,19 +47,10 @@ async fn given_commandbook(
     });
 }
 
-#[given(
-    expr = "a single CommandPage with command type_url {string} and payload bytes {word}"
-)]
-async fn given_single_page(
-    world: &mut WireParityWorld,
-    type_url: String,
-    payload_hex: String,
-) {
+#[given(expr = "a single CommandPage with command type_url {string} and payload bytes {word}")]
+async fn given_single_page(world: &mut WireParityWorld, type_url: String, payload_hex: String) {
     let payload = parse_hex_bytes(&payload_hex);
-    let book = world
-        .book
-        .as_mut()
-        .expect("CommandBook must be set first");
+    let book = world.book.as_mut().expect("CommandBook must be set first");
     book.pages.push(CommandPage {
         header: None,
         merge_strategy: 0,
@@ -79,7 +70,8 @@ async fn given_sequences(world: &mut WireParityWorld, domain: String, seq: u32) 
 async fn when_stamp(world: &mut WireParityWorld, domain: String) {
     let dest = Destinations::from_sequences(world.sequences.clone());
     let book = world.book.as_mut().expect("CommandBook must be set");
-    dest.stamp_command(book, &domain).expect("stamp must succeed");
+    dest.stamp_command(book, &domain)
+        .expect("stamp must succeed");
 }
 
 #[then(expr = "the deterministically-encoded CommandBook hashes to SHA-256 {string}")]

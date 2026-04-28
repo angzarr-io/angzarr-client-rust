@@ -360,11 +360,8 @@ mod tests {
 
     #[test]
     fn dispatch_key_empty_when_domain_missing() {
-        let notification = make_rejection_notification(
-            "fail",
-            "",
-            "type.googleapis.com/examples.CreateShipment",
-        );
+        let notification =
+            make_rejection_notification("fail", "", "type.googleapis.com/examples.CreateShipment");
         let ctx = CompensationContext::from_notification(&notification);
         assert_eq!(ctx.dispatch_key(), "");
     }

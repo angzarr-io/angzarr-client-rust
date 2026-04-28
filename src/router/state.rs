@@ -238,7 +238,10 @@ mod tests {
         let header = Destinations::deferred_header(source.clone(), 9);
 
         let Some(SequenceType::AngzarrDeferred(d)) = header.sequence_type else {
-            panic!("expected AngzarrDeferred variant, got {:?}", header.sequence_type);
+            panic!(
+                "expected AngzarrDeferred variant, got {:?}",
+                header.sequence_type
+            );
         };
         assert_eq!(d.source_seq, 9);
         let s = d.source.expect("source must be set");
@@ -249,9 +252,9 @@ mod tests {
 
     #[test]
     fn destinations_stamp_command() {
+        use crate::proto::page_header::SequenceType;
         use crate::proto::CommandPage;
         use crate::proto::PageHeader;
-        use crate::proto::page_header::SequenceType;
 
         let mut seqs = HashMap::new();
         seqs.insert("order".to_string(), 42u32);
@@ -315,9 +318,7 @@ mod tests {
         let mut book = CommandBook {
             cover: Some(Cover {
                 domain: domain.into(),
-                root: Some(ProtoUuid {
-                    value: root_bytes,
-                }),
+                root: Some(ProtoUuid { value: root_bytes }),
                 correlation_id: correlation_id.into(),
                 edition: None,
             }),

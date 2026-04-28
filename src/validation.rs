@@ -53,7 +53,12 @@ pub fn require_exists(exists: bool, context: &str) -> Result<(), CommandRejected
 /// Require that an aggregate does not exist.
 pub fn require_not_exists(exists: bool, context: &str) -> Result<(), CommandRejectedError> {
     if exists {
-        log_rejection("<entity>", "not_exists", "FAILED_PRECONDITION", "entity already exists");
+        log_rejection(
+            "<entity>",
+            "not_exists",
+            "FAILED_PRECONDITION",
+            "entity already exists",
+        );
         return Err(CommandRejectedError::precondition_failed(
             codes::ENTITY_ALREADY_EXISTS,
             "entity already exists",
@@ -69,7 +74,12 @@ pub fn require_positive<T: PartialOrd + Default>(
     field_name: &str,
 ) -> Result<(), CommandRejectedError> {
     if value <= T::default() {
-        log_rejection(field_name, "positive", "INVALID_ARGUMENT", "value must be positive");
+        log_rejection(
+            field_name,
+            "positive",
+            "INVALID_ARGUMENT",
+            "value must be positive",
+        );
         return Err(CommandRejectedError::invalid_argument(
             codes::VALUE_NOT_POSITIVE,
             "value must be positive",
@@ -85,7 +95,12 @@ pub fn require_non_negative<T: PartialOrd + Default>(
     field_name: &str,
 ) -> Result<(), CommandRejectedError> {
     if value < T::default() {
-        log_rejection(field_name, "non_negative", "INVALID_ARGUMENT", "value must be non-negative");
+        log_rejection(
+            field_name,
+            "non_negative",
+            "INVALID_ARGUMENT",
+            "value must be non-negative",
+        );
         return Err(CommandRejectedError::invalid_argument(
             codes::VALUE_NOT_NON_NEGATIVE,
             "value must be non-negative",
@@ -98,7 +113,12 @@ pub fn require_non_negative<T: PartialOrd + Default>(
 /// Require that a string is not empty.
 pub fn require_not_empty_str(value: &str, field_name: &str) -> Result<(), CommandRejectedError> {
     if value.is_empty() {
-        log_rejection(field_name, "not_empty_str", "INVALID_ARGUMENT", "value must not be empty");
+        log_rejection(
+            field_name,
+            "not_empty_str",
+            "INVALID_ARGUMENT",
+            "value must not be empty",
+        );
         return Err(CommandRejectedError::invalid_argument(
             codes::VALUE_EMPTY,
             "value must not be empty",
@@ -111,7 +131,12 @@ pub fn require_not_empty_str(value: &str, field_name: &str) -> Result<(), Comman
 /// Require that a collection is not empty.
 pub fn require_not_empty<T>(items: &[T], field_name: &str) -> Result<(), CommandRejectedError> {
     if items.is_empty() {
-        log_rejection(field_name, "not_empty", "INVALID_ARGUMENT", "collection must not be empty");
+        log_rejection(
+            field_name,
+            "not_empty",
+            "INVALID_ARGUMENT",
+            "collection must not be empty",
+        );
         return Err(CommandRejectedError::invalid_argument(
             codes::COLLECTION_EMPTY,
             "collection must not be empty",
@@ -128,7 +153,12 @@ pub fn require_status<T: PartialEq>(
     context: &str,
 ) -> Result<(), CommandRejectedError> {
     if actual != expected {
-        log_rejection("status", "status_eq", "FAILED_PRECONDITION", "status does not match expected");
+        log_rejection(
+            "status",
+            "status_eq",
+            "FAILED_PRECONDITION",
+            "status does not match expected",
+        );
         return Err(CommandRejectedError::precondition_failed(
             codes::STATUS_MISMATCH,
             "status does not match expected",
@@ -145,7 +175,12 @@ pub fn require_status_not<T: PartialEq>(
     context: &str,
 ) -> Result<(), CommandRejectedError> {
     if actual == forbidden {
-        log_rejection("status", "status_not", "FAILED_PRECONDITION", "status is the forbidden value");
+        log_rejection(
+            "status",
+            "status_not",
+            "FAILED_PRECONDITION",
+            "status is the forbidden value",
+        );
         return Err(CommandRejectedError::precondition_failed(
             codes::STATUS_FORBIDDEN,
             "status is the forbidden value",
@@ -266,8 +301,8 @@ mod tests {
 
     #[test]
     fn test_require_status_not_fails() {
-        let err = require_status_not("deleted", "deleted", "cannot be deleted")
-            .expect_err("must error");
+        let err =
+            require_status_not("deleted", "deleted", "cannot be deleted").expect_err("must error");
         assert_eq!(err.code, codes::STATUS_FORBIDDEN);
         assert_eq!(err.message, "status is the forbidden value");
     }

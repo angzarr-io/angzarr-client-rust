@@ -679,22 +679,12 @@ struct Player;
 impl Player {
     #[handles(RegisterPlayer)]
     #[allow(unused_variables, dead_code)]
-    fn on_register(
-        &self,
-        _cmd: RegisterPlayer,
-        _state: &S,
-        _seq: u32,
-    ) -> CommandResult<EventBook> {
+    fn on_register(&self, _cmd: RegisterPlayer, _state: &S, _seq: u32) -> CommandResult<EventBook> {
         Ok(EventBook::default())
     }
     #[handles(DepositFunds)]
     #[allow(unused_variables, dead_code)]
-    fn on_deposit(
-        &self,
-        _cmd: DepositFunds,
-        _state: &S,
-        _seq: u32,
-    ) -> CommandResult<EventBook> {
+    fn on_deposit(&self, _cmd: DepositFunds, _state: &S, _seq: u32) -> CommandResult<EventBook> {
         Ok(EventBook::default())
     }
 }
@@ -708,7 +698,9 @@ async fn given_cross_alpha(_world: &mut MultiHandlerWorld, _domain: String) {}
 #[given(expr = "a command handler Beta for domain {string} handling CreateOrder")]
 async fn given_cross_beta(_world: &mut MultiHandlerWorld, _domain: String) {}
 
-#[given(expr = "a command handler Player for domain {string} handling RegisterPlayer and DepositFunds")]
+#[given(
+    expr = "a command handler Player for domain {string} handling RegisterPlayer and DepositFunds"
+)]
 async fn given_player_two_types(_world: &mut MultiHandlerWorld, _domain: String) {}
 
 #[when("the router is built with Alpha then Beta")]

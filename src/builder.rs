@@ -512,7 +512,11 @@ mod tests {
             .build();
 
         let err = result.expect_err("build should fail when sequence is unset");
-        assert!(err.is_invalid_argument(), "expected InvalidArgument, got {:?}", err);
+        assert!(
+            err.is_invalid_argument(),
+            "expected InvalidArgument, got {:?}",
+            err
+        );
         assert!(err.to_string().contains("sequence not set"));
     }
 
@@ -819,7 +823,8 @@ mod tests {
             no_commit: false,
         };
 
-        let decoded: Option<prost_types::Duration> = decode_event(&event, "google.protobuf.Duration");
+        let decoded: Option<prost_types::Duration> =
+            decode_event(&event, "google.protobuf.Duration");
         assert!(decoded.is_some());
         assert_eq!(decoded.unwrap().seconds, 42);
     }
@@ -845,7 +850,8 @@ mod tests {
             no_commit: false,
         };
 
-        let decoded: Option<prost_types::Duration> = decode_event(&event, "google.protobuf.Timestamp");
+        let decoded: Option<prost_types::Duration> =
+            decode_event(&event, "google.protobuf.Timestamp");
         assert!(decoded.is_none());
     }
 
@@ -861,7 +867,8 @@ mod tests {
             no_commit: false,
         };
 
-        let decoded: Option<prost_types::Duration> = decode_event(&event, "google.protobuf.Duration");
+        let decoded: Option<prost_types::Duration> =
+            decode_event(&event, "google.protobuf.Duration");
         assert!(decoded.is_none(), "garbage bytes must not decode");
     }
 
@@ -882,7 +889,8 @@ mod tests {
             no_commit: false,
         };
 
-        let decoded: Option<prost_types::Duration> = decode_event(&event, "google.protobuf.Duration");
+        let decoded: Option<prost_types::Duration> =
+            decode_event(&event, "google.protobuf.Duration");
         assert!(decoded.is_none());
     }
 

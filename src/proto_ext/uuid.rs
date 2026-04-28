@@ -69,10 +69,7 @@ mod tests {
         let proto = ProtoUuid {
             value: bytes.to_vec(),
         };
-        assert_eq!(
-            proto.to_uuid_text(),
-            "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
-        );
+        assert_eq!(proto.to_uuid_text(), "6ba7b810-9dad-11d1-80b4-00c04fd430c8");
     }
 
     #[test]

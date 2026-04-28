@@ -255,7 +255,10 @@ async fn when_dispatch_chain(world: &mut UpcasterWorld) {
         panic!("expected Upcaster router");
     };
 
-    let page = world.chain_incoming.clone().expect("incoming event not set");
+    let page = world
+        .chain_incoming
+        .clone()
+        .expect("incoming event not set");
     let response = router
         .dispatch(UpcastRequest {
             domain: "order".into(),

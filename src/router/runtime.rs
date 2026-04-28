@@ -739,8 +739,7 @@ mod tests {
     #[test]
     fn extract_saga_rejects_non_googleapis_prefix() {
         let req = saga_request_with_event("type.example.com/foo.Bar");
-        let err = extract_saga_event_type_url(&req)
-            .expect_err("non-googleapis prefix must error");
+        let err = extract_saga_event_type_url(&req).expect_err("non-googleapis prefix must error");
         let msg = err.to_string();
         assert!(
             msg.contains("invalid type_url"),
@@ -751,8 +750,7 @@ mod tests {
     #[test]
     fn extract_saga_accepts_valid_googleapis_url() {
         let req = saga_request_with_event("type.googleapis.com/examples.OrderCreated");
-        let url =
-            extract_saga_event_type_url(&req).expect("valid type_url must succeed");
+        let url = extract_saga_event_type_url(&req).expect("valid type_url must succeed");
         assert_eq!(url, "type.googleapis.com/examples.OrderCreated");
     }
 
@@ -819,8 +817,7 @@ mod tests {
     #[test]
     fn extract_pm_rejects_non_googleapis_prefix() {
         let req = pm_request_with_event("type.example.com/foo.Bar");
-        let err = extract_pm_event_type_url(&req)
-            .expect_err("non-googleapis prefix must error");
+        let err = extract_pm_event_type_url(&req).expect_err("non-googleapis prefix must error");
         assert!(err.to_string().contains("invalid type_url"));
     }
 

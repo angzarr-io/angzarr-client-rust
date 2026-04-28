@@ -103,11 +103,7 @@ impl ClientError {
     ///
     /// `code` is the SCREAMING_SNAKE stable identifier; `message` is the
     /// static human-readable string. Runtime context goes in `details`.
-    pub fn invalid_argument<I, K, V>(
-        code: &'static str,
-        message: &'static str,
-        details: I,
-    ) -> Self
+    pub fn invalid_argument<I, K, V>(code: &'static str, message: &'static str, details: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
         K: Into<String>,
@@ -117,11 +113,7 @@ impl ClientError {
     }
 
     /// Build an `InvalidTimestamp` variant with structured details.
-    pub fn invalid_timestamp<I, K, V>(
-        code: &'static str,
-        message: &'static str,
-        details: I,
-    ) -> Self
+    pub fn invalid_timestamp<I, K, V>(code: &'static str, message: &'static str, details: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
         K: Into<String>,
@@ -131,11 +123,7 @@ impl ClientError {
     }
 
     /// Build a `Connection` variant with structured details.
-    pub fn connection<I, K, V>(
-        code: &'static str,
-        message: &'static str,
-        details: I,
-    ) -> Self
+    pub fn connection<I, K, V>(code: &'static str, message: &'static str, details: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
         K: Into<String>,
@@ -261,11 +249,7 @@ impl CommandRejectedError {
     }
 
     /// Create an INVALID_ARGUMENT rejection for input validation failures.
-    pub fn invalid_argument<I, K, V>(
-        code: &'static str,
-        message: &'static str,
-        details: I,
-    ) -> Self
+    pub fn invalid_argument<I, K, V>(code: &'static str, message: &'static str, details: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
         K: Into<String>,
@@ -285,11 +269,7 @@ impl CommandRejectedError {
     /// Create a NOT_FOUND rejection for missing-aggregate failures.
     ///
     /// Not retryable — refetching events cannot change the outcome.
-    pub fn not_found<I, K, V>(
-        code: &'static str,
-        message: &'static str,
-        details: I,
-    ) -> Self
+    pub fn not_found<I, K, V>(code: &'static str, message: &'static str, details: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
         K: Into<String>,

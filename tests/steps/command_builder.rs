@@ -1,9 +1,9 @@
 //! Command builder step definitions.
 
+use angzarr_client::error_codes::{codes, messages};
 use angzarr_client::proto::{CommandBook, CommandResponse, MergeStrategy};
 use angzarr_client::proto_ext::CommandPageExt;
 use angzarr_client::traits::GatewayClient;
-use angzarr_client::error_codes::{codes, messages};
 use angzarr_client::{ClientError, CommandBuilderExt, Result};
 use async_trait::async_trait;
 use cucumber::{given, then, when, World};
@@ -359,7 +359,10 @@ async fn then_command_has_auto_root(world: &mut CommandBuilderWorld) {
     let cover = cmd.cover.as_ref().expect("cover missing");
     let root = cover.root.as_ref().expect("root must be auto-generated");
     assert_eq!(root.value.len(), 16, "UUID v4 must be 16 bytes");
-    assert!(world.root.is_none(), "scenario went through command_new — caller didn't pass a root");
+    assert!(
+        world.root.is_none(),
+        "scenario went through command_new — caller didn't pass a root"
+    );
 }
 
 #[then("the auto-generated root should be a valid UUID")]
@@ -510,6 +513,9 @@ async fn then_receive_builder_command_new(world: &mut CommandBuilderWorld) {
     let cmd = world.built_command.as_ref().expect("command not built");
     let cover = cmd.cover.as_ref().expect("cover missing");
     assert!(!cover.domain.is_empty());
-    let root = cover.root.as_ref().expect("auto-generated root must be present");
+    let root = cover
+        .root
+        .as_ref()
+        .expect("auto-generated root must be present");
     assert_eq!(root.value.len(), 16, "UUID v4 must be 16 bytes");
 }

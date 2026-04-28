@@ -134,19 +134,18 @@ pub mod messages {
     pub const EMPTY_SAGA_SOURCE: &str = "empty saga source";
     pub const MISSING_SAGA_EVENT_PAYLOAD: &str = "missing event payload";
     pub const SAGA_INVALID_TYPE_URL: &str = "saga trigger has invalid type_url";
-    pub const SAGA_HANDLER_UNSUPPORTED_RETURN_TYPE: &str =
-        "saga handler returned unsupported type";
+    pub const SAGA_HANDLER_UNSUPPORTED_RETURN_TYPE: &str = "saga handler returned unsupported type";
 
     // Dispatch — process manager
     pub const MISSING_PM_TRIGGER: &str = "missing PM trigger";
     pub const EMPTY_PM_TRIGGER: &str = "empty PM trigger";
     pub const MISSING_PM_EVENT_PAYLOAD: &str = "missing event payload on PM trigger";
     pub const PM_INVALID_TYPE_URL: &str = "PM trigger has invalid type_url";
-    pub const PM_HANDLER_WRONG_RETURN_TYPE: &str =
-        "PM handler must return ProcessManagerResponse";
+    pub const PM_HANDLER_WRONG_RETURN_TYPE: &str = "PM handler must return ProcessManagerResponse";
 
     // Dispatch — upcaster
-    pub const UPCASTER_WRONG_RESPONSE_KIND: &str = "upcaster handler returned non-Upcaster response";
+    pub const UPCASTER_WRONG_RESPONSE_KIND: &str =
+        "upcaster handler returned non-Upcaster response";
 
     // Build-time validation
     pub const HANDLER_FIELD_EMPTY_STRING: &str = "handler field must be a non-empty string";

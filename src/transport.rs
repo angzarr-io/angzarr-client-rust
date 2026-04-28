@@ -62,10 +62,7 @@ impl TransportMode {
                 _ => Err(ClientError::invalid_argument(
                     codes::INVALID_TRANSPORT_MODE,
                     messages::INVALID_TRANSPORT_MODE,
-                    [
-                        (keys::INPUT, s),
-                        (keys::ENV_VAR, ENV_MODE.to_string()),
-                    ],
+                    [(keys::INPUT, s), (keys::ENV_VAR, ENV_MODE.to_string())],
                 )),
             },
             Err(_) => Ok(DEFAULT_TRANSPORT_MODE),
@@ -117,10 +114,7 @@ pub fn resolve_ch_endpoint(
                     ClientError::invalid_argument(
                         codes::INVALID_PORT,
                         messages::INVALID_PORT,
-                        [
-                            (keys::INPUT, s),
-                            (keys::ENV_VAR, ENV_CH_PORT.to_string()),
-                        ],
+                        [(keys::INPUT, s), (keys::ENV_VAR, ENV_CH_PORT.to_string())],
                     )
                 })?,
                 Err(_) => port.unwrap_or(DEFAULT_CH_PORT),
@@ -262,14 +256,8 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         clear_env();
         env::set_var(ENV_CH_PORT, "1310 "); // trailing space typo
-        let err = resolve_ch_endpoint(
-            "player",
-            Some(TransportMode::Distributed),
-            None,
-            None,
-            None,
-        )
-        .unwrap_err();
+        let err = resolve_ch_endpoint("player", Some(TransportMode::Distributed), None, None, None)
+            .unwrap_err();
         assert_eq!(err.code(), codes::INVALID_PORT);
         clear_env();
     }

@@ -19,20 +19,6 @@ use async_trait::async_trait;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tracing::warn;
 
-/// Create a gRPC channel from an endpoint string.
-///
-/// Supports both TCP (host:port or http://host:port) and Unix Domain Sockets.
-/// UDS endpoints are recognized in any of these forms (audit finding #39 —
-/// aligned with Python's lenient prefix detection in `client.py::_create_channel`):
-///
-///   - `/abs/path`              — absolute path, no scheme
-///   - `./rel/path`             — relative path, no scheme
-///   - `unix:relative/path`     — gRPC URI, relative
-///   - `unix:/abs/path`         — gRPC URI, absolute (single-slash form)
-///   - `unix:///abs/path`       — gRPC URI, absolute with empty authority
-///
-/// Anything else is treated as TCP.
-///
 /// Detect a UDS endpoint and return the socket path, or `None` for TCP.
 ///
 /// Audit finding #39: lenient prefix detection matching Python's
@@ -43,6 +29,8 @@ use tracing::warn;
 ///   - `unix:relative/path`     — gRPC URI, relative
 ///   - `unix:/abs/path`         — gRPC URI, absolute (single-slash form)
 ///   - `unix:///abs/path`       — gRPC URI, absolute with empty authority
+///
+/// Anything else is treated as TCP.
 fn detect_uds_path(endpoint: &str) -> Option<String> {
     if let Some(rest) = endpoint.strip_prefix("unix://") {
         Some(rest.to_string())
@@ -560,30 +548,45 @@ mod tests {
 
     #[test]
     fn detect_uds_absolute_path() {
-        assert_eq!(detect_uds_path("/var/run/foo.sock").as_deref(), Some("/var/run/foo.sock"));
+        assert_eq!(
+            detect_uds_path("/var/run/foo.sock").as_deref(),
+            Some("/var/run/foo.sock")
+        );
     }
 
     #[test]
     fn detect_uds_relative_path() {
-        assert_eq!(detect_uds_path("./local.sock").as_deref(), Some("./local.sock"));
+        assert_eq!(
+            detect_uds_path("./local.sock").as_deref(),
+            Some("./local.sock")
+        );
     }
 
     #[test]
     fn detect_uds_unix_scheme_absolute_single_slash() {
         // unix:/abs — single-slash gRPC URI form
-        assert_eq!(detect_uds_path("unix:/var/run/foo.sock").as_deref(), Some("/var/run/foo.sock"));
+        assert_eq!(
+            detect_uds_path("unix:/var/run/foo.sock").as_deref(),
+            Some("/var/run/foo.sock")
+        );
     }
 
     #[test]
     fn detect_uds_unix_scheme_relative() {
         // unix:rel — relative gRPC URI form
-        assert_eq!(detect_uds_path("unix:relative/foo.sock").as_deref(), Some("relative/foo.sock"));
+        assert_eq!(
+            detect_uds_path("unix:relative/foo.sock").as_deref(),
+            Some("relative/foo.sock")
+        );
     }
 
     #[test]
     fn detect_uds_unix_scheme_absolute_empty_authority() {
         // unix:///abs — triple-slash form with empty authority
-        assert_eq!(detect_uds_path("unix:///var/run/foo.sock").as_deref(), Some("/var/run/foo.sock"));
+        assert_eq!(
+            detect_uds_path("unix:///var/run/foo.sock").as_deref(),
+            Some("/var/run/foo.sock")
+        );
     }
 
     #[test]

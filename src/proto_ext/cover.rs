@@ -153,14 +153,20 @@ mod tests {
 
     #[test]
     fn domain_falls_back_when_cover_missing() {
-        let book = EventBook { cover: None, ..Default::default() };
+        let book = EventBook {
+            cover: None,
+            ..Default::default()
+        };
         assert_eq!(book.domain(), UNKNOWN_DOMAIN);
     }
 
     #[test]
     fn domain_falls_back_when_domain_is_empty() {
         let book = EventBook {
-            cover: Some(Cover { domain: String::new(), ..Default::default() }),
+            cover: Some(Cover {
+                domain: String::new(),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         assert_eq!(book.domain(), UNKNOWN_DOMAIN);
@@ -169,7 +175,10 @@ mod tests {
     #[test]
     fn domain_returns_set_value() {
         let book = EventBook {
-            cover: Some(Cover { domain: "order".to_string(), ..Default::default() }),
+            cover: Some(Cover {
+                domain: "order".to_string(),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         assert_eq!(book.domain(), "order");

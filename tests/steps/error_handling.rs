@@ -28,13 +28,21 @@ impl ErrorHandlingWorld {
 
 #[given("the server is unreachable")]
 async fn given_server_unreachable(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::connection(codes::CONNECTION_FAILED, messages::CONNECTION_FAILED, NO_DETAILS));
+    world.current_error = Some(ClientError::connection(
+        codes::CONNECTION_FAILED,
+        messages::CONNECTION_FAILED,
+        NO_DETAILS,
+    ));
 }
 
 #[given("the connection drops mid-request")]
 async fn given_connection_drops(world: &mut ErrorHandlingWorld) {
     // Simulate transport error with a mock error
-    world.current_error = Some(ClientError::connection(codes::CONNECTION_FAILED, messages::CONNECTION_FAILED, NO_DETAILS));
+    world.current_error = Some(ClientError::connection(
+        codes::CONNECTION_FAILED,
+        messages::CONNECTION_FAILED,
+        NO_DETAILS,
+    ));
 }
 
 #[given("the server returns a gRPC error")]
@@ -82,7 +90,11 @@ async fn given_operation_timeout(world: &mut ErrorHandlingWorld) {
 
 #[given("any client error")]
 async fn given_any_client_error(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::connection(codes::CONNECTION_FAILED, messages::CONNECTION_FAILED, NO_DETAILS));
+    world.current_error = Some(ClientError::connection(
+        codes::CONNECTION_FAILED,
+        messages::CONNECTION_FAILED,
+        NO_DETAILS,
+    ));
 }
 
 #[given(expr = "a gRPC error with status NOT_FOUND")]
@@ -93,7 +105,11 @@ async fn given_grpc_not_found(world: &mut ErrorHandlingWorld) {
 
 #[given("a connection error")]
 async fn given_connection_error(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::connection(codes::CONNECTION_FAILED, messages::CONNECTION_FAILED, NO_DETAILS));
+    world.current_error = Some(ClientError::connection(
+        codes::CONNECTION_FAILED,
+        messages::CONNECTION_FAILED,
+        NO_DETAILS,
+    ));
 }
 
 #[given("a gRPC error with detailed status")]
@@ -104,7 +120,11 @@ async fn given_grpc_detailed_status(world: &mut ErrorHandlingWorld) {
 
 #[given("an invalid argument error")]
 async fn given_invalid_argument_error(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::invalid_argument(codes::COMMAND_PAYLOAD_MISSING, messages::COMMAND_PAYLOAD_MISSING, NO_DETAILS));
+    world.current_error = Some(ClientError::invalid_argument(
+        codes::COMMAND_PAYLOAD_MISSING,
+        messages::COMMAND_PAYLOAD_MISSING,
+        NO_DETAILS,
+    ));
 }
 
 #[given("different error types")]
@@ -114,15 +134,27 @@ async fn given_different_error_types(world: &mut ErrorHandlingWorld) {
         ClientError::from(Status::failed_precondition("precondition failed")),
         ClientError::from(Status::invalid_argument("invalid")),
         ClientError::from(Status::internal("internal")),
-        ClientError::connection(codes::CONNECTION_FAILED, messages::CONNECTION_FAILED, NO_DETAILS),
-        ClientError::invalid_argument(codes::COMMAND_PAYLOAD_MISSING, messages::COMMAND_PAYLOAD_MISSING, NO_DETAILS),
+        ClientError::connection(
+            codes::CONNECTION_FAILED,
+            messages::CONNECTION_FAILED,
+            NO_DETAILS,
+        ),
+        ClientError::invalid_argument(
+            codes::COMMAND_PAYLOAD_MISSING,
+            messages::COMMAND_PAYLOAD_MISSING,
+            NO_DETAILS,
+        ),
     ];
 }
 
 #[given("various error types")]
 async fn given_various_error_types(world: &mut ErrorHandlingWorld) {
     world.error_variants = vec![
-        ClientError::connection(codes::CONNECTION_FAILED, messages::CONNECTION_FAILED, NO_DETAILS),
+        ClientError::connection(
+            codes::CONNECTION_FAILED,
+            messages::CONNECTION_FAILED,
+            NO_DETAILS,
+        ),
         ClientError::from(Status::unavailable("service unavailable")),
         ClientError::from(Status::resource_exhausted("rate limited")),
         ClientError::from(Status::invalid_argument("bad input")),
@@ -160,12 +192,20 @@ async fn when_execute_mock_at_sequence(_world: &mut ErrorHandlingWorld, _seq: u3
 
 #[when("I build a command without required fields")]
 async fn when_build_without_required(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::invalid_argument(codes::COMMAND_TYPE_URL_MISSING, messages::COMMAND_TYPE_URL_MISSING, NO_DETAILS));
+    world.current_error = Some(ClientError::invalid_argument(
+        codes::COMMAND_TYPE_URL_MISSING,
+        messages::COMMAND_TYPE_URL_MISSING,
+        NO_DETAILS,
+    ));
 }
 
 #[when("I build a query with invalid timestamp format")]
 async fn when_build_invalid_timestamp(world: &mut ErrorHandlingWorld) {
-    world.current_error = Some(ClientError::invalid_timestamp(codes::TIMESTAMP_PARSE_FAILED, messages::TIMESTAMP_PARSE_FAILED, NO_DETAILS));
+    world.current_error = Some(ClientError::invalid_timestamp(
+        codes::TIMESTAMP_PARSE_FAILED,
+        messages::TIMESTAMP_PARSE_FAILED,
+        NO_DETAILS,
+    ));
 }
 
 #[when("I send a malformed request to the server")]
