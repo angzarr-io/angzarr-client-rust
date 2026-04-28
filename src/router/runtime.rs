@@ -632,6 +632,102 @@ impl CommandHandlerRouter {
     pub fn output_domains(&self) -> Vec<String> {
         Vec::new()
     }
+
+    /// Audit #45: True if any registered handler declares at least one
+    /// `#[handles_fact]` method. The gRPC adapter consults this as the
+    /// gate for the `HandleFact` RPC — false → return UNIMPLEMENTED
+    /// without entering dispatch.
+    ///
+    /// Pure metadata read on the registered factories' configs; cheap
+    /// enough to call per-request.
+    pub fn supports_handle_fact(&self) -> bool {
+        for factory in &self.factories {
+            if let HandlerConfig::CommandHandler { handles_fact, .. } = (factory.produce)().config()
+            {
+                if !handles_fact.is_empty() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Audit #45: True if any registered handler opted in via
+    /// `#[command_handler(supports_replay = true)]`. The gRPC adapter
+    /// uses this as the gate for the `Replay` RPC.
+    pub fn supports_replay(&self) -> bool {
+        for factory in &self.factories {
+            if let HandlerConfig::CommandHandler {
+                supports_replay, ..
+            } = (factory.produce)().config()
+            {
+                if supports_replay {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Audit #45: dispatch a `FactRequest` through the registered
+    /// command handler's `#[handles_fact]` methods.
+    ///
+    /// The single-handler invariant from audit #62 means at most one
+    /// factory matches; this routes the whole request into that
+    /// handler's `__angzarr_dispatch_fact` (emitted by the
+    /// `#[command_handler]` macro) and unwraps the
+    /// `HandlerResponse::HandleFact` variant.
+    ///
+    /// Caller (the gRPC adapter) should gate via
+    /// [`Self::supports_handle_fact`] first.
+    pub fn dispatch_fact(
+        &self,
+        request: crate::proto::FactRequest,
+    ) -> Result<crate::proto::EventBook, ClientError> {
+        for factory in &self.factories {
+            let handler: Box<dyn Handler> = (factory.produce)();
+            // Only command-handler factories know how to dispatch facts.
+            if !matches!(handler.config(), HandlerConfig::CommandHandler { .. }) {
+                continue;
+            }
+            let response = handler.dispatch(HandlerRequest::HandleFact(request))?;
+            return match response {
+                HandlerResponse::HandleFact(book) => Ok(book),
+                _ => Err(ClientError::invalid_argument(
+                    crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
+                    crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
+                    [(crate::error_codes::keys::EXPECTED_KIND, "HandleFact")],
+                )),
+            };
+        }
+        // No CommandHandler factories — empty book matches the
+        // "framework declined, coordinator handles fallback" semantic.
+        Ok(crate::proto::EventBook::default())
+    }
+
+    /// Audit #45: dispatch a `ReplayRequest` through the registered
+    /// command handler.
+    pub fn dispatch_replay(
+        &self,
+        request: crate::proto::ReplayRequest,
+    ) -> Result<crate::proto::ReplayResponse, ClientError> {
+        for factory in &self.factories {
+            let handler: Box<dyn Handler> = (factory.produce)();
+            if !matches!(handler.config(), HandlerConfig::CommandHandler { .. }) {
+                continue;
+            }
+            let response = handler.dispatch(HandlerRequest::Replay(request))?;
+            return match response {
+                HandlerResponse::Replay(resp) => Ok(resp),
+                _ => Err(ClientError::invalid_argument(
+                    crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
+                    crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
+                    [(crate::error_codes::keys::EXPECTED_KIND, "Replay")],
+                )),
+            };
+        }
+        Ok(crate::proto::ReplayResponse::default())
+    }
 }
 
 impl SagaRouter {

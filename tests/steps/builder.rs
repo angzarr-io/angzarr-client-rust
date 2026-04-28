@@ -328,10 +328,9 @@ async fn then_build_error_mentions(world: &mut BuilderWorld, needle: String) {
 fn needle_matches_variant(e: &BuildError, needle: &str) -> bool {
     let lower = needle.to_ascii_lowercase();
     match e {
-        BuildError::Empty => lower.contains("no handler") || lower.contains("empty"),
-        BuildError::MixedKinds(_, _) => lower.contains("mix") || lower.contains("cannot mix"),
-        BuildError::WrongKind { .. } => lower.contains("wrong") || lower.contains("kind"),
-        BuildError::DuplicateCommandHandler { .. } => {
+        BuildError::Empty(_) => lower.contains("no handler") || lower.contains("empty"),
+        BuildError::MixedKinds(_) => lower.contains("mix") || lower.contains("cannot mix"),
+        BuildError::DuplicateCommandHandler(_) => {
             lower.contains("duplicate") || lower.contains("command handler")
         }
     }

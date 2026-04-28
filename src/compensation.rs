@@ -15,7 +15,7 @@
 //!     let ctx = CompensationContext::from_notification(notification);
 //!     // Emit compensation events or delegate to the framework via the helpers
 //!     // re-exported from this module.
-//!     Ok(delegate_to_framework("No custom compensation"))
+//!     Ok(delegate_to_framework("No custom compensation", DelegationOptions::default()))
 //! }
 //! ```
 
@@ -129,43 +129,76 @@ impl CompensationContext {
 // Aggregate helpers
 // =============================================================================
 
-/// Create a response that delegates compensation to the framework.
+/// Options struct for [`delegate_to_framework`] / [`pm_delegate_to_framework`].
 ///
-/// The framework will emit a SagaCompensationFailed event. Use when the
-/// aggregate doesn't have custom compensation logic for a rejection.
-pub fn delegate_to_framework(reason: impl Into<String>) -> BusinessResponse {
-    BusinessResponse {
-        result: Some(business_response::Result::Revocation(RevocationResponse {
-            emit_system_revocation: true,
-            reason: reason.into(),
-            ..Default::default()
-        })),
+/// Audit #65 / #66: collapses the previously-divergent function shapes
+/// (this crate's old two-function split, Python's kwargs) into a single
+/// shared options type. Cross-language symmetric — Python
+/// `compensation.DelegationOptions` mirrors this struct field-for-field
+/// with the same defaults.
+///
+/// `Default` matches the previous Python kwargs and the old Rust basic
+/// `delegate_to_framework` (which hardcoded `emit_system_event = true`
+/// and the rest false).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use angzarr_client::compensation::{delegate_to_framework, DelegationOptions};
+///
+/// // Default — emit system event, nothing else.
+/// let resp = delegate_to_framework("no custom compensation", DelegationOptions::default());
+///
+/// // Escalate without emitting a system event.
+/// let resp = delegate_to_framework(
+///     "operator intervention",
+///     DelegationOptions { emit_system_event: false, escalate: true, ..Default::default() },
+/// );
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DelegationOptions {
+    /// Emit SagaCompensationFailed to the fallback domain.
+    pub emit_system_event: bool,
+    /// Move the failed event to the dead-letter queue.
+    pub send_to_dead_letter: bool,
+    /// Mark for operator intervention.
+    pub escalate: bool,
+    /// Stop the saga entirely without retry.
+    pub abort: bool,
+}
+
+impl Default for DelegationOptions {
+    fn default() -> Self {
+        Self {
+            emit_system_event: true,
+            send_to_dead_letter: false,
+            escalate: false,
+            abort: false,
+        }
     }
 }
 
-/// Create a response with custom revocation flags.
+/// Create a response that delegates compensation to the framework.
 ///
-/// Provides fine-grained control over framework compensation behavior:
-/// - `emit_system_event`: emit SagaCompensationFailed event
-/// - `send_to_dead_letter`: send to dead letter queue
-/// - `escalate`: flag for alerting/human intervention
-/// - `abort`: stop saga chain, propagate error to caller
+/// Use when the aggregate doesn't have custom compensation logic for a
+/// rejection. Pass [`DelegationOptions::default()`] for the standard
+/// "emit system event" behavior, or override individual flags via a
+/// struct literal — see [`DelegationOptions`].
 ///
-/// Parameter name matches Python's `delegate_to_framework(send_to_dead_letter=...)`
-/// kwarg.
-pub fn delegate_to_framework_with_options(
+/// Audit #65: replaces the previous two-function split
+/// (`delegate_to_framework(reason)` + `delegate_to_framework_with_options(reason, ...)`)
+/// with a single function taking the shared options struct, matching
+/// Python's [`compensation::delegate_to_framework`].
+pub fn delegate_to_framework(
     reason: impl Into<String>,
-    emit_system_event: bool,
-    send_to_dead_letter: bool,
-    escalate: bool,
-    abort: bool,
+    options: DelegationOptions,
 ) -> BusinessResponse {
     BusinessResponse {
         result: Some(business_response::Result::Revocation(RevocationResponse {
-            emit_system_revocation: emit_system_event,
-            send_to_dead_letter_queue: send_to_dead_letter,
-            escalate,
-            abort,
+            emit_system_revocation: options.emit_system_event,
+            send_to_dead_letter_queue: options.send_to_dead_letter,
+            escalate: options.escalate,
+            abort: options.abort,
             reason: reason.into(),
         })),
     }
@@ -195,14 +228,25 @@ pub struct PMRevocationResponse {
 
 /// Create a PM response that delegates compensation to the framework.
 ///
-/// Use when the PM doesn't have custom compensation logic.
-pub fn pm_delegate_to_framework(reason: impl Into<String>) -> PMRevocationResponse {
+/// Use when the PM doesn't have custom compensation logic. Pass
+/// [`DelegationOptions::default()`] for the standard behavior.
+///
+/// Audit #66: takes the same [`DelegationOptions`] struct as
+/// [`delegate_to_framework`]. Previously hardcoded
+/// `emit_system_revocation = true` with no way to override; now matches
+/// Python's option-bearing signature.
+pub fn pm_delegate_to_framework(
+    reason: impl Into<String>,
+    options: DelegationOptions,
+) -> PMRevocationResponse {
     PMRevocationResponse {
         process_events: None,
         revocation: RevocationResponse {
-            emit_system_revocation: true,
+            emit_system_revocation: options.emit_system_event,
+            send_to_dead_letter_queue: options.send_to_dead_letter,
+            escalate: options.escalate,
+            abort: options.abort,
             reason: reason.into(),
-            ..Default::default()
         },
     }
 }
@@ -374,8 +418,10 @@ mod tests {
     }
 
     #[test]
-    fn delegate_to_framework_sets_revocation_flags() {
-        let response = delegate_to_framework("test reason");
+    fn delegate_to_framework_default_options_sets_emit_system() {
+        // Audit #65: DelegationOptions::default() = previous "basic"
+        // delegate_to_framework behavior (emit_system=true, others false).
+        let response = delegate_to_framework("test reason", DelegationOptions::default());
         match response.result {
             Some(business_response::Result::Revocation(r)) => {
                 assert!(r.emit_system_revocation);
@@ -389,8 +435,18 @@ mod tests {
     }
 
     #[test]
-    fn delegate_to_framework_with_options_sets_all_flags() {
-        let response = delegate_to_framework_with_options("escalated", true, true, true, true);
+    fn delegate_to_framework_custom_options_sets_all_flags() {
+        // Audit #65: pass an options struct literal. Replaces the
+        // previous 5-positional-arg `delegate_to_framework_with_options`.
+        let response = delegate_to_framework(
+            "escalated",
+            DelegationOptions {
+                emit_system_event: true,
+                send_to_dead_letter: true,
+                escalate: true,
+                abort: true,
+            },
+        );
         match response.result {
             Some(business_response::Result::Revocation(r)) => {
                 assert!(r.emit_system_revocation);
@@ -423,7 +479,7 @@ mod tests {
 
     #[test]
     fn pm_delegate_to_framework_returns_nil_events() {
-        let response = pm_delegate_to_framework("pm reason");
+        let response = pm_delegate_to_framework("pm reason", DelegationOptions::default());
         assert!(response.process_events.is_none());
         assert!(response.revocation.emit_system_revocation);
         assert_eq!(response.revocation.reason, "pm reason");

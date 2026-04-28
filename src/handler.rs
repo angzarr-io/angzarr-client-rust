@@ -12,9 +12,8 @@ use crate::proto::{
     process_manager_service_server::ProcessManagerService,
     projector_service_server::ProjectorService, saga_service_server::SagaService,
     upcaster_service_server::UpcasterService, BusinessResponse, ContextualCommand, EventBook,
-    ProcessManagerHandleRequest, ProcessManagerHandleResponse, ProcessManagerPrepareRequest,
-    ProcessManagerPrepareResponse, Projection, SagaHandleRequest, SagaResponse, UpcastRequest,
-    UpcastResponse,
+    ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, SagaHandleRequest,
+    SagaResponse, UpcastRequest, UpcastResponse,
 };
 use crate::router::runtime::{
     CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter,
@@ -55,22 +54,43 @@ impl CommandHandlerService for CommandHandlerGrpc {
 
     async fn handle_fact(
         &self,
-        _request: Request<crate::proto::FactRequest>,
+        request: Request<crate::proto::FactRequest>,
     ) -> Result<Response<EventBook>, Status> {
-        // Fact handling is out of scope for the Tier 5 MVP.
-        Err(Status::unimplemented(
-            "handle_fact not implemented in Tier 5 runtime",
-        ))
+        // Audit #45: gate on metadata as high in the stack as
+        // possible. No `#[handles_fact]` declared on any registered
+        // handler → return UNIMPLEMENTED without invoking dispatch.
+        // The coordinator's pass-through-persist fallback handles
+        // facts for non-opted-in aggregates.
+        if !self.router.supports_handle_fact() {
+            return Err(Status::unimplemented(
+                "no #[handles_fact] methods declared on registered command_handler",
+            ));
+        }
+        let book = self
+            .router
+            .dispatch_fact(request.into_inner())
+            .map_err(client_error_to_status)?;
+        Ok(Response::new(book))
     }
 
     async fn replay(
         &self,
-        _request: Request<crate::proto::ReplayRequest>,
+        request: Request<crate::proto::ReplayRequest>,
     ) -> Result<Response<crate::proto::ReplayResponse>, Status> {
-        // Replay support requires state packing hooks — deferred.
-        Err(Status::unimplemented(
-            "replay not implemented in Tier 5 runtime",
-        ))
+        // Audit #45: gate on metadata. Aggregate did not opt in via
+        // `#[command_handler(supports_replay = true)]` → return
+        // UNIMPLEMENTED. Coordinator degrades MERGE_COMMUTATIVE to
+        // MERGE_STRICT.
+        if !self.router.supports_replay() {
+            return Err(Status::unimplemented(
+                "command_handler did not opt in via #[command_handler(supports_replay = true)]",
+            ));
+        }
+        let resp = self
+            .router
+            .dispatch_replay(request.into_inner())
+            .map_err(client_error_to_status)?;
+        Ok(Response::new(resp))
     }
 }
 
@@ -122,15 +142,6 @@ impl ProcessManagerGrpc {
 
 #[tonic::async_trait]
 impl ProcessManagerService for ProcessManagerGrpc {
-    async fn prepare(
-        &self,
-        _request: Request<ProcessManagerPrepareRequest>,
-    ) -> Result<Response<ProcessManagerPrepareResponse>, Status> {
-        Err(Status::unimplemented(
-            "PM prepare not implemented in Tier 5 runtime",
-        ))
-    }
-
     async fn handle(
         &self,
         request: Request<ProcessManagerHandleRequest>,

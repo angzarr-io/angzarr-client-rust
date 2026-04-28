@@ -196,7 +196,19 @@ impl QueryClient {
     /// - C++: `std::chrono::milliseconds deadline` parameter
     /// - Python: `timeout: float | None` kwarg
     pub async fn get_event_book(&self, query: Query) -> Result<EventBook> {
-        let response = self.inner.clone().get_event_book(query).await?;
+        // Audit #69 stage (b): attach `x-correlation-id` from the
+        // canonical Cover.correlation_id field on every outbound RPC,
+        // so OTel exporters / mesh sidecars can filter on it without
+        // decoding the body. Send-only — the server side does not read
+        // the metadata header (data structures are canonical, body
+        // wins for in-framework dispatch).
+        let corr_id = query
+            .cover
+            .as_ref()
+            .map(|c| c.correlation_id.clone())
+            .unwrap_or_default();
+        let req = crate::proto_ext::correlated_request(query, &corr_id);
+        let response = self.inner.clone().get_event_book(req).await?;
         Ok(response.into_inner())
     }
 
@@ -205,7 +217,13 @@ impl QueryClient {
     /// Uses the streaming `GetEvents` RPC to fetch multiple EventBooks.
     /// For a single EventBook, use `get_event_book()` instead.
     pub async fn get_events(&self, query: Query) -> Result<Vec<EventBook>> {
-        let mut stream = self.inner.clone().get_events(query).await?.into_inner();
+        let corr_id = query
+            .cover
+            .as_ref()
+            .map(|c| c.correlation_id.clone())
+            .unwrap_or_default();
+        let req = crate::proto_ext::correlated_request(query, &corr_id);
+        let mut stream = self.inner.clone().get_events(req).await?.into_inner();
         let mut results = Vec::new();
         while let Some(book) = stream.message().await? {
             results.push(book);
@@ -269,7 +287,17 @@ impl CommandHandlerClient {
     /// Use `SyncMode::Simple` to wait for sync projectors.
     /// Use `SyncMode::Cascade` for full sync including saga cascade.
     pub async fn handle_command(&self, command: CommandRequest) -> Result<CommandResponse> {
-        let response = self.inner.clone().handle_command(command).await?;
+        // Audit #69 stage (b): canonical correlation_id at
+        // `command.command.cover.correlation_id` (CommandRequest →
+        // CommandBook → Cover). Empty / missing skips the header.
+        let corr_id = command
+            .command
+            .as_ref()
+            .and_then(|cb| cb.cover.as_ref())
+            .map(|c| c.correlation_id.clone())
+            .unwrap_or_default();
+        let req = crate::proto_ext::correlated_request(command, &corr_id);
+        let response = self.inner.clone().handle_command(req).await?;
         Ok(response.into_inner())
     }
 
@@ -291,7 +319,16 @@ impl CommandHandlerClient {
         &self,
         request: SpeculateCommandHandlerRequest,
     ) -> Result<CommandResponse> {
-        let response = self.inner.clone().handle_sync_speculative(request).await?;
+        // Audit #69 stage (b): canonical correlation_id at
+        // `request.command.cover.correlation_id`.
+        let corr_id = request
+            .command
+            .as_ref()
+            .and_then(|cb| cb.cover.as_ref())
+            .map(|c| c.correlation_id.clone())
+            .unwrap_or_default();
+        let req = crate::proto_ext::correlated_request(request, &corr_id);
+        let response = self.inner.clone().handle_sync_speculative(req).await?;
         Ok(response.into_inner())
     }
 }
@@ -507,25 +544,56 @@ impl SpeculativeClient {
 
 #[async_trait]
 impl traits::SpeculativeClient for SpeculativeClient {
+    // Audit #69 stage (b): each speculative method attaches
+    // `x-correlation-id` from the canonical Cover.correlation_id field
+    // in its request type. Different request types nest the Cover at
+    // different paths; canonical paths inlined per method.
+
     async fn command_handler(
         &self,
         request: SpeculateCommandHandlerRequest,
     ) -> Result<CommandResponse> {
+        // SpeculateCommandHandlerRequest.command: CommandBook → Cover.
+        let corr_id = request
+            .command
+            .as_ref()
+            .and_then(|cb| cb.cover.as_ref())
+            .map(|c| c.correlation_id.clone())
+            .unwrap_or_default();
+        let req = crate::proto_ext::correlated_request(request, &corr_id);
         let response = self
             .command_handler
             .clone()
-            .handle_sync_speculative(request)
+            .handle_sync_speculative(req)
             .await?;
         Ok(response.into_inner())
     }
 
     async fn projector(&self, request: SpeculateProjectorRequest) -> Result<Projection> {
-        let response = self.projector.clone().handle_speculative(request).await?;
+        // SpeculateProjectorRequest.events: EventBook → Cover.
+        let corr_id = request
+            .events
+            .as_ref()
+            .and_then(|eb| eb.cover.as_ref())
+            .map(|c| c.correlation_id.clone())
+            .unwrap_or_default();
+        let req = crate::proto_ext::correlated_request(request, &corr_id);
+        let response = self.projector.clone().handle_speculative(req).await?;
         Ok(response.into_inner())
     }
 
     async fn saga(&self, request: SpeculateSagaRequest) -> Result<SagaResponse> {
-        let response = self.saga.clone().execute_speculative(request).await?;
+        // SpeculateSagaRequest.request: SagaHandleRequest, .source:
+        // EventBook → Cover.
+        let corr_id = request
+            .request
+            .as_ref()
+            .and_then(|sr| sr.source.as_ref())
+            .and_then(|eb| eb.cover.as_ref())
+            .map(|c| c.correlation_id.clone())
+            .unwrap_or_default();
+        let req = crate::proto_ext::correlated_request(request, &corr_id);
+        let response = self.saga.clone().execute_speculative(req).await?;
         Ok(response.into_inner())
     }
 
@@ -533,7 +601,17 @@ impl traits::SpeculativeClient for SpeculativeClient {
         &self,
         request: SpeculatePmRequest,
     ) -> Result<ProcessManagerHandleResponse> {
-        let response = self.pm.clone().handle_speculative(request).await?;
+        // SpeculatePmRequest.request: ProcessManagerHandleRequest,
+        // .trigger: EventBook → Cover.
+        let corr_id = request
+            .request
+            .as_ref()
+            .and_then(|pr| pr.trigger.as_ref())
+            .and_then(|eb| eb.cover.as_ref())
+            .map(|c| c.correlation_id.clone())
+            .unwrap_or_default();
+        let req = crate::proto_ext::correlated_request(request, &corr_id);
+        let response = self.pm.clone().handle_speculative(req).await?;
         Ok(response.into_inner())
     }
 }

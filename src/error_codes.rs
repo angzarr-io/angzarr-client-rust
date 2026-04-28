@@ -82,6 +82,17 @@ pub mod codes {
     pub const HANDLER_STATE_NOT_TYPE: &str = "HANDLER_STATE_NOT_TYPE";
     pub const HANDLER_UNKNOWN_KIND: &str = "HANDLER_UNKNOWN_KIND";
     pub const ROUTER_NO_HANDLERS: &str = "ROUTER_NO_HANDLERS";
+    /// Audit #62: a Router was built with two `#[command_handler]`s
+    /// claiming the same `(domain, type_url)` pair.
+    pub const DUPLICATE_COMMAND_HANDLER: &str = "DUPLICATE_COMMAND_HANDLER";
+    /// Audit #72: a Router was built with handlers of different kinds
+    /// (e.g., a `command_handler` and a `saga` registered together).
+    pub const MIXED_HANDLER_KINDS: &str = "MIXED_HANDLER_KINDS";
+
+    // Saga / PM destinations
+    /// Audit #64: a saga/PM tried to stamp a command for a domain that
+    /// wasn't in the request's `destination_sequences` map.
+    pub const MISSING_DESTINATION_SEQUENCE: &str = "MISSING_DESTINATION_SEQUENCE";
 }
 
 /// Static human-readable messages — the value of `message` on every
@@ -153,6 +164,13 @@ pub mod messages {
     pub const HANDLER_STATE_NOT_TYPE: &str = "handler 'state' must be a type";
     pub const HANDLER_UNKNOWN_KIND: &str = "unknown handler kind";
     pub const ROUTER_NO_HANDLERS: &str = "no handlers registered on Router";
+    pub const DUPLICATE_COMMAND_HANDLER: &str =
+        "duplicate command handler registration for (domain, type_url)";
+    pub const MIXED_HANDLER_KINDS: &str =
+        "cannot mix handler kinds in one Router — all handlers must share a kind";
+
+    // Saga / PM destinations
+    pub const MISSING_DESTINATION_SEQUENCE: &str = "no sequence for destination domain";
 }
 
 /// Detail-map key constants — the keys used in the `details` mapping on
@@ -174,4 +192,8 @@ pub mod keys {
     pub const HANDLER_KIND: &str = "handler_kind";
     pub const ACTUAL_RETURN_TYPE: &str = "actual_return_type";
     pub const ENV_VAR: &str = "env_var";
+    /// Audit #72: paired with `HANDLER_KIND` for `MIXED_HANDLER_KINDS` errors —
+    /// `details["handler_kind"]` is the first kind found, `details["other_kind"]`
+    /// is the conflicting one.
+    pub const OTHER_KIND: &str = "other_kind";
 }

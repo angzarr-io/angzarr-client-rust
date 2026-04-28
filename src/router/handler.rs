@@ -6,9 +6,9 @@
 //! emits `impl Handler for T`.
 
 use crate::proto::{
-    BusinessResponse, ContextualCommand, EventBook, ProcessManagerHandleRequest,
-    ProcessManagerHandleResponse, Projection, SagaHandleRequest, SagaResponse, UpcastRequest,
-    UpcastResponse,
+    BusinessResponse, ContextualCommand, EventBook, FactRequest, ProcessManagerHandleRequest,
+    ProcessManagerHandleResponse, Projection, ReplayRequest, ReplayResponse, SagaHandleRequest,
+    SagaResponse, UpcastRequest, UpcastResponse,
 };
 use crate::ClientError;
 
@@ -41,6 +41,16 @@ pub enum HandlerConfig {
         /// Method name of the `#[state_factory]` if one was declared.
         /// `None` → runtime rebuild uses `Default::default()`.
         state_factory: Option<String>,
+        /// Audit #45: proto type URLs for fact events declared in
+        /// `#[handles_fact]` methods. Empty → aggregate did not opt
+        /// into the `HandleFact` RPC; the gRPC adapter returns
+        /// UNIMPLEMENTED based on this metadata.
+        handles_fact: Vec<String>,
+        /// Audit #45: aggregate opted into the `Replay` RPC via
+        /// `#[command_handler(supports_replay = true)]`. False → gRPC
+        /// adapter returns UNIMPLEMENTED for `Replay`; the coordinator
+        /// degrades MERGE_COMMUTATIVE to MERGE_STRICT.
+        supports_replay: bool,
     },
     Saga {
         name: String,
@@ -91,6 +101,13 @@ impl HandlerConfig {
 #[derive(Debug, Clone)]
 pub enum HandlerRequest {
     CommandHandler(ContextualCommand),
+    /// Audit #45: fact-event dispatch from the coordinator's
+    /// `HandleFact` RPC. The aggregate opts in via `#[handles_fact]`.
+    HandleFact(FactRequest),
+    /// Audit #45: state replay for `MERGE_COMMUTATIVE` conflict
+    /// detection. The aggregate opts in via
+    /// `#[command_handler(supports_replay = true)]`.
+    Replay(ReplayRequest),
     Saga(SagaHandleRequest),
     ProcessManager(ProcessManagerHandleRequest),
     Projector(EventBook),
@@ -104,6 +121,11 @@ pub enum HandlerRequest {
 #[derive(Debug, Clone)]
 pub enum HandlerResponse {
     CommandHandler(BusinessResponse),
+    /// Audit #45: events emitted by `#[handles_fact]` methods, to be
+    /// persisted on the aggregate.
+    HandleFact(EventBook),
+    /// Audit #45: resulting state after replay, packed into `Any`.
+    Replay(ReplayResponse),
     Saga(SagaResponse),
     ProcessManager(ProcessManagerHandleResponse),
     Projector(Projection),
@@ -113,21 +135,67 @@ pub enum HandlerResponse {
 /// Errors raised by `Router::build()` or runtime router construction.
 ///
 /// Variants are additive — expect more fields as later rounds add invariants.
+///
+/// Audit #72: each variant carries a [`crate::error::ErrorDetail`] following
+/// the structural error model from audit #59 (`code: &'static str`,
+/// static `message: &'static str`, `details: BTreeMap<String, String>`).
+/// `Display` emits the static message verbatim; runtime context (router
+/// name, conflicting kinds, duplicate (domain, type_url), etc.) rides in
+/// `details` for cucumber assertions on `err.code` / `err.details["..."]`.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum BuildError {
-    #[error("router has no handlers")]
-    Empty,
-    #[error("cannot mix handler kinds in one router: found {0:?} and {1:?}")]
-    MixedKinds(Kind, Kind),
-    #[error("router built as {expected:?} but requested as {requested:?}")]
-    WrongKind { expected: Kind, requested: Kind },
+    /// `Router::build()` called with zero registered handlers.
+    /// `code = ROUTER_NO_HANDLERS`, `details["router_name"]`.
+    #[error("{}", .0.message)]
+    Empty(crate::error::ErrorDetail),
+
+    /// `Router::build()` called with handlers of different kinds (e.g.
+    /// a `command_handler` and a `saga` registered together).
+    /// `code = MIXED_HANDLER_KINDS`,
+    /// `details["handler_kind"]` (first kind), `details["other_kind"]`
+    /// (conflicting kind), `details["router_name"]`.
+    #[error("{}", .0.message)]
+    MixedKinds(crate::error::ErrorDetail),
+
     /// Audit finding #51 (reframed as #18): two CommandHandlers register
     /// for the same `(domain, command_type_url)` pair within one Router.
     /// Multi-handler CH dispatch is forbidden — each `(domain, type)` key
     /// admits exactly one handler. Saga / PM / projector / upcaster fan-
     /// out is still allowed (those kinds legitimately broadcast).
-    #[error("duplicate CommandHandler registration for domain={domain:?} type_url={type_url:?}")]
-    DuplicateCommandHandler { domain: String, type_url: String },
+    /// `code = DUPLICATE_COMMAND_HANDLER`,
+    /// `details["domain"]`, `details["type_url"]`, `details["router_name"]`.
+    #[error("{}", .0.message)]
+    DuplicateCommandHandler(crate::error::ErrorDetail),
+}
+
+impl BuildError {
+    /// SCREAMING_SNAKE error code. Use for cucumber-style assertions
+    /// rather than message-substring matching.
+    pub fn code(&self) -> &'static str {
+        match self {
+            BuildError::Empty(d) => d.code,
+            BuildError::MixedKinds(d) => d.code,
+            BuildError::DuplicateCommandHandler(d) => d.code,
+        }
+    }
+
+    /// Static message (same string across languages for the same predicate).
+    pub fn message(&self) -> &'static str {
+        match self {
+            BuildError::Empty(d) => d.message,
+            BuildError::MixedKinds(d) => d.message,
+            BuildError::DuplicateCommandHandler(d) => d.message,
+        }
+    }
+
+    /// Structured runtime context (router name, conflicting kinds, etc.).
+    pub fn details(&self) -> &std::collections::BTreeMap<String, String> {
+        match self {
+            BuildError::Empty(d) => &d.details,
+            BuildError::MixedKinds(d) => &d.details,
+            BuildError::DuplicateCommandHandler(d) => &d.details,
+        }
+    }
 }
 
 /// Error raised by runtime dispatch (handler routing, request translation).
