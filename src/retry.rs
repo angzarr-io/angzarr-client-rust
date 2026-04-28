@@ -108,7 +108,9 @@ impl ExponentialBackoffRetry {
     ///
     /// Matches Python's `_compute_delay`: `min_delay * 2^attempt`, capped at
     /// `max_delay`, optionally multiplied by `0.5 + rand()*0.5` when
-    /// `jitter == true`.
+    /// `jitter == true`. Uses `rand::random::<f64>()` for the jitter factor
+    /// so concurrent retries decorrelate (was previously a clock-modulo
+    /// hash; see audit finding #29).
     pub fn compute_delay(&self, attempt: u32) -> Duration {
         // min_delay * 2^attempt
         let raw_nanos = self.min_delay.as_nanos() * (1u128 << attempt.min(30));
@@ -116,13 +118,7 @@ impl ExponentialBackoffRetry {
         let capped = raw_nanos.min(cap_nanos);
         let mut result = capped;
         if self.jitter {
-            // Pseudo-random factor in [0.5, 1.0) without pulling in a `rand` dep:
-            // hash the system clock to get a u32, map to [0, 1), rescale.
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or(0);
-            let frac = (now % 1_000_000) as f64 / 1_000_000.0; // [0, 1)
+            let frac: f64 = rand::random(); // uniform [0, 1)
             let scale = 0.5 + frac * 0.5;
             result = (capped as f64 * scale) as u128;
         }

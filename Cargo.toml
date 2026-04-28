@@ -44,6 +44,10 @@ hex = "0.4"
 thiserror = "2"
 backon = "1"
 indexmap = "2"
+# Real PRNG for retry jitter — replaces the clock-modulo hack in retry.rs
+# that produced statistically correlated values across concurrent retries
+# (audit finding #29).
+rand = "0.8"
 
 # Serialization (for descriptor types)
 serde = { version = "1", features = ["derive"] }
