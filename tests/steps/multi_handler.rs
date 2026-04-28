@@ -748,19 +748,22 @@ async fn then_build_fails_duplicate(
         .take()
         .expect("build was not attempted in a When step");
     let err = result.expect_err("build should have failed");
-    let angzarr_client::router::BuildError::DuplicateCommandHandler {
-        domain: d,
-        type_url: u,
-    } = err
-    else {
+    // Audit #72: BuildError variants now carry an `ErrorDetail` with
+    // structured `details` rather than typed struct fields. Assert on
+    // `code` + `details["domain"]` / `details["type_url"]`.
+    let angzarr_client::router::BuildError::DuplicateCommandHandler(detail) = &err else {
         panic!("expected DuplicateCommandHandler, got {err:?}");
     };
-    assert_eq!(d, domain);
+    assert_eq!(
+        detail.code,
+        angzarr_client::error_codes::codes::DUPLICATE_COMMAND_HANDLER
+    );
+    assert_eq!(detail.details["domain"], domain);
     let cmd_full = match cmd_type.as_str() {
         "CreateOrder" => full_type_url::<CreateOrder>(),
         other => panic!("test fixture missing for command type {other}"),
     };
-    assert_eq!(u, cmd_full);
+    assert_eq!(detail.details["type_url"], cmd_full);
 }
 
 #[then("build succeeds with a CommandHandlerRouter")]

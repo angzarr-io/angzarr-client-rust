@@ -80,15 +80,28 @@ impl Router {
     ///   `Err(BuildError::DuplicateCommandHandler)` (audit finding #18).
     /// - Homogeneous → `Ok(Built::<kind>(<runtime router>))`.
     pub fn build(self) -> Result<Built, BuildError> {
-        let first_kind = self
-            .factories
-            .first()
-            .map(|f| f.kind)
-            .ok_or(BuildError::Empty)?;
+        use crate::error::ErrorDetail;
+        use crate::error_codes::{codes, keys, messages};
+
+        let first_kind = self.factories.first().map(|f| f.kind).ok_or_else(|| {
+            BuildError::Empty(ErrorDetail::new(
+                codes::ROUTER_NO_HANDLERS,
+                messages::ROUTER_NO_HANDLERS,
+                [(keys::ROUTER_NAME, self.name.clone())],
+            ))
+        })?;
 
         for f in &self.factories {
             if f.kind != first_kind {
-                return Err(BuildError::MixedKinds(first_kind, f.kind));
+                return Err(BuildError::MixedKinds(ErrorDetail::new(
+                    codes::MIXED_HANDLER_KINDS,
+                    messages::MIXED_HANDLER_KINDS,
+                    [
+                        (keys::HANDLER_KIND, format!("{:?}", first_kind)),
+                        (keys::OTHER_KIND, format!("{:?}", f.kind)),
+                        (keys::ROUTER_NAME, self.name.clone()),
+                    ],
+                )));
             }
         }
 
@@ -108,7 +121,15 @@ impl Router {
                     for type_url in handled {
                         let key = (domain.clone(), type_url.clone());
                         if !seen.insert(key) {
-                            return Err(BuildError::DuplicateCommandHandler { domain, type_url });
+                            return Err(BuildError::DuplicateCommandHandler(ErrorDetail::new(
+                                codes::DUPLICATE_COMMAND_HANDLER,
+                                messages::DUPLICATE_COMMAND_HANDLER,
+                                [
+                                    (keys::DOMAIN, domain),
+                                    (keys::TYPE_URL, type_url),
+                                    (keys::ROUTER_NAME, self.name.clone()),
+                                ],
+                            )));
                         }
                     }
                 }

@@ -8,6 +8,8 @@
 
 use indexmap::IndexMap;
 
+use crate::error::{ClientError, Result};
+use crate::error_codes::{codes, keys, messages};
 use crate::proto::{
     page_header::SequenceType, AngzarrDeferredSequence, CommandBook, Cover, PageHeader,
 };
@@ -97,12 +99,17 @@ impl Destinations {
     ///
     /// # Errors
     ///
-    /// Returns an error if no sequence is available for this domain.
-    pub fn stamp_command(&self, cmd: &mut CommandBook, domain: &str) -> Result<(), String> {
+    /// Returns [`ClientError::InvalidArgument`] with `code =
+    /// MISSING_DESTINATION_SEQUENCE` and `details["domain"]` set to the
+    /// missing domain when no sequence is available. Audit #64: was
+    /// previously `Result<(), String>` with a runtime-interpolated
+    /// message; now follows the structured-error model from audit #59.
+    pub fn stamp_command(&self, cmd: &mut CommandBook, domain: &str) -> Result<()> {
         let seq = self.sequences.get(domain).ok_or_else(|| {
-            format!(
-                "No sequence for domain '{}' - check output_domains config",
-                domain
+            ClientError::invalid_argument(
+                codes::MISSING_DESTINATION_SEQUENCE,
+                messages::MISSING_DESTINATION_SEQUENCE,
+                [(keys::DOMAIN, domain.to_string())],
             )
         })?;
 
@@ -277,12 +284,21 @@ mod tests {
 
     #[test]
     fn destinations_stamp_command_missing_domain() {
+        // Audit #64: structured ClientError with code +
+        // details["domain"], not a free-form String.
         let destinations = Destinations::new();
         let mut cmd = CommandBook::default();
 
-        let result = destinations.stamp_command(&mut cmd, "unknown");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("unknown"));
+        let err = destinations
+            .stamp_command(&mut cmd, "unknown")
+            .expect_err("missing domain must error");
+        assert_eq!(err.code(), codes::MISSING_DESTINATION_SEQUENCE);
+        assert!(err.is_invalid_argument());
+        if let ClientError::InvalidArgument(detail) = &err {
+            assert_eq!(detail.details[keys::DOMAIN], "unknown");
+        } else {
+            panic!("expected InvalidArgument variant, got {:?}", err);
+        }
     }
 
     /// Wire-format parity with the Python client. Locks the SHA-256 of the

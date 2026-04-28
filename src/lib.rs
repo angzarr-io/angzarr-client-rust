@@ -96,9 +96,8 @@ pub use builder::{CommandBuilder, CommandBuilderExt, QueryBuilder, QueryBuilderE
 
 // Re-export compensation helpers
 pub use compensation::{
-    delegate_to_framework, delegate_to_framework_with_options, emit_compensation_events,
-    is_notification, pm_delegate_to_framework, pm_emit_compensation_events, CompensationContext,
-    PMRevocationResponse,
+    delegate_to_framework, emit_compensation_events, is_notification, pm_delegate_to_framework,
+    pm_emit_compensation_events, CompensationContext, DelegationOptions, PMRevocationResponse,
 };
 
 // Re-export helpers
@@ -111,9 +110,10 @@ pub use convert::{
 };
 
 // Re-export extension traits
+pub use proto_ext::constants::CORRELATION_ID_HEADER;
 pub use proto_ext::{
-    destination_map, CommandBookExt, CommandPageExt, CoverExt, EditionExt, EventBookExt,
-    EventPageExt, ProtoUuidExt, UuidExt,
+    correlated_request, destination_map, CommandBookExt, CommandPageExt, CoverExt, EditionExt,
+    EventBookExt, EventPageExt, ProtoUuidExt, UuidExt,
 };
 
 // Re-export Tier 5 unified router surface
@@ -168,6 +168,6 @@ pub use validation::{
 
 // Re-export proc macros for Tier 5 OO-style component definitions
 pub use angzarr_macros::{
-    applies, command_handler, handles, process_manager, projector, rejected, saga, state_factory,
-    upcaster, upcasts,
+    applies, command_handler, handles, handles_fact, process_manager, projector, rejected, saga,
+    state_factory, upcaster, upcasts,
 };

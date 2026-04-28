@@ -57,12 +57,12 @@ pub fn require_not_exists(exists: bool, context: &str) -> Result<(), CommandReje
             "<entity>",
             "not_exists",
             "FAILED_PRECONDITION",
-            "entity already exists",
+            messages::ENTITY_ALREADY_EXISTS,
         );
         return Err(CommandRejectedError::precondition_failed(
             codes::ENTITY_ALREADY_EXISTS,
-            "entity already exists",
-            [("context", context)],
+            messages::ENTITY_ALREADY_EXISTS,
+            [(keys::CONTEXT, context)],
         ));
     }
     Ok(())
@@ -78,12 +78,12 @@ pub fn require_positive<T: PartialOrd + Default>(
             field_name,
             "positive",
             "INVALID_ARGUMENT",
-            "value must be positive",
+            messages::VALUE_NOT_POSITIVE,
         );
         return Err(CommandRejectedError::invalid_argument(
             codes::VALUE_NOT_POSITIVE,
-            "value must be positive",
-            [("field", field_name)],
+            messages::VALUE_NOT_POSITIVE,
+            [(keys::FIELD, field_name)],
         ));
     }
     Ok(())
@@ -99,12 +99,12 @@ pub fn require_non_negative<T: PartialOrd + Default>(
             field_name,
             "non_negative",
             "INVALID_ARGUMENT",
-            "value must be non-negative",
+            messages::VALUE_NOT_NON_NEGATIVE,
         );
         return Err(CommandRejectedError::invalid_argument(
             codes::VALUE_NOT_NON_NEGATIVE,
-            "value must be non-negative",
-            [("field", field_name)],
+            messages::VALUE_NOT_NON_NEGATIVE,
+            [(keys::FIELD, field_name)],
         ));
     }
     Ok(())
@@ -117,12 +117,12 @@ pub fn require_not_empty_str(value: &str, field_name: &str) -> Result<(), Comman
             field_name,
             "not_empty_str",
             "INVALID_ARGUMENT",
-            "value must not be empty",
+            messages::VALUE_EMPTY,
         );
         return Err(CommandRejectedError::invalid_argument(
             codes::VALUE_EMPTY,
-            "value must not be empty",
-            [("field", field_name)],
+            messages::VALUE_EMPTY,
+            [(keys::FIELD, field_name)],
         ));
     }
     Ok(())
@@ -135,12 +135,12 @@ pub fn require_not_empty<T>(items: &[T], field_name: &str) -> Result<(), Command
             field_name,
             "not_empty",
             "INVALID_ARGUMENT",
-            "collection must not be empty",
+            messages::COLLECTION_EMPTY,
         );
         return Err(CommandRejectedError::invalid_argument(
             codes::COLLECTION_EMPTY,
-            "collection must not be empty",
-            [("field", field_name)],
+            messages::COLLECTION_EMPTY,
+            [(keys::FIELD, field_name)],
         ));
     }
     Ok(())
@@ -157,12 +157,12 @@ pub fn require_status<T: PartialEq>(
             "status",
             "status_eq",
             "FAILED_PRECONDITION",
-            "status does not match expected",
+            messages::STATUS_MISMATCH,
         );
         return Err(CommandRejectedError::precondition_failed(
             codes::STATUS_MISMATCH,
-            "status does not match expected",
-            [("context", context)],
+            messages::STATUS_MISMATCH,
+            [(keys::CONTEXT, context)],
         ));
     }
     Ok(())
@@ -179,12 +179,12 @@ pub fn require_status_not<T: PartialEq>(
             "status",
             "status_not",
             "FAILED_PRECONDITION",
-            "status is the forbidden value",
+            messages::STATUS_FORBIDDEN,
         );
         return Err(CommandRejectedError::precondition_failed(
             codes::STATUS_FORBIDDEN,
-            "status is the forbidden value",
-            [("context", context)],
+            messages::STATUS_FORBIDDEN,
+            [(keys::CONTEXT, context)],
         ));
     }
     Ok(())

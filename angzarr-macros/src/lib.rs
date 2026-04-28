@@ -158,12 +158,17 @@ pub fn command_handler(attr: TokenStream, item: TokenStream) -> TokenStream {
 struct AggregateArgs {
     domain: String,
     state: Ident,
+    /// Audit #45: opt-in for the `Replay` RPC. When `true`, the framework
+    /// auto-implements replay using existing `#[applies]` methods. The
+    /// gRPC adapter gates on this metadata — `false` → UNIMPLEMENTED.
+    supports_replay: bool,
 }
 
 impl syn::parse::Parse for AggregateArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut domain = None;
         let mut state = None;
+        let mut supports_replay = false;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -178,6 +183,10 @@ impl syn::parse::Parse for AggregateArgs {
                     let value: Ident = input.parse()?;
                     state = Some(value);
                 }
+                "supports_replay" => {
+                    let value: syn::LitBool = input.parse()?;
+                    supports_replay = value.value;
+                }
                 _ => return Err(syn::Error::new(ident.span(), "unknown attribute")),
             }
 
@@ -191,6 +200,7 @@ impl syn::parse::Parse for AggregateArgs {
             state: state.ok_or_else(|| {
                 syn::Error::new(proc_macro2::Span::call_site(), "state is required")
             })?,
+            supports_replay,
         })
     }
 }
@@ -199,6 +209,7 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
     let domain = &args.domain;
     let state_ty = &args.state;
     let self_ty_for_applies = input.self_ty.clone();
+    let supports_replay = args.supports_replay;
 
     let meta = collect_method_metadata(&input);
 
@@ -216,6 +227,12 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
     let rejected_exprs = meta.rejected.iter().map(|(d, c)| {
         quote! { (#d.to_string(), #c.to_string()) }
     });
+    // Audit #45: emit handles_fact type URLs for the metadata-gated
+    // HandleFact RPC.
+    let handles_fact_exprs = meta
+        .handles_fact
+        .iter()
+        .map(|ty| quote! { ::angzarr_client::full_type_url::<#ty>() });
     let state_factory_expr = match &meta.state_factory {
         Some(name) => {
             let s = name.to_string();
@@ -307,6 +324,123 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
         })
         .collect();
 
+    // Audit #45: HandleFact dispatch arms — one per `#[handles_fact]`
+    // method. Each arm matches the fact event's type_url, decodes the
+    // payload into the typed event, invokes the user method, and
+    // appends emitted events into the merged EventBook.
+    let fact_dispatch_arms: Vec<TokenStream2> = meta
+        .handles_fact_with_methods
+        .iter()
+        .map(|(method_ident, evt_ty)| {
+            quote! {
+                if *type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
+                    let evt_val = <#evt_ty as ::prost::Message>::decode(payload.value.as_slice())
+                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
+                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
+                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
+                            [
+                                (::angzarr_client::error_codes::keys::TYPE_URL, type_url.clone()),
+                                (::angzarr_client::error_codes::keys::CAUSE, e.to_string()),
+                            ],
+                        ))?;
+                    let events = self.#method_ident(evt_val, &state)
+                        .map_err(::angzarr_client::ClientError::Rejected)?;
+                    for page in events.pages {
+                        merged.pages.push(page);
+                    }
+                    continue;
+                }
+            }
+        })
+        .collect();
+
+    // Audit #45: replay body. When `supports_replay = true`, decode the
+    // base snapshot's state, apply events through `#[applies]`, and
+    // pack the result back into an Any. When `false`, emit a stub —
+    // the gRPC adapter gates on metadata so this path is unreachable
+    // for non-opted-in aggregates, but we still need a function body.
+    //
+    // The `supports_replay = true` body requires `#state_ty: ::prost::Message`
+    // for snapshot encode/decode. Aggregates that opt in have signed
+    // off on that constraint; failing the bound surfaces as a clear
+    // compile error.
+    let replay_body: TokenStream2 = if supports_replay {
+        let apply_arms_for_replay = apply_arms.iter();
+        quote! {
+            // Decode base snapshot state into the state type, or use
+            // the initial state when no snapshot was supplied.
+            let mut state: #state_ty = match req
+                .base_snapshot
+                .as_ref()
+                .and_then(|s| s.state.as_ref())
+            {
+                ::std::option::Option::Some(any) if !any.value.is_empty() => {
+                    <#state_ty as ::prost::Message>::decode(any.value.as_slice())
+                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
+                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
+                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
+                            [(::angzarr_client::error_codes::keys::CAUSE, e.to_string())],
+                        ))?
+                }
+                _ => #initial_state_expr,
+            };
+
+            // Apply each event through the matching `#[applies]` method.
+            for page in &req.events {
+                let evt_any = match &page.payload {
+                    ::std::option::Option::Some(
+                        ::angzarr_client::proto::event_page::Payload::Event(e),
+                    ) => e,
+                    _ => continue,
+                };
+                let evt_type_url = &evt_any.type_url;
+                #(#apply_arms_for_replay)*
+            }
+
+            // Pack resulting state into Any and wrap in ReplayResponse.
+            let mut value = ::std::vec::Vec::with_capacity(
+                <#state_ty as ::prost::Message>::encoded_len(&state),
+            );
+            <#state_ty as ::prost::Message>::encode(&state, &mut value)
+                .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
+                    ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
+                    ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
+                    [(::angzarr_client::error_codes::keys::CAUSE, e.to_string())],
+                ))?;
+            let state_any = ::prost_types::Any {
+                type_url: ::angzarr_client::full_type_url::<#state_ty>(),
+                value,
+            };
+            ::std::result::Result::Ok(
+                ::angzarr_client::router::HandlerResponse::Replay(
+                    ::angzarr_client::proto::ReplayResponse {
+                        state: ::std::option::Option::Some(state_any),
+                    },
+                ),
+            )
+        }
+    } else {
+        quote! {
+            // Aggregate did not opt in via
+            // `#[command_handler(supports_replay = true)]`. The gRPC
+            // adapter's metadata gate normally prevents this from
+            // being reached; defensively return an error if it ever is.
+            let _ = req;
+            ::std::result::Result::Err(
+                ::angzarr_client::ClientError::invalid_argument(
+                    ::angzarr_client::error_codes::codes::HANDLER_WRONG_REQUEST_KIND,
+                    ::angzarr_client::error_codes::messages::HANDLER_WRONG_REQUEST_KIND,
+                    [(
+                        ::angzarr_client::error_codes::keys::EXPECTED_KIND,
+                        "CommandHandler (supports_replay=false)",
+                    )],
+                ),
+            )
+        }
+    };
+
+    let apply_arms_for_fact = apply_arms.iter();
+
     let self_ty = &input.self_ty;
     quote! {
         #input
@@ -314,6 +448,66 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
         impl ::angzarr_client::router::HandlerKind for #self_ty {
             const KIND: ::angzarr_client::router::Kind =
                 ::angzarr_client::router::Kind::CommandHandler;
+        }
+
+        // Audit #45: HandleFact + Replay helper methods. Called from
+        // the unified `Handler::dispatch` route below for the
+        // corresponding HandlerRequest variants. Stay private to the
+        // generated impl — no public API surface.
+        impl #self_ty {
+            #[doc(hidden)]
+            fn __angzarr_dispatch_fact(
+                &self,
+                req: ::angzarr_client::proto::FactRequest,
+            ) -> ::std::result::Result<
+                ::angzarr_client::router::HandlerResponse,
+                ::angzarr_client::ClientError,
+            > {
+                // Rebuild state from prior_events using `#[applies]`.
+                let prior = req.prior_events.clone().unwrap_or_default();
+                let mut state: #state_ty = #initial_state_expr;
+                for page in &prior.pages {
+                    let evt_any = match &page.payload {
+                        ::std::option::Option::Some(
+                            ::angzarr_client::proto::event_page::Payload::Event(e),
+                        ) => e,
+                        _ => continue,
+                    };
+                    let evt_type_url = &evt_any.type_url;
+                    #(#apply_arms_for_fact)*
+                }
+
+                // Walk facts and dispatch matching `#[handles_fact]` methods.
+                let facts = req.facts.unwrap_or_default();
+                let mut merged = ::angzarr_client::proto::EventBook::default();
+                for page in &facts.pages {
+                    let payload = match &page.payload {
+                        ::std::option::Option::Some(
+                            ::angzarr_client::proto::event_page::Payload::Event(e),
+                        ) => e,
+                        _ => continue,
+                    };
+                    let type_url = &payload.type_url;
+                    #(#fact_dispatch_arms)*
+                    // No matching `#[handles_fact]` for this fact —
+                    // silently skip; coordinator persists it as-is via
+                    // its own pass-through path.
+                }
+                ::std::result::Result::Ok(
+                    ::angzarr_client::router::HandlerResponse::HandleFact(merged),
+                )
+            }
+
+            #[doc(hidden)]
+            fn __angzarr_dispatch_replay(
+                &self,
+                req: ::angzarr_client::proto::ReplayRequest,
+            ) -> ::std::result::Result<
+                ::angzarr_client::router::HandlerResponse,
+                ::angzarr_client::ClientError,
+            > {
+                #replay_body
+            }
         }
 
         impl ::angzarr_client::router::Handler for #self_ty {
@@ -324,6 +518,8 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
                     rejected: ::std::vec![#(#rejected_exprs),*],
                     applies: ::std::vec![#(#applies_exprs),*],
                     state_factory: #state_factory_expr,
+                    handles_fact: ::std::vec![#(#handles_fact_exprs),*],
+                    supports_replay: #supports_replay,
                 }
             }
 
@@ -334,8 +530,17 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
                 ::angzarr_client::router::HandlerResponse,
                 ::angzarr_client::ClientError,
             > {
+                // Audit #45: route HandleFact and Replay request variants
+                // to the dedicated paths emitted below before falling
+                // through to the CommandHandler dispatch.
                 let ctx_cmd = match request {
                     ::angzarr_client::router::HandlerRequest::CommandHandler(c) => c,
+                    ::angzarr_client::router::HandlerRequest::HandleFact(req) => {
+                        return Self::__angzarr_dispatch_fact(self, req);
+                    }
+                    ::angzarr_client::router::HandlerRequest::Replay(req) => {
+                        return Self::__angzarr_dispatch_replay(self, req);
+                    }
                     _ => {
                         return ::std::result::Result::Err(
                             ::angzarr_client::ClientError::invalid_argument(
@@ -504,6 +709,11 @@ struct MethodMetadata {
     state_factory: Option<Ident>,
     /// `(method name, from type, to type)` triples for upcaster dispatch arms.
     upcasts_with_methods: Vec<(Ident, Ident, Ident)>,
+    /// Audit #45: types named in `#[handles_fact(T)]` for config emission.
+    handles_fact: Vec<Ident>,
+    /// Audit #45: `(method name, fact event type)` pairs for HandleFact
+    /// dispatch-arm generation.
+    handles_fact_with_methods: Vec<(Ident, Ident)>,
 }
 
 fn collect_method_metadata(input: &ItemImpl) -> MethodMetadata {
@@ -515,6 +725,8 @@ fn collect_method_metadata(input: &ItemImpl) -> MethodMetadata {
     let mut applies_with_methods = Vec::new();
     let mut state_factory = None;
     let mut upcasts_with_methods = Vec::new();
+    let mut handles_fact = Vec::new();
+    let mut handles_fact_with_methods = Vec::new();
 
     for item in &input.items {
         let ImplItem::Fn(method) = item else { continue };
@@ -523,6 +735,13 @@ fn collect_method_metadata(input: &ItemImpl) -> MethodMetadata {
                 if let Ok(ty) = get_attr_ident(attr) {
                     handled.push(ty.clone());
                     handled_with_methods.push((method.sig.ident.clone(), ty));
+                }
+            } else if attr.path().is_ident("handles_fact") {
+                // Audit #45: fact-event handler. Same shape as
+                // `#[handles]` but routed through HandleFact RPC.
+                if let Ok(ty) = get_attr_ident(attr) {
+                    handles_fact.push(ty.clone());
+                    handles_fact_with_methods.push((method.sig.ident.clone(), ty));
                 }
             } else if attr.path().is_ident("applies") {
                 if let Ok(ty) = get_attr_ident(attr) {
@@ -553,6 +772,8 @@ fn collect_method_metadata(input: &ItemImpl) -> MethodMetadata {
         applies_with_methods,
         state_factory,
         upcasts_with_methods,
+        handles_fact,
+        handles_fact_with_methods,
     }
 }
 
@@ -614,6 +835,7 @@ fn strip_method_markers(input: &mut ItemImpl) {
         if let ImplItem::Fn(method) = item {
             method.attrs.retain(|attr| {
                 !attr.path().is_ident("handles")
+                    && !attr.path().is_ident("handles_fact")
                     && !attr.path().is_ident("rejected")
                     && !attr.path().is_ident("applies")
                     && !attr.path().is_ident("state_factory")
@@ -637,6 +859,34 @@ fn strip_method_markers(input: &mut ItemImpl) {
 pub fn handles(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // The actual work is done by the #[command_handler] macro
     // This is just a marker attribute
+    item
+}
+
+/// Marks a method as a fact-event handler — audit #45.
+///
+/// Triggered when the coordinator dispatches a fact (an external
+/// reality, e.g. a payment confirmation) via the `HandleFact` RPC. The
+/// method receives `(self, event, state)` after state has been rebuilt
+/// from prior events; it returns the events to persist on the
+/// aggregate.
+///
+/// Aggregates with at least one `#[handles_fact]` method opt into the
+/// `HandleFact` RPC. Aggregates with none get UNIMPLEMENTED from the
+/// framework's gRPC adapter — the coordinator falls back to
+/// pass-through-persist per the proto's Optional contract.
+///
+/// # Example
+/// ```rust,ignore
+/// #[handles_fact(StockReserved)]
+/// fn on_stock_reserved(&self, event: StockReserved, state: &PlayerState)
+///     -> CommandResult<EventBook> {
+///     // ...
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn handles_fact(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    // Marker attribute; the #[command_handler] macro reads it during
+    // expansion to build the fact-dispatch table.
     item
 }
 

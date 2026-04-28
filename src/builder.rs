@@ -26,15 +26,20 @@ pub struct CommandBuilder<'a, C: traits::GatewayClient> {
 }
 
 impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
+    /// Construct a CommandBuilder for an aggregate with the given `root`.
+    ///
+    /// Audit #67: `root` is required, no path exists to skip it. The
+    /// only way to obtain an auto-generated UUID v4 is via
+    /// [`CommandBuilderExt::command_new`], which materializes the UUID
+    /// and passes it explicitly to this constructor. Aggregate roots
+    /// are always client-assigned across all six languages (audit #20
+    /// convention). The previously-existing `pub(crate) new_rootless`
+    /// path was deleted as dead code on 2026-04-28.
     pub(crate) fn new(client: &'a C, domain: impl Into<String>, root: Uuid) -> Self {
-        Self::new_rootless(client, domain).with_root(root)
-    }
-
-    pub(crate) fn new_rootless(client: &'a C, domain: impl Into<String>) -> Self {
         Self {
             client,
             domain: domain.into(),
-            root: None,
+            root: Some(root),
             correlation_id: None,
             sequence: None,
             merge_strategy: crate::proto::MergeStrategy::MergeCommutative,
@@ -42,11 +47,6 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
             payload: None,
             sync_mode: crate::proto::SyncMode::Async,
         }
-    }
-
-    fn with_root(mut self, root: Uuid) -> Self {
-        self.root = Some(root);
-        self
     }
 
     /// Set the correlation ID for request tracing.

@@ -20,3 +20,6 @@ mod stacking;
 
 #[path = "router/validation.rs"]
 mod validation;
+
+#[path = "router/fact_replay.rs"]
+mod fact_replay;
