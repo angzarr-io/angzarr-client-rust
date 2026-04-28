@@ -4,7 +4,6 @@
 //! history, command results, and rebuilt state. Mirrors Python's
 //! `angzarr_client.testing.ScenarioContext`.
 
-use prost::Message;
 use prost_types::Any;
 
 use crate::error::CommandRejectedError;

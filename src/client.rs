@@ -1,7 +1,5 @@
 //! Default client implementations wrapping tonic gRPC clients.
 
-use std::time::Duration;
-
 use crate::error::{ClientError, Result};
 use crate::error_codes::{codes, keys, messages};
 use crate::proto::{

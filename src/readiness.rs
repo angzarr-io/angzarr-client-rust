@@ -168,10 +168,9 @@ pub async fn run_supervisor(
     loop {
         let mut all_ok = true;
         for probe in &probes {
-            let ok = match tokio::time::timeout(timeout, probe.check()).await {
-                Ok(b) => b,
-                Err(_) => false,
-            };
+            let ok: bool = tokio::time::timeout(timeout, probe.check())
+                .await
+                .unwrap_or_default();
             if !ok {
                 all_ok = false;
                 warn!(probe = probe.name(), "readiness probe failed");
