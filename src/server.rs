@@ -25,6 +25,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use tonic::transport::Server;
+use tonic_health::server::HealthReporter;
 use tonic_health::ServingStatus;
 use tracing::info;
 
@@ -315,6 +316,10 @@ where
     }
 
     let (interval, timeout) = probe_config_from_env();
+    // Audit #83: clones held for the shutdown flip. `HealthReporter` is
+    // `Clone`; `service_names` is owned by the supervisor task.
+    let shutdown_reporter = health_reporter.clone();
+    let shutdown_service_names = service_names.clone();
     let supervisor = tokio::spawn(run_supervisor(
         probes,
         health_reporter,
@@ -356,8 +361,30 @@ where
         }
     };
 
+    // Audit #83: shut down in two phases.
+    // 1. Cancel the supervisor and wait for it to actually exit so any
+    //    in-flight `set_service_status` finishes before we publish the
+    //    final state. `JoinError` from the abort path is expected and
+    //    swallowed; any other panic from the supervisor was already
+    //    caught at the probe level (audit #82).
+    // 2. Flip every registered health name to `NOT_SERVING` so K8s
+    //    readiness goes red and the load balancer drains the pod.
     supervisor.abort();
+    let _ = supervisor.await;
+    publish_shutdown_status(&shutdown_reporter, &shutdown_service_names).await;
+    info!(name = %instance_name, "Server shut down");
     result
+}
+
+/// Audit #83: flip every registered health name to `NOT_SERVING` so the
+/// load balancer drains the pod. Extracted so the shutdown publish can
+/// be unit-tested in isolation from the runner's transport plumbing.
+async fn publish_shutdown_status(reporter: &HealthReporter, service_names: &[String]) {
+    for name in service_names {
+        reporter
+            .set_service_status(name, ServingStatus::NotServing)
+            .await;
+    }
 }
 
 #[cfg(test)]
@@ -415,5 +442,71 @@ mod tests {
         // The default_port arg is irrelevant when the override is set.
         assert_eq!(addr, "0.0.0.0:1234");
         clear_bind_env();
+    }
+
+    // Audit #83: shutdown flips every registered health name to
+    // NOT_SERVING so the K8s load balancer drains the pod.
+
+    /// Read the current `ServingStatus` from the reporter's shared
+    /// state by wiring a fresh `HealthService` over a clone of the
+    /// reporter and calling its gRPC `check` method.
+    async fn read_health_status(
+        reporter: &HealthReporter,
+        name: &str,
+    ) -> tonic_health::pb::health_check_response::ServingStatus {
+        use tonic::Request;
+        use tonic_health::pb::HealthCheckRequest;
+        use tonic_health::server::HealthService;
+        let service = HealthService::from_health_reporter(reporter.clone());
+        let req = Request::new(HealthCheckRequest {
+            service: name.to_string(),
+        });
+        let resp = tonic_health::pb::health_server::Health::check(&service, req)
+            .await
+            .expect("check must succeed for a registered service");
+        resp.into_inner().status()
+    }
+
+    #[tokio::test]
+    async fn publish_shutdown_status_flips_every_name_to_not_serving() {
+        let (reporter, _service) = tonic_health::server::health_reporter();
+        let names: Vec<String> = vec![
+            String::new(), // empty/overall name
+            "svc.A".to_string(),
+            "svc.B".to_string(),
+        ];
+
+        // Start every name at SERVING — this is the steady state once
+        // the readiness supervisor has flipped them green.
+        for name in &names {
+            reporter
+                .set_service_status(name, ServingStatus::Serving)
+                .await;
+        }
+        for name in &names {
+            assert_eq!(
+                read_health_status(&reporter, name).await,
+                tonic_health::pb::health_check_response::ServingStatus::Serving,
+            );
+        }
+
+        publish_shutdown_status(&reporter, &names).await;
+
+        for name in &names {
+            assert_eq!(
+                read_health_status(&reporter, name).await,
+                tonic_health::pb::health_check_response::ServingStatus::NotServing,
+                "shutdown must flip {name:?} to NOT_SERVING",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn publish_shutdown_status_no_names_is_noop() {
+        let (reporter, _service) = tonic_health::server::health_reporter();
+        // Should not panic, should not register a name we never asked
+        // for. Empty input is the legal "no services" case (won't
+        // happen in run_kind today but the helper is general-purpose).
+        publish_shutdown_status(&reporter, &[]).await;
     }
 }
