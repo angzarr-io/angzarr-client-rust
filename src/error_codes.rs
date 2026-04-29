@@ -125,6 +125,8 @@ pub mod messages {
     pub const ENDPOINT_INVALID_URI: &str = "endpoint URI is invalid";
     pub const CONNECTION_FAILED: &str = "connection failed";
     pub const CONNECTION_FAILED_MAX_RETRIES: &str = "connection failed after max retries";
+    pub const TRANSPORT_ERROR: &str = "transport error";
+    pub const GRPC_ERROR: &str = "grpc error";
     pub const INVALID_TRANSPORT_MODE: &str = "invalid transport mode env value";
     pub const INVALID_PORT: &str = "invalid port env value";
 

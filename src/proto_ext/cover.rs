@@ -59,7 +59,9 @@ pub trait CoverExt {
     /// Get the edition name from the cover.
     ///
     /// Returns the explicit edition name if set and non-empty, otherwise
-    /// defaults to the canonical timeline name (`"angzarr"`).
+    /// `DEFAULT_EDITION` (currently `""` — the canonical empty marker
+    /// used in cache keys; matches Python `helpers.cache_key`'s
+    /// `edition or ''` formula).
     fn edition(&self) -> &str {
         self.cover()
             .and_then(|c| c.edition.as_ref())
