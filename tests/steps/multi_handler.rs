@@ -182,7 +182,7 @@ impl PMA {
                 }),
                 pages: vec![],
             }],
-            process_events: Some(EventBook::default()),
+            process_events: vec![],
             facts: vec![],
         })
     }
@@ -212,7 +212,7 @@ impl PMB {
                 }),
                 pages: vec![],
             }],
-            process_events: Some(EventBook::default()),
+            process_events: vec![],
             facts: vec![],
         })
     }

@@ -12,9 +12,9 @@
 //! [`Router::build`]: crate::router::Router::build
 
 use crate::proto::{
-    business_response, BusinessResponse, CommandBook, ContextualCommand, Cover, EventBook,
-    Notification, ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection,
-    RejectionNotification, SagaHandleRequest, SagaResponse,
+    business_response, BusinessResponse, ContextualCommand, EventBook, Notification,
+    ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, RejectionNotification,
+    SagaHandleRequest, SagaResponse,
 };
 use crate::router::builder::Factory;
 use crate::router::{Handler, HandlerConfig, HandlerRequest, HandlerResponse};
@@ -22,26 +22,10 @@ use crate::ClientError;
 use prost::Message;
 use std::sync::OnceLock;
 
-/// Audit #86: stamp `source.edition` onto every outgoing book's cover.
-/// **Always-override semantics** — handler choices are overwritten so
-/// the framework guarantees timeline consistency on cross-domain
-/// emissions.
-fn propagate_edition_into_books(
-    source: &Cover,
-    commands: &mut [CommandBook],
-    events: &mut [EventBook],
-) {
-    for book in commands.iter_mut() {
-        if let Some(cover) = book.cover.as_mut() {
-            cover.propagate_edition_from(source);
-        }
-    }
-    for book in events.iter_mut() {
-        if let Some(cover) = book.cover.as_mut() {
-            cover.propagate_edition_from(source);
-        }
-    }
-}
+// Audit #86 reverted 2026-04-29: `propagate_edition_into_books`
+// helper removed. Edition propagation is the coordinator's
+// responsibility — see coordinator-contract/edition_propagation.feature
+// in angzarr-project.
 
 /// Runtime router built from one-or-more aggregate factories.
 #[derive(Debug)]
@@ -314,13 +298,10 @@ impl SagaRouter {
         // `dispatch_saga:387-389` (`if cls.__angzarr_meta__.get("source")
         // != source_domain: continue`). The source-book cover supplies
         // the runtime domain.
-        let source_cover = request
+        let source_domain = request
             .source
             .as_ref()
             .and_then(|eb| eb.cover.as_ref())
-            .cloned();
-        let source_domain = source_cover
-            .as_ref()
             .map(|c| c.domain.as_str())
             .unwrap_or("")
             .to_string();
@@ -344,19 +325,16 @@ impl SagaRouter {
             }
 
             let response = handler.dispatch(HandlerRequest::Saga(request.clone()))?;
-            let HandlerResponse::Saga(mut sr) = response else {
+            let HandlerResponse::Saga(sr) = response else {
                 return Err(ClientError::invalid_argument(
                     crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
                     crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
                     [(crate::error_codes::keys::EXPECTED_KIND, "Saga")],
                 ));
             };
-            // Audit #86: always-override edition propagation. Every
-            // outgoing CommandBook / EventBook inherits the source
-            // cover's edition, even if the handler set its own.
-            if let Some(src) = source_cover.as_ref() {
-                propagate_edition_into_books(src, &mut sr.commands, &mut sr.events);
-            }
+            // Audit #86 reverted 2026-04-29: edition propagation moved to
+            // coordinator-contract. Outgoing covers ride out as-is; the
+            // coordinator stamps editions on cross-domain emissions.
             merged.commands.extend(sr.commands);
             merged.events.extend(sr.events);
             matched += 1;
@@ -443,13 +421,10 @@ impl ProcessManagerRouter {
         // `dispatch_process_manager:444-446` (`if trigger_domain not in
         // sources: continue`). The trigger-book cover supplies the
         // runtime domain.
-        let trigger_cover = request
+        let trigger_domain = request
             .trigger
             .as_ref()
             .and_then(|eb| eb.cover.as_ref())
-            .cloned();
-        let trigger_domain = trigger_cover
-            .as_ref()
             .map(|c| c.domain.as_str())
             .unwrap_or("")
             .to_string();
@@ -473,32 +448,24 @@ impl ProcessManagerRouter {
             }
 
             let response = handler.dispatch(HandlerRequest::ProcessManager(request.clone()))?;
-            let HandlerResponse::ProcessManager(mut pr) = response else {
+            let HandlerResponse::ProcessManager(pr) = response else {
                 return Err(ClientError::invalid_argument(
                     crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
                     crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
                     [(crate::error_codes::keys::EXPECTED_KIND, "ProcessManager")],
                 ));
             };
-            // Audit #86: always-override edition propagation. Every
-            // outgoing CommandBook / EventBook inherits the trigger
-            // cover's edition, even if the handler set its own.
-            if let Some(trg) = trigger_cover.as_ref() {
-                propagate_edition_into_books(trg, &mut pr.commands, &mut pr.facts);
-                if let Some(pe) = pr.process_events.as_mut() {
-                    if let Some(cover) = pe.cover.as_mut() {
-                        cover.propagate_edition_from(trg);
-                    }
-                }
-            }
+            // Audit #86 reverted 2026-04-29: edition propagation moved
+            // to coordinator-contract; outgoing covers ride out as-is.
+            //
+            // Audit #92 2026-04-29: ProcessManagerHandleResponse.
+            // process_events became `repeated EventBook` so the merge
+            // policy lives at the coordinator with full information.
+            // Pass the handler's books through verbatim — no
+            // first-non-empty-cover-wins on the client side.
             merged.commands.extend(pr.commands);
             merged.facts.extend(pr.facts);
-            if let Some(evts) = pr.process_events {
-                match merged.process_events.as_mut() {
-                    Some(existing) => existing.pages.extend(evts.pages),
-                    None => merged.process_events = Some(evts),
-                }
-            }
+            merged.process_events.extend(pr.process_events);
             matched += 1;
         }
 
