@@ -840,8 +840,7 @@ impl ProcessManagerRouter {
     pub fn sync_output_domains(&self) -> Vec<String> {
         let mut seen = Vec::new();
         for factory in &self.factories {
-            if let HandlerConfig::ProcessManager { sync_targets, .. } =
-                (factory.produce)().config()
+            if let HandlerConfig::ProcessManager { sync_targets, .. } = (factory.produce)().config()
             {
                 for t in sync_targets {
                     if !t.is_empty() && !seen.contains(&t) {

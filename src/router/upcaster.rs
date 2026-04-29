@@ -36,10 +36,12 @@ impl UpcasterRouter {
     /// Audit #42: cached after the first call.
     pub fn name(&self) -> String {
         self.cached_name
-            .get_or_init(|| match self.factories.first().map(|f| (f.produce)().config()) {
-                Some(HandlerConfig::Upcaster { name, .. }) => name,
-                _ => String::new(),
-            })
+            .get_or_init(
+                || match self.factories.first().map(|f| (f.produce)().config()) {
+                    Some(HandlerConfig::Upcaster { name, .. }) => name,
+                    _ => String::new(),
+                },
+            )
             .clone()
     }
 

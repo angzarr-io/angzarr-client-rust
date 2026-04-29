@@ -221,7 +221,12 @@ impl AsyncSaga {
 
 struct SyncSaga;
 
-#[saga(name = "saga-sync", source = "order", target = "inventory", sync = true)]
+#[saga(
+    name = "saga-sync",
+    source = "order",
+    target = "inventory",
+    sync = true
+)]
 impl SyncSaga {
     #[handles(InventoryReserved)]
     #[allow(unused_variables, dead_code)]
@@ -278,7 +283,12 @@ fn saga_router_sync_output_domains_includes_sync_target() {
 
 struct SyncToInv;
 
-#[saga(name = "saga-sync-inv", source = "order", target = "inventory", sync = true)]
+#[saga(
+    name = "saga-sync-inv",
+    source = "order",
+    target = "inventory",
+    sync = true
+)]
 impl SyncToInv {
     #[handles(InventoryReserved)]
     #[allow(unused_variables, dead_code)]
