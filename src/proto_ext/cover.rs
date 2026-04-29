@@ -114,18 +114,14 @@ impl CoverExt for Cover {
     }
 }
 
-impl Cover {
-    /// Audit #86: copy the `source` cover's edition (full struct,
-    /// including divergences) onto this cover, overwriting whatever
-    /// was here. **Always-override semantics:** the framework
-    /// guarantees timeline consistency on saga / PM cross-domain
-    /// emissions; handlers cannot escape into a different edition by
-    /// setting their own outgoing cover. Cross-timeline emission
-    /// would need a separate fork-to-timeline mechanism.
-    pub fn propagate_edition_from(&mut self, source: &Cover) {
-        self.edition = source.edition.clone();
-    }
-}
+// Audit #86 reverted 2026-04-29: edition propagation is a coordinator
+// concern (one canonical implementation across all clients), not
+// per-client framework code. See coordinator-contract/
+// edition_propagation.feature in angzarr-project for the contract the
+// coordinator must enforce. The READ accessor (`CoverExt::edition`)
+// stays — clients still need it for cache keys, routing keys, and
+// any user-facing inspection — but the WRITE-side mutator
+// `Cover::propagate_edition_from` is gone.
 
 #[cfg(test)]
 mod tests {
@@ -168,96 +164,7 @@ mod tests {
         assert_eq!(book.domain(), "order");
     }
 
-    // Audit #86: `propagate_edition_from` always overrides outgoing
-    // edition with the source's full Edition struct (name + divergences).
-
-    use crate::proto::{DomainDivergence, Edition};
-
-    #[test]
-    fn propagate_edition_copies_name_when_outgoing_unset() {
-        let source = Cover {
-            edition: Some(Edition {
-                name: "speculative".to_string(),
-                divergences: vec![],
-            }),
-            ..Default::default()
-        };
-        let mut outgoing = Cover {
-            edition: None,
-            ..Default::default()
-        };
-        outgoing.propagate_edition_from(&source);
-        assert_eq!(
-            outgoing.edition.as_ref().map(|e| e.name.as_str()),
-            Some("speculative"),
-        );
-    }
-
-    #[test]
-    fn propagate_edition_overrides_handler_set_edition() {
-        let source = Cover {
-            edition: Some(Edition {
-                name: "alpha".to_string(),
-                divergences: vec![],
-            }),
-            ..Default::default()
-        };
-        let mut outgoing = Cover {
-            edition: Some(Edition {
-                name: "beta".to_string(),
-                divergences: vec![],
-            }),
-            ..Default::default()
-        };
-        outgoing.propagate_edition_from(&source);
-        assert_eq!(
-            outgoing.edition.as_ref().map(|e| e.name.as_str()),
-            Some("alpha"),
-            "always-override semantics: source wins",
-        );
-    }
-
-    #[test]
-    fn propagate_edition_clears_when_source_unset() {
-        let source = Cover {
-            edition: None,
-            ..Default::default()
-        };
-        let mut outgoing = Cover {
-            edition: Some(Edition {
-                name: "leftover".to_string(),
-                divergences: vec![],
-            }),
-            ..Default::default()
-        };
-        outgoing.propagate_edition_from(&source);
-        assert!(
-            outgoing.edition.is_none(),
-            "source had no edition → outgoing must match (cleared)",
-        );
-    }
-
-    #[test]
-    fn propagate_edition_preserves_divergences() {
-        let source = Cover {
-            edition: Some(Edition {
-                name: "speculative".to_string(),
-                divergences: vec![DomainDivergence {
-                    domain: "order".to_string(),
-                    sequence: 5,
-                }],
-            }),
-            ..Default::default()
-        };
-        let mut outgoing = Cover {
-            edition: None,
-            ..Default::default()
-        };
-        outgoing.propagate_edition_from(&source);
-        let edition = outgoing.edition.as_ref().expect("edition stamped");
-        assert_eq!(edition.name, "speculative");
-        assert_eq!(edition.divergences.len(), 1);
-        assert_eq!(edition.divergences[0].domain, "order");
-        assert_eq!(edition.divergences[0].sequence, 5);
-    }
+    // Audit #86 reverted 2026-04-29: edition propagation moved to
+    // coordinator-contract; the four `propagate_edition_*` tests were
+    // deleted along with the `Cover::propagate_edition_from` mutator.
 }

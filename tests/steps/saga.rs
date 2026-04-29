@@ -3,8 +3,7 @@
 use std::collections::HashMap;
 
 use angzarr_client::proto::{
-    event_page, CommandBook, Cover, DomainDivergence, Edition, EventBook, EventPage,
-    SagaHandleRequest, SagaResponse,
+    event_page, CommandBook, Cover, EventBook, EventPage, SagaHandleRequest, SagaResponse,
 };
 use angzarr_client::router::{Built, Router};
 use angzarr_client::{full_type_url, saga, CommandResult};
@@ -83,60 +82,6 @@ impl OrderSplit {
     }
 }
 
-// Audit #86: OrderAudit emits an event (fact-style) rather than a
-// command. Used by C-0139 to pin event-cover propagation.
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct OrderObserved {}
-impl ::prost::Name for OrderObserved {
-    const NAME: &'static str = "OrderObserved";
-    const PACKAGE: &'static str = "audit";
-}
-
-struct OrderAudit;
-#[saga(name = "OrderAudit", source = "order", target = "audit")]
-impl OrderAudit {
-    #[handles(OrderCreated)]
-    #[allow(unused_variables, dead_code)]
-    fn on_created(&self, event: OrderCreated) -> CommandResult<SagaResponse> {
-        Ok(SagaResponse {
-            commands: vec![],
-            events: vec![EventBook {
-                cover: Some(Cover {
-                    domain: "audit".to_string(),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }],
-        })
-    }
-}
-
-// Audit #86: OrderOverrideEdition explicitly sets a "beta" edition on
-// the outgoing command. Pins always-override semantics — the framework
-// must overwrite "beta" with the source edition.
-struct OrderOverrideEdition;
-#[saga(name = "OrderOverrideEdition", source = "order", target = "inventory")]
-impl OrderOverrideEdition {
-    #[handles(OrderCreated)]
-    #[allow(unused_variables, dead_code)]
-    fn on_created(&self, event: OrderCreated) -> CommandResult<SagaResponse> {
-        Ok(SagaResponse {
-            commands: vec![CommandBook {
-                cover: Some(Cover {
-                    domain: "inventory".to_string(),
-                    edition: Some(Edition {
-                        name: "beta".to_string(),
-                        divergences: vec![],
-                    }),
-                    ..Default::default()
-                }),
-                pages: vec![],
-            }],
-            events: vec![],
-        })
-    }
-}
-
 // ---------------------------------------------------------------------------
 // World.
 // ---------------------------------------------------------------------------
@@ -146,13 +91,6 @@ enum SagaVariant {
     #[default]
     Fulfillment,
     Split,
-    /// Audit #86 C-0139: emits an OrderObserved event (fact-style) so
-    /// the response carries an outgoing EventBook for cover-edition
-    /// propagation tests.
-    Audit,
-    /// Audit #86 C-0140: handler explicitly sets a non-empty edition
-    /// on the outgoing command so we can verify always-override.
-    OverrideEdition,
 }
 
 #[derive(Debug, World)]
@@ -160,10 +98,6 @@ enum SagaVariant {
 pub struct SagaWorld {
     variant: SagaVariant,
     destination_sequences: HashMap<String, u32>,
-    /// Audit #86: the source EventBook's edition, populated by Given
-    /// steps; threaded through to `SagaHandleRequest.source.cover.edition`
-    /// in the When step.
-    source_edition: Option<Edition>,
     response: Option<SagaResponse>,
 }
 
@@ -172,7 +106,6 @@ impl SagaWorld {
         Self {
             variant: SagaVariant::Fulfillment,
             destination_sequences: HashMap::new(),
-            source_edition: None,
             response: None,
         }
     }
@@ -182,10 +115,6 @@ fn build_saga(world: &SagaWorld) -> angzarr_client::router::runtime::SagaRouter 
     let built = match world.variant {
         SagaVariant::Fulfillment => Router::new("s").with_handler(|| OrderFulfillment).build(),
         SagaVariant::Split => Router::new("s").with_handler(|| OrderSplit).build(),
-        SagaVariant::Audit => Router::new("s").with_handler(|| OrderAudit).build(),
-        SagaVariant::OverrideEdition => Router::new("s")
-            .with_handler(|| OrderOverrideEdition)
-            .build(),
     }
     .expect("build");
     let Built::Saga(r) = built else {
@@ -209,13 +138,8 @@ fn page_of<T: prost::Message + prost::Name>(evt: T) -> EventPage {
 // ---------------------------------------------------------------------------
 
 #[given(expr = "a saga {string} translating from {string} to {string}")]
-async fn given_saga(world: &mut SagaWorld, name: String, _src: String, _tgt: String) {
-    // Audit #86 C-0139: switch on saga name to route to the right
-    // fixture variant.
-    world.variant = match name.as_str() {
-        "OrderAudit" => SagaVariant::Audit,
-        _ => SagaVariant::Fulfillment,
-    };
+async fn given_saga(world: &mut SagaWorld, _name: String, _src: String, _tgt: String) {
+    world.variant = SagaVariant::Fulfillment;
 }
 
 #[given("the saga handles OrderCreated by emitting a ReserveStock command")]
@@ -260,10 +184,8 @@ async fn when_dispatch_order(world: &mut SagaWorld) {
     let req = SagaHandleRequest {
         source: Some(EventBook {
             // Audit #46: saga dispatch filters by handler-declared source.
-            // Audit #86: source-cover edition propagates to outgoing books.
             cover: Some(Cover {
                 domain: "order".to_string(),
-                edition: world.source_edition.clone(),
                 ..Default::default()
             }),
             pages: vec![page_of(OrderCreated {})],
@@ -341,103 +263,3 @@ async fn then_reserve_seq(_world: &mut SagaWorld, _n: u32) {
 
 #[then(expr = "the CreateShipment command carries destination sequence {int}")]
 async fn then_create_shipment_seq(_world: &mut SagaWorld, _n: u32) {}
-
-// ---------------------------------------------------------------------------
-// Audit #86: edition propagation step impls (C-0138..C-0142).
-// ---------------------------------------------------------------------------
-
-#[given(expr = "the source event has edition {string}")]
-async fn given_source_edition(world: &mut SagaWorld, name: String) {
-    world.source_edition = Some(Edition {
-        name,
-        divergences: vec![],
-    });
-}
-
-#[given("the source event has no edition set")]
-async fn given_source_no_edition(world: &mut SagaWorld) {
-    world.source_edition = None;
-}
-
-#[given(expr = "the source event has edition {string} with divergence at {string}={int}")]
-async fn given_source_edition_with_divergence(
-    world: &mut SagaWorld,
-    name: String,
-    domain: String,
-    sequence: u32,
-) {
-    world.source_edition = Some(Edition {
-        name,
-        divergences: vec![DomainDivergence { domain, sequence }],
-    });
-}
-
-#[given(expr = "the saga handler sets outgoing edition {string}")]
-async fn given_handler_sets_outgoing_edition(world: &mut SagaWorld, _outgoing: String) {
-    // The saga variant `OrderOverrideEdition` hard-codes "beta" as its
-    // handler-set outgoing edition. The string parameter is documented
-    // in the .feature file for clarity but the test fixture pins it.
-    world.variant = SagaVariant::OverrideEdition;
-}
-
-#[given("the saga handles OrderCreated by emitting an OrderObserved event")]
-async fn given_audit_handles(_world: &mut SagaWorld) {}
-
-#[given("the router is built with the OrderAudit saga")]
-async fn given_audit_built(world: &mut SagaWorld) {
-    world.variant = SagaVariant::Audit;
-}
-
-#[then(expr = "the emitted command's cover has edition {string}")]
-async fn then_command_edition(world: &mut SagaWorld, expected: String) {
-    let r = world.response.as_ref().expect("resp");
-    let cover = r.commands[0].cover.as_ref().expect("command cover");
-    let actual = cover
-        .edition
-        .as_ref()
-        .map(|e| e.name.as_str())
-        .unwrap_or("");
-    assert_eq!(actual, expected);
-}
-
-#[then("the emitted command's cover has no edition set")]
-async fn then_command_no_edition(world: &mut SagaWorld) {
-    let r = world.response.as_ref().expect("resp");
-    let cover = r.commands[0].cover.as_ref().expect("command cover");
-    assert!(
-        cover.edition.is_none(),
-        "expected no edition; got {:?}",
-        cover.edition,
-    );
-}
-
-#[then(expr = "the emitted event's cover has edition {string}")]
-async fn then_event_edition(world: &mut SagaWorld, expected: String) {
-    let r = world.response.as_ref().expect("resp");
-    let cover = r.events[0].cover.as_ref().expect("event cover");
-    let actual = cover
-        .edition
-        .as_ref()
-        .map(|e| e.name.as_str())
-        .unwrap_or("");
-    assert_eq!(actual, expected);
-}
-
-#[then(expr = "the emitted command's cover has edition {string} with divergence at {string}={int}")]
-async fn then_command_edition_with_divergence(
-    world: &mut SagaWorld,
-    expected_name: String,
-    expected_domain: String,
-    expected_seq: u32,
-) {
-    let r = world.response.as_ref().expect("resp");
-    let cover = r.commands[0].cover.as_ref().expect("command cover");
-    let edition = cover.edition.as_ref().expect("edition stamped");
-    assert_eq!(edition.name, expected_name);
-    let div = edition
-        .divergences
-        .iter()
-        .find(|d| d.domain == expected_domain)
-        .expect("divergence for domain");
-    assert_eq!(div.sequence, expected_seq);
-}
