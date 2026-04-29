@@ -31,6 +31,13 @@ pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const ENV_INTERVAL: &str = "ANGZARR_READINESS_PROBE_INTERVAL";
 const ENV_TIMEOUT: &str = "ANGZARR_READINESS_PROBE_TIMEOUT";
 
+/// Audit #74: optional async-bus endpoint (Kafka / RabbitMQ / SQS /
+/// SNS / NATS / etc.). When set, a single [`BusProbe`] covers
+/// reachability of the async path for every async-only saga / PM
+/// target. When unset, no bus probe is added — async-only targets
+/// are simply not part of readiness.
+pub const ENV_BUS_ENDPOINT: &str = "ANGZARR_BUS_ENDPOINT";
+
 /// Read the supervisor cadence + per-probe timeout from env, falling back to
 /// the [`DEFAULT_PROBE_INTERVAL`] / [`DEFAULT_PROBE_TIMEOUT`] constants.
 pub fn probe_config_from_env() -> (Duration, Duration) {
@@ -145,6 +152,50 @@ impl OutputDomainProbe {
 impl Probe for OutputDomainProbe {
     fn name(&self) -> &str {
         &self.domain
+    }
+    async fn check(&self) -> bool {
+        match &self.endpoint {
+            Endpoint::Tcp(addr) => tokio::net::TcpStream::connect(addr).await.is_ok(),
+            Endpoint::Uds(path) => tokio::net::UnixStream::connect(path).await.is_ok(),
+        }
+    }
+}
+
+/// Audit #74: async-bus reachability probe — covers the path that
+/// async-only saga / PM targets ride. The endpoint is operator-supplied
+/// via [`ENV_BUS_ENDPOINT`] and points at whatever broker the
+/// deployment uses (Kafka, RabbitMQ, SQS/SNS, NATS, etc.). The probe
+/// is connection-only — it confirms the broker is reachable, not that
+/// publishes will succeed end-to-end. Same contract as
+/// [`OutputDomainProbe`] for sync targets.
+pub struct BusProbe {
+    endpoint: Endpoint,
+}
+
+impl BusProbe {
+    fn from_endpoint(raw: String) -> Self {
+        let endpoint = if let Some(path) = raw.strip_prefix("unix:") {
+            Endpoint::Uds(PathBuf::from(path))
+        } else if raw.starts_with('/') {
+            Endpoint::Uds(PathBuf::from(raw))
+        } else {
+            Endpoint::Tcp(raw)
+        };
+        Self { endpoint }
+    }
+
+    /// Build a [`BusProbe`] from [`ENV_BUS_ENDPOINT`], or `None` if the
+    /// env var is unset / blank.
+    pub fn from_env() -> Option<Self> {
+        let raw = env::var(ENV_BUS_ENDPOINT).ok().filter(|s| !s.is_empty())?;
+        Some(Self::from_endpoint(raw))
+    }
+}
+
+#[async_trait]
+impl Probe for BusProbe {
+    fn name(&self) -> &str {
+        "bus"
     }
     async fn check(&self) -> bool {
         match &self.endpoint {

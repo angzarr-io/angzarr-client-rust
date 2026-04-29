@@ -139,18 +139,23 @@ impl Router {
         Ok(match first_kind {
             Kind::CommandHandler => Built::CommandHandler(CommandHandlerRouter {
                 factories: self.factories,
+                cached_name: std::sync::OnceLock::new(),
             }),
             Kind::Saga => Built::Saga(SagaRouter {
                 factories: self.factories,
+                cached_name: std::sync::OnceLock::new(),
             }),
             Kind::ProcessManager => Built::ProcessManager(ProcessManagerRouter {
                 factories: self.factories,
+                cached_name: std::sync::OnceLock::new(),
             }),
             Kind::Projector => Built::Projector(ProjectorRouter {
                 factories: self.factories,
+                cached_name: std::sync::OnceLock::new(),
             }),
             Kind::Upcaster => Built::Upcaster(UpcasterRouter {
                 factories: self.factories,
+                cached_name: std::sync::OnceLock::new(),
             }),
         })
     }

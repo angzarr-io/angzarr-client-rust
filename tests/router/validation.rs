@@ -41,3 +41,11 @@ fn process_manager_without_sources_fails_to_compile() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/router/ui/process_manager_without_sources.rs");
 }
+
+#[test]
+fn process_manager_sync_target_not_in_targets_fails_to_compile() {
+    // Audit #74: macro-parse-time validation that `sync_targets` is a
+    // subset of `targets`. Mirrors Python's decoration-time `ValueError`.
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/router/ui/process_manager_sync_target_not_in_targets.rs");
+}

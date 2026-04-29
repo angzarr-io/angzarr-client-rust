@@ -56,6 +56,11 @@ pub enum HandlerConfig {
         name: String,
         source: String,
         target: String,
+        /// Audit #74: whether commands emitted to ``target`` ever use
+        /// sync mode (SIMPLE / CASCADE / DECISION / ISOLATED). Drives
+        /// readiness probing — only sync targets need their coordinator
+        /// reachable for traffic to be safe.
+        sync: bool,
         handled: Vec<String>,
         rejected: Vec<(String, String)>,
     },
@@ -64,6 +69,9 @@ pub enum HandlerConfig {
         pm_domain: String,
         sources: Vec<String>,
         targets: Vec<String>,
+        /// Audit #74: subset of ``targets`` whose commands ever use sync
+        /// mode. Drives readiness probing.
+        sync_targets: Vec<String>,
         handled: Vec<String>,
         rejected: Vec<(String, String)>,
         applies: Vec<String>,

@@ -20,11 +20,16 @@ use crate::router::builder::Factory;
 use crate::router::{Handler, HandlerConfig, HandlerRequest, HandlerResponse};
 use crate::ClientError;
 use prost::Message;
+use std::sync::OnceLock;
 
 /// Runtime router built from one-or-more aggregate factories.
 #[derive(Debug)]
 pub struct CommandHandlerRouter {
     pub(crate) factories: Vec<Factory>,
+    /// Audit #42: cached identifier so `name()` is infallible after the
+    /// first call and the factory is invoked at most once per router
+    /// lifetime — matching Python's zero-factory-call property.
+    pub(crate) cached_name: OnceLock<String>,
 }
 
 impl CommandHandlerRouter {
@@ -269,6 +274,8 @@ fn extract_command_type_url(cmd: &ContextualCommand) -> Result<String, ClientErr
 #[derive(Debug)]
 pub struct SagaRouter {
     pub(crate) factories: Vec<Factory>,
+    /// Cached saga `name` (audit #42).
+    pub(crate) cached_name: OnceLock<String>,
 }
 
 impl SagaRouter {
@@ -386,6 +393,8 @@ fn extract_saga_event_type_url(request: &SagaHandleRequest) -> Result<String, Cl
 #[derive(Debug)]
 pub struct ProcessManagerRouter {
     pub(crate) factories: Vec<Factory>,
+    /// Cached PM `name` (audit #42).
+    pub(crate) cached_name: OnceLock<String>,
 }
 
 impl ProcessManagerRouter {
@@ -510,6 +519,8 @@ fn extract_pm_event_type_url(request: &ProcessManagerHandleRequest) -> Result<St
 #[derive(Debug)]
 pub struct ProjectorRouter {
     pub(crate) factories: Vec<Factory>,
+    /// Cached projector `name` (audit #42).
+    pub(crate) cached_name: OnceLock<String>,
 }
 
 impl ProjectorRouter {
@@ -620,11 +631,15 @@ fn first_config(factories: &[Factory]) -> Option<HandlerConfig> {
 impl CommandHandlerRouter {
     /// Domain this router serves (read from the first registered handler's
     /// `#[command_handler(domain = ...)]` metadata).
+    ///
+    /// Audit #42: cached after the first call.
     pub fn name(&self) -> String {
-        match first_config(&self.factories) {
-            Some(HandlerConfig::CommandHandler { domain, .. }) => domain,
-            _ => String::new(),
-        }
+        self.cached_name
+            .get_or_init(|| match first_config(&self.factories) {
+                Some(HandlerConfig::CommandHandler { domain, .. }) => domain,
+                _ => String::new(),
+            })
+            .clone()
     }
 
     /// Command handlers don't emit cross-domain commands at the framework
@@ -732,11 +747,14 @@ impl CommandHandlerRouter {
 
 impl SagaRouter {
     /// Saga name (`#[saga(name = ...)]` from the first registered handler).
+    /// Audit #42: cached after the first call.
     pub fn name(&self) -> String {
-        match first_config(&self.factories) {
-            Some(HandlerConfig::Saga { name, .. }) => name,
-            _ => String::new(),
-        }
+        self.cached_name
+            .get_or_init(|| match first_config(&self.factories) {
+                Some(HandlerConfig::Saga { name, .. }) => name,
+                _ => String::new(),
+            })
+            .clone()
     }
 
     /// Output target domains from every registered saga's `#[saga(target = ...)]`,
@@ -752,15 +770,53 @@ impl SagaRouter {
         }
         seen
     }
+
+    /// Audit #74: subset of [`output_domains`] that the registered
+    /// sagas ever address with sync mode (`#[saga(sync = true)]`).
+    /// Drives readiness probing — only sync targets need their
+    /// coordinator reachable for traffic to be safe.
+    pub fn sync_output_domains(&self) -> Vec<String> {
+        let mut seen = Vec::new();
+        for factory in &self.factories {
+            if let HandlerConfig::Saga { target, sync, .. } = (factory.produce)().config() {
+                if sync && !target.is_empty() && !seen.contains(&target) {
+                    seen.push(target);
+                }
+            }
+        }
+        seen
+    }
+
+    /// Audit #74: `true` if any registered saga has at least one async
+    /// target — i.e. ever publishes through the async bus rather than
+    /// calling the downstream coordinator synchronously. Per-handler
+    /// check; the deduped set difference would miss the case of two
+    /// handlers in the same router emitting to the same target with
+    /// different sync flags.
+    pub fn has_async_outputs(&self) -> bool {
+        self.factories.iter().any(|factory| {
+            matches!(
+                (factory.produce)().config(),
+                HandlerConfig::Saga {
+                    sync: false,
+                    ref target,
+                    ..
+                } if !target.is_empty()
+            )
+        })
+    }
 }
 
 impl ProcessManagerRouter {
     /// Process-manager name (`#[process_manager(name = ...)]` from the first handler).
+    /// Audit #42: cached after the first call.
     pub fn name(&self) -> String {
-        match first_config(&self.factories) {
-            Some(HandlerConfig::ProcessManager { name, .. }) => name,
-            _ => String::new(),
-        }
+        self.cached_name
+            .get_or_init(|| match first_config(&self.factories) {
+                Some(HandlerConfig::ProcessManager { name, .. }) => name,
+                _ => String::new(),
+            })
+            .clone()
     }
 
     /// Flattened, deduplicated `targets` across every registered PM.
@@ -777,15 +833,56 @@ impl ProcessManagerRouter {
         }
         seen
     }
+
+    /// Audit #74: flattened, deduplicated `sync_targets` across every
+    /// registered PM — the subset of [`output_domains`] that ever uses
+    /// sync mode.
+    pub fn sync_output_domains(&self) -> Vec<String> {
+        let mut seen = Vec::new();
+        for factory in &self.factories {
+            if let HandlerConfig::ProcessManager { sync_targets, .. } = (factory.produce)().config()
+            {
+                for t in sync_targets {
+                    if !t.is_empty() && !seen.contains(&t) {
+                        seen.push(t);
+                    }
+                }
+            }
+        }
+        seen
+    }
+
+    /// Audit #74: `true` if any registered PM has at least one target
+    /// that's not in its own `sync_targets` — i.e. ever publishes
+    /// through the async bus.
+    pub fn has_async_outputs(&self) -> bool {
+        self.factories.iter().any(|factory| {
+            if let HandlerConfig::ProcessManager {
+                targets,
+                sync_targets,
+                ..
+            } = (factory.produce)().config()
+            {
+                targets
+                    .iter()
+                    .any(|t| !t.is_empty() && !sync_targets.contains(t))
+            } else {
+                false
+            }
+        })
+    }
 }
 
 impl ProjectorRouter {
     /// Projector name (`#[projector(name = ...)]` from the first handler).
+    /// Audit #42: cached after the first call.
     pub fn name(&self) -> String {
-        match first_config(&self.factories) {
-            Some(HandlerConfig::Projector { name, .. }) => name,
-            _ => String::new(),
-        }
+        self.cached_name
+            .get_or_init(|| match first_config(&self.factories) {
+                Some(HandlerConfig::Projector { name, .. }) => name,
+                _ => String::new(),
+            })
+            .clone()
     }
 
     /// Projectors are read-side; no outbound destinations.
