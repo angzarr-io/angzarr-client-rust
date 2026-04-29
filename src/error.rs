@@ -61,11 +61,17 @@ pub enum ClientError {
     Connection(ErrorDetail),
 
     /// Transport-level error from tonic.
-    #[error("{}", _0)]
+    ///
+    /// Audit #76: Display emits the static inventory message; the dynamic
+    /// tonic error survives via `source()` on the `#[from]` chain.
+    #[error("{}", crate::error_codes::messages::TRANSPORT_ERROR)]
     Transport(#[from] tonic::transport::Error),
 
     /// gRPC error from the server.
-    #[error("{}", .0.message())]
+    ///
+    /// Audit #76: Display emits the static inventory message; the
+    /// server-side message survives via the wrapped `Status`.
+    #[error("{}", crate::error_codes::messages::GRPC_ERROR)]
     Grpc(Box<Status>),
 
     /// Invalid argument provided by caller.
@@ -133,24 +139,27 @@ impl ClientError {
     }
 
     /// Returns the (static) error message.
+    ///
+    /// Audit #76: `Transport` and `Grpc` variants now return inventory
+    /// constants instead of the underlying tonic/Status message; the
+    /// dynamic message survives via `Display` on the wrapped cause.
     pub fn message(&self) -> String {
         match self {
             ClientError::Connection(d) => d.message.to_string(),
-            ClientError::Transport(e) => e.to_string(),
-            ClientError::Grpc(s) => s.message().to_string(),
+            ClientError::Transport(_) => crate::error_codes::messages::TRANSPORT_ERROR.to_string(),
+            ClientError::Grpc(_) => crate::error_codes::messages::GRPC_ERROR.to_string(),
             ClientError::InvalidArgument(d) => d.message.to_string(),
             ClientError::InvalidTimestamp(d) => d.message.to_string(),
             ClientError::Rejected(r) => r.message.to_string(),
         }
     }
 
-    /// Returns the SCREAMING_SNAKE error code, or `""` for the foreign-error
-    /// variants (`Transport` / `Grpc`) which carry their own classification.
+    /// Returns the SCREAMING_SNAKE error code from the inventory.
     pub fn code(&self) -> &'static str {
         match self {
             ClientError::Connection(d) => d.code,
-            ClientError::Transport(_) => "TRANSPORT_ERROR",
-            ClientError::Grpc(_) => "",
+            ClientError::Transport(_) => crate::error_codes::codes::TRANSPORT_ERROR,
+            ClientError::Grpc(_) => crate::error_codes::codes::GRPC_ERROR,
             ClientError::InvalidArgument(d) => d.code,
             ClientError::InvalidTimestamp(d) => d.code,
             ClientError::Rejected(r) => r.code,
@@ -400,5 +409,22 @@ mod tests {
             std::iter::empty::<(String, String)>(),
         );
         assert_eq!(err.to_string(), "registration already open");
+    }
+
+    // Audit #76 + #78: Transport / Grpc variants emit static inventory
+    // messages (no leak of dynamic tonic / Status text) and surface the
+    // SCREAMING_SNAKE codes from the inventory.
+
+    #[test]
+    fn grpc_variant_message_and_code_are_static_inventory() {
+        let err = ClientError::from(Status::not_found("the actual server detail leaks"));
+        assert_eq!(err.message(), crate::error_codes::messages::GRPC_ERROR);
+        assert_eq!(err.code(), crate::error_codes::codes::GRPC_ERROR);
+        assert_eq!(err.to_string(), crate::error_codes::messages::GRPC_ERROR);
+        // The dynamic detail is still reachable via the wrapped Status.
+        assert_eq!(
+            err.status().map(|s| s.message()),
+            Some("the actual server detail leaks"),
+        );
     }
 }

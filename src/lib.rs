@@ -86,8 +86,9 @@ pub use identity::{
 pub use retry::{default_retry_policy, ExponentialBackoffRetry, RetryPolicy};
 pub use testing::{
     make_command_book, make_command_page, make_cover, make_event_book, make_event_page,
-    make_timestamp, pack_event as testing_pack_event, uuid_for, uuid_obj_for, uuid_str_for,
-    ScenarioContext, DEFAULT_TEST_NAMESPACE,
+    make_timestamp, pack_event as testing_pack_event, uuid_for, uuid_for_default, uuid_obj_for,
+    uuid_obj_for_default, uuid_str_for, uuid_str_for_default, ScenarioContext,
+    DEFAULT_TEST_NAMESPACE,
 };
 pub use transport::{resolve_ch_endpoint, TransportMode};
 
@@ -155,9 +156,9 @@ pub use handler::{
 
 // Re-export server utilities
 pub use server::{
-    cleanup_socket, configure_logging, create_server, get_transport_config,
+    cleanup_socket, configure_logging, create_server, get_transport_config, resolve_bind_address,
     run_command_handler_server, run_process_manager_server, run_projector_server, run_saga_server,
-    run_server, run_upcaster_server, ServerConfig,
+    run_server, run_upcaster_server, ServerConfig, DEFAULT_BIND_HOST, ENV_BIND_ADDRESS,
 };
 
 // Re-export validation helpers

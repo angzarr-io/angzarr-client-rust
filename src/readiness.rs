@@ -13,12 +13,14 @@
 //! distinguished by the response status.
 
 use std::env;
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures::FutureExt;
 use tonic_health::server::HealthReporter;
 use tonic_health::ServingStatus;
 use tracing::warn;
@@ -217,16 +219,7 @@ pub async fn run_supervisor(
     timeout: Duration,
 ) {
     loop {
-        let mut all_ok = true;
-        for probe in &probes {
-            let ok: bool = tokio::time::timeout(timeout, probe.check())
-                .await
-                .unwrap_or_default();
-            if !ok {
-                all_ok = false;
-                warn!(probe = probe.name(), "readiness probe failed");
-            }
-        }
+        let all_ok = supervisor_tick(&probes, timeout).await;
         let status = if all_ok {
             ServingStatus::Serving
         } else {
@@ -236,5 +229,198 @@ pub async fn run_supervisor(
             reporter.set_service_status(name, status).await;
         }
         tokio::time::sleep(interval).await;
+    }
+}
+
+/// One iteration of the supervisor loop: poll every probe with the
+/// configured timeout, return `true` iff all probes report healthy.
+///
+/// Audit #82: wraps each probe future in `catch_unwind` so a panicking
+/// probe doesn't unwind the spawned supervisor task. Each cause
+/// (panic / timeout / probe-returned-false) emits its own `warn!`;
+/// there is no aggregate "failed" log on top — the cause warning is
+/// sufficient.
+async fn supervisor_tick(probes: &[Box<dyn Probe>], timeout: Duration) -> bool {
+    let mut all_ok = true;
+    for probe in probes {
+        let probe_future = AssertUnwindSafe(probe.check()).catch_unwind();
+        let ok: bool = match tokio::time::timeout(timeout, probe_future).await {
+            Ok(Ok(b)) => {
+                if !b {
+                    warn!(probe = probe.name(), "readiness probe failed");
+                }
+                b
+            }
+            Ok(Err(panic_payload)) => {
+                let msg = panic_payload
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic_payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "<non-string panic>".into());
+                warn!(
+                    probe = probe.name(),
+                    error = %msg,
+                    "readiness probe panicked",
+                );
+                false
+            }
+            Err(_elapsed) => {
+                warn!(probe = probe.name(), "readiness probe timed out");
+                false
+            }
+        };
+        if !ok {
+            all_ok = false;
+        }
+    }
+    all_ok
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Audit #82: the supervisor must survive a panicking probe, distinguish
+    // timeout from probe-returned-false in logs, and emit a panic message
+    // rich enough to triage from log search.
+
+    struct OkProbe;
+    #[async_trait]
+    impl Probe for OkProbe {
+        fn name(&self) -> &str {
+            "ok"
+        }
+        async fn check(&self) -> bool {
+            true
+        }
+    }
+
+    struct BadProbe;
+    #[async_trait]
+    impl Probe for BadProbe {
+        fn name(&self) -> &str {
+            "bad"
+        }
+        async fn check(&self) -> bool {
+            false
+        }
+    }
+
+    struct PanickingProbe {
+        msg: &'static str,
+    }
+    #[async_trait]
+    impl Probe for PanickingProbe {
+        fn name(&self) -> &str {
+            "panicker"
+        }
+        async fn check(&self) -> bool {
+            panic!("{}", self.msg);
+        }
+    }
+
+    struct PanickingStringProbe;
+    #[async_trait]
+    impl Probe for PanickingStringProbe {
+        fn name(&self) -> &str {
+            "string-panicker"
+        }
+        async fn check(&self) -> bool {
+            // String (not &'static str) panic payload — exercises the
+            // second downcast branch in `supervisor_tick`.
+            let owned: String = format!("dynamic message {}", 42);
+            panic!("{}", owned);
+        }
+    }
+
+    struct SlowProbe {
+        delay: Duration,
+    }
+    #[async_trait]
+    impl Probe for SlowProbe {
+        fn name(&self) -> &str {
+            "slow"
+        }
+        async fn check(&self) -> bool {
+            tokio::time::sleep(self.delay).await;
+            true
+        }
+    }
+
+    fn boxed(p: impl Probe + 'static) -> Box<dyn Probe> {
+        Box::new(p)
+    }
+
+    #[tokio::test]
+    async fn tick_returns_true_when_all_probes_ok() {
+        let probes: Vec<Box<dyn Probe>> = vec![boxed(OkProbe), boxed(OkProbe)];
+        let ok = supervisor_tick(&probes, Duration::from_millis(100)).await;
+        assert!(ok);
+    }
+
+    #[tokio::test]
+    async fn tick_returns_false_when_any_probe_returns_false() {
+        let probes: Vec<Box<dyn Probe>> = vec![boxed(OkProbe), boxed(BadProbe)];
+        let ok = supervisor_tick(&probes, Duration::from_millis(100)).await;
+        assert!(!ok);
+    }
+
+    #[tokio::test]
+    async fn tick_survives_panicking_probe_and_returns_false() {
+        // The critical fix: a panic inside `probe.check()` must not unwind
+        // the supervisor task. With `catch_unwind`, the tick returns false
+        // for the panicking probe and the supervisor lives.
+        let probes: Vec<Box<dyn Probe>> = vec![
+            boxed(OkProbe),
+            boxed(PanickingProbe {
+                msg: "boom &'static str",
+            }),
+            boxed(OkProbe),
+        ];
+        let ok = supervisor_tick(&probes, Duration::from_millis(100)).await;
+        assert!(!ok);
+    }
+
+    #[tokio::test]
+    async fn tick_survives_string_panic_payload() {
+        let probes: Vec<Box<dyn Probe>> = vec![boxed(PanickingStringProbe)];
+        let ok = supervisor_tick(&probes, Duration::from_millis(100)).await;
+        assert!(!ok);
+    }
+
+    #[tokio::test]
+    async fn tick_treats_slow_probe_as_failure_via_timeout() {
+        let probes: Vec<Box<dyn Probe>> = vec![boxed(SlowProbe {
+            delay: Duration::from_millis(200),
+        })];
+        let ok = supervisor_tick(&probes, Duration::from_millis(20)).await;
+        assert!(!ok);
+    }
+
+    #[tokio::test]
+    async fn run_supervisor_lives_across_panicking_probes() {
+        // End-to-end: spawn the supervisor with a panicking probe and a
+        // very short interval; assert the task is still running after
+        // several ticks. Pre-fix this would unwind the spawned task.
+        let (reporter, _service) = tonic_health::server::health_reporter();
+        let probes: Vec<Box<dyn Probe>> = vec![boxed(PanickingProbe {
+            msg: "supervisor must survive this",
+        })];
+
+        let handle = tokio::spawn(run_supervisor(
+            probes,
+            reporter,
+            vec!["svc".to_string()],
+            Duration::from_millis(10),
+            Duration::from_millis(50),
+        ));
+
+        // Give it a few ticks worth of wall-clock time.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(
+            !handle.is_finished(),
+            "supervisor exited early — panic catch broke",
+        );
+        handle.abort();
     }
 }

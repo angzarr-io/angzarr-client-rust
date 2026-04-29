@@ -12,4 +12,7 @@ pub use builders::{
     make_timestamp, pack_event,
 };
 pub use context::ScenarioContext;
-pub use uuid::{uuid_for, uuid_obj_for, uuid_str_for, DEFAULT_TEST_NAMESPACE};
+pub use uuid::{
+    uuid_for, uuid_for_default, uuid_obj_for, uuid_obj_for_default, uuid_str_for,
+    uuid_str_for_default, DEFAULT_TEST_NAMESPACE,
+};
