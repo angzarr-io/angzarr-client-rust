@@ -156,9 +156,9 @@ pub use handler::{
 
 // Re-export server utilities
 pub use server::{
-    cleanup_socket, configure_logging, create_server, get_transport_config,
+    cleanup_socket, configure_logging, create_server, get_transport_config, resolve_bind_address,
     run_command_handler_server, run_process_manager_server, run_projector_server, run_saga_server,
-    run_server, run_upcaster_server, ServerConfig,
+    run_server, run_upcaster_server, ServerConfig, DEFAULT_BIND_HOST, ENV_BIND_ADDRESS,
 };
 
 // Re-export validation helpers

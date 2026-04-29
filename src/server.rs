@@ -111,6 +111,27 @@ pub fn get_transport_config(default_port: u16) -> ServerConfig {
     ServerConfig::from_env(default_port)
 }
 
+/// Env var name for the full TCP bind address override (`host:port`).
+///
+/// Audit #77: when set, supersedes the default `[::]:{port}` composition
+/// and the `PORT` / `GRPC_PORT` resolution. IPv6 hosts must include
+/// brackets (e.g. `[::1]:50052`); IPv4 hosts are written bare.
+pub const ENV_BIND_ADDRESS: &str = "ANGZARR_BIND_ADDRESS";
+
+/// Default TCP bind host. `"[::]"` is the IPv6 wildcard, which on
+/// Linux (`IPV6_V6ONLY=0` by default) accepts both IPv4 (via IPv4-mapped
+/// IPv6) and IPv6 connections — matching Python's posture per audit #77.
+pub const DEFAULT_BIND_HOST: &str = "[::]";
+
+/// Compute the TCP bind address.
+///
+/// Returns `ANGZARR_BIND_ADDRESS` verbatim when set, otherwise composes
+/// `[::]:{default_port}`. Pure read of env state; intended to be called
+/// once per server start, immediately before `parse::<SocketAddr>()`.
+pub fn resolve_bind_address(default_port: u16) -> String {
+    env::var(ENV_BIND_ADDRESS).unwrap_or_else(|_| format!("{}:{}", DEFAULT_BIND_HOST, default_port))
+}
+
 /// Construct a fresh `tonic::transport::Server` builder.
 pub fn create_server() -> Server {
     Server::builder()
@@ -323,12 +344,11 @@ where
             router.serve_with_incoming(incoming).await
         }
         None => {
-            let addr: SocketAddr = format!("0.0.0.0:{}", config.port)
-                .parse()
-                .expect("invalid TCP bind address");
+            let addr_str = resolve_bind_address(config.port);
+            let addr: SocketAddr = addr_str.parse().expect("invalid TCP bind address");
             info!(
                 name = %instance_name,
-                port = config.port,
+                address = %addr_str,
                 "Starting server (TCP)"
             );
             transport_signal.mark_bound();
@@ -338,4 +358,62 @@ where
 
     supervisor.abort();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn clear_bind_env() {
+        env::remove_var(ENV_BIND_ADDRESS);
+    }
+
+    // Audit #77: ANGZARR_BIND_ADDRESS overrides the default
+    // dual-stack `[::]:{port}` composition.
+
+    #[test]
+    fn resolve_bind_address_default_is_dual_stack() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_bind_env();
+        let addr = resolve_bind_address(50052);
+        assert_eq!(addr, "[::]:50052");
+        // Sanity: parses as a real SocketAddr.
+        let _: SocketAddr = addr.parse().expect("default must parse");
+    }
+
+    #[test]
+    fn resolve_bind_address_env_override_ipv4() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_bind_env();
+        env::set_var(ENV_BIND_ADDRESS, "127.0.0.1:9090");
+        let addr = resolve_bind_address(50052);
+        assert_eq!(addr, "127.0.0.1:9090");
+        let _: SocketAddr = addr.parse().expect("override must parse");
+        clear_bind_env();
+    }
+
+    #[test]
+    fn resolve_bind_address_env_override_ipv6_loopback() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_bind_env();
+        env::set_var(ENV_BIND_ADDRESS, "[::1]:8080");
+        let addr = resolve_bind_address(50052);
+        assert_eq!(addr, "[::1]:8080");
+        let _: SocketAddr = addr.parse().expect("ipv6 override must parse");
+        clear_bind_env();
+    }
+
+    #[test]
+    fn resolve_bind_address_env_override_ignores_default_port() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_bind_env();
+        env::set_var(ENV_BIND_ADDRESS, "0.0.0.0:1234");
+        let addr = resolve_bind_address(50052);
+        // The default_port arg is irrelevant when the override is set.
+        assert_eq!(addr, "0.0.0.0:1234");
+        clear_bind_env();
+    }
 }
