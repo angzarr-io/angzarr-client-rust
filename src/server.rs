@@ -337,10 +337,17 @@ where
                 let _ = std::fs::create_dir_all(parent);
             }
             cleanup_socket(uds_path);
+            // Audit #89: cross-language log shape. Same event name +
+            // field set as Python `_run_server_async` so operators
+            // querying logs by `service` / `name` / `transport` /
+            // `address` see equivalent records from pods of either
+            // language.
             info!(
+                service = health_service_name,
                 name = %instance_name,
-                path = %uds_path.display(),
-                "Starting server (UDS)"
+                transport = "uds",
+                address = %uds_path.display(),
+                "server_started",
             );
             let listener =
                 tokio::net::UnixListener::bind(uds_path).expect("Failed to bind UDS socket");
@@ -352,9 +359,11 @@ where
             let addr_str = resolve_bind_address(config.port);
             let addr: SocketAddr = addr_str.parse().expect("invalid TCP bind address");
             info!(
+                service = health_service_name,
                 name = %instance_name,
+                transport = "tcp",
                 address = %addr_str,
-                "Starting server (TCP)"
+                "server_started",
             );
             transport_signal.mark_bound();
             router.serve(addr).await
@@ -372,7 +381,12 @@ where
     supervisor.abort();
     let _ = supervisor.await;
     publish_shutdown_status(&shutdown_reporter, &shutdown_service_names).await;
-    info!(name = %instance_name, "Server shut down");
+    // Audit #89: same event name + field set on shutdown.
+    info!(
+        service = health_service_name,
+        name = %instance_name,
+        "server_shutdown",
+    );
     result
 }
 
