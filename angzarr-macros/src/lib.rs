@@ -982,6 +982,10 @@ struct SagaArgs {
     source: String,
     #[allow(dead_code)] // consumed once the saga macro is R1-ified in R11
     target: String,
+    /// Audit #74: whether commands emitted to ``target`` ever use sync
+    /// mode. Default ``false`` — async-only target rides the bus, no
+    /// per-domain readiness probe.
+    sync: bool,
 }
 
 impl syn::parse::Parse for SagaArgs {
@@ -989,16 +993,29 @@ impl syn::parse::Parse for SagaArgs {
         let mut name = None;
         let mut source = None;
         let mut target = None;
+        let mut sync: Option<bool> = None;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
             input.parse::<Token![=]>()?;
-            let value: syn::LitStr = input.parse()?;
 
             match ident.to_string().as_str() {
-                "name" => name = Some(value.value()),
-                "source" => source = Some(value.value()),
-                "target" => target = Some(value.value()),
+                "name" => {
+                    let value: syn::LitStr = input.parse()?;
+                    name = Some(value.value());
+                }
+                "source" => {
+                    let value: syn::LitStr = input.parse()?;
+                    source = Some(value.value());
+                }
+                "target" => {
+                    let value: syn::LitStr = input.parse()?;
+                    target = Some(value.value());
+                }
+                "sync" => {
+                    let value: syn::LitBool = input.parse()?;
+                    sync = Some(value.value);
+                }
                 _ => return Err(syn::Error::new(ident.span(), "unknown attribute")),
             }
 
@@ -1011,6 +1028,7 @@ impl syn::parse::Parse for SagaArgs {
             name: require_non_empty_str(name, "name")?,
             source: require_non_empty_str(source, "source")?,
             target: require_non_empty_str(target, "target")?,
+            sync: sync.unwrap_or(false),
         })
     }
 }
@@ -1019,6 +1037,7 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
     let name = &args.name;
     let source = &args.source;
     let target = &args.target;
+    let sync = args.sync;
 
     let meta = collect_method_metadata(&input);
     strip_method_markers(&mut input);
@@ -1071,6 +1090,7 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
                     name: #name.to_string(),
                     source: #source.to_string(),
                     target: #target.to_string(),
+                    sync: #sync,
                     handled: ::std::vec![#(#handled_exprs),*],
                     rejected: ::std::vec![#(#rejected_exprs),*],
                 }
@@ -1185,6 +1205,10 @@ struct ProcessManagerArgs {
     sources: Vec<String>,
     #[allow(dead_code)] // consumed once the process_manager macro is R1-ified in R12
     targets: Vec<String>,
+    /// Audit #74: subset of ``targets`` whose commands ever use sync
+    /// mode. Drives readiness probing — only sync targets get an
+    /// ``OutputDomainProbe``. Default ``[]``.
+    sync_targets: Vec<String>,
 }
 
 impl syn::parse::Parse for ProcessManagerArgs {
@@ -1194,6 +1218,8 @@ impl syn::parse::Parse for ProcessManagerArgs {
         let mut state = None;
         let mut sources = None;
         let mut targets = None;
+        let mut sync_targets: Option<Vec<String>> = None;
+        let mut sync_targets_span: Option<proc_macro2::Span> = None;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -1218,12 +1244,35 @@ impl syn::parse::Parse for ProcessManagerArgs {
                 "targets" => {
                     targets = Some(parse_str_list(input)?);
                 }
+                "sync_targets" => {
+                    sync_targets_span = Some(ident.span());
+                    sync_targets = Some(parse_str_list(input)?);
+                }
                 _ => return Err(syn::Error::new(ident.span(), "unknown attribute")),
             }
 
             if input.peek(Token![,]) {
                 input.parse::<Token![,]>()?;
             }
+        }
+
+        let targets_v = require_non_empty_str_list(targets, "targets")?;
+        let sync_targets_v = sync_targets.unwrap_or_default();
+
+        // Audit #74: validate sync_targets ⊆ targets at compile time.
+        let extra: Vec<&String> = sync_targets_v
+            .iter()
+            .filter(|t| !targets_v.contains(t))
+            .collect();
+        if !extra.is_empty() {
+            let span = sync_targets_span.unwrap_or_else(proc_macro2::Span::call_site);
+            return Err(syn::Error::new(
+                span,
+                format!(
+                    "sync_targets {:?} are not in targets {:?}",
+                    extra, targets_v
+                ),
+            ));
         }
 
         Ok(ProcessManagerArgs {
@@ -1233,7 +1282,8 @@ impl syn::parse::Parse for ProcessManagerArgs {
                 syn::Error::new(proc_macro2::Span::call_site(), "state is required")
             })?,
             sources: require_non_empty_str_list(sources, "sources")?,
-            targets: require_non_empty_str_list(targets, "targets")?,
+            targets: targets_v,
+            sync_targets: sync_targets_v,
         })
     }
 }
@@ -1259,6 +1309,7 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
     let state_ty = &args.state;
     let sources = &args.sources;
     let targets = &args.targets;
+    let sync_targets = &args.sync_targets;
     let self_ty_for_applies = input.self_ty.clone();
 
     let meta = collect_method_metadata(&input);
@@ -1341,6 +1392,7 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
 
     let sources_vec = sources.iter().map(|s| quote! { #s.to_string() });
     let targets_vec = targets.iter().map(|s| quote! { #s.to_string() });
+    let sync_targets_vec = sync_targets.iter().map(|s| quote! { #s.to_string() });
 
     let self_ty = &input.self_ty;
     quote! {
@@ -1358,6 +1410,7 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
                     pm_domain: #pm_domain.to_string(),
                     sources: ::std::vec![#(#sources_vec),*],
                     targets: ::std::vec![#(#targets_vec),*],
+                    sync_targets: ::std::vec![#(#sync_targets_vec),*],
                     handled: ::std::vec![#(#handled_exprs),*],
                     rejected: ::std::vec![#(#rejected_exprs),*],
                     applies: ::std::vec![#(#applies_exprs),*],

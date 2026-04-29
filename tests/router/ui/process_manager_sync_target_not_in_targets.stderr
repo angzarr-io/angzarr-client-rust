@@ -1,0 +1,5 @@
+error: sync_targets ["shipping"] are not in targets ["inventory"]
+  --> tests/router/ui/process_manager_sync_target_not_in_targets.rs:15:5
+   |
+15 |     sync_targets = ["shipping"],
+   |     ^^^^^^^^^^^^

@@ -37,7 +37,7 @@ use crate::proto::projector_service_server::ProjectorServiceServer;
 use crate::proto::saga_service_server::SagaServiceServer;
 use crate::proto::upcaster_service_server::UpcasterServiceServer;
 use crate::readiness::{
-    probe_config_from_env, run_supervisor, OutputDomainProbe, Probe, TransportProbe,
+    probe_config_from_env, run_supervisor, BusProbe, OutputDomainProbe, Probe, TransportProbe,
 };
 use crate::router::runtime::{CommandHandlerRouter, ProcessManagerRouter, SagaRouter};
 
@@ -155,12 +155,14 @@ pub async fn run_command_handler_server(
     default_port: u16,
 ) -> Result<(), tonic::transport::Error> {
     let name = router.name();
-    let outputs = router.output_domains();
+    // CH never emits cross-domain commands at the framework level —
+    // events flow back through the response. No probes.
     let svc = CommandHandlerServiceServer::new(CommandHandlerGrpc::new(router));
     run_kind(
         name,
         get_transport_config(default_port),
-        outputs,
+        Vec::new(),
+        false,
         HEALTH_NAME_COMMAND_HANDLER,
         |r| r.add_service(svc),
     )
@@ -168,18 +170,22 @@ pub async fn run_command_handler_server(
 }
 
 /// Run a saga service. Saga name is read from the router's `#[saga(name = ...)]`
-/// metadata. Output-domain probes are constructed from each handler's `target`.
+/// metadata. Audit #74: only `target`s declared with `#[saga(sync = true)]`
+/// get an `OutputDomainProbe`; async-only sagas rely on the `BusProbe`
+/// (configured via `ANGZARR_BUS_ENDPOINT`).
 pub async fn run_saga_server(
     router: SagaRouter,
     default_port: u16,
 ) -> Result<(), tonic::transport::Error> {
     let name = router.name();
-    let outputs = router.output_domains();
+    let sync_outputs = router.sync_output_domains();
+    let has_async_outputs = router.has_async_outputs();
     let svc = SagaServiceServer::new(SagaGrpc::new(router));
     run_kind(
         name,
         get_transport_config(default_port),
-        outputs,
+        sync_outputs,
+        has_async_outputs,
         HEALTH_NAME_SAGA,
         |r| r.add_service(svc),
     )
@@ -199,6 +205,7 @@ pub async fn run_projector_server(
         name,
         get_transport_config(default_port),
         Vec::new(),
+        false,
         HEALTH_NAME_PROJECTOR,
         |r| r.add_service(svc),
     )
@@ -206,19 +213,22 @@ pub async fn run_projector_server(
 }
 
 /// Run a process-manager service. PM name is read from
-/// `#[process_manager(name = ...)]` metadata. Output-domain probes are built
-/// from the union of `targets` declared across registered handlers.
+/// `#[process_manager(name = ...)]` metadata. Audit #74: only targets
+/// listed in `sync_targets` get an `OutputDomainProbe`; async-only
+/// targets ride the bus probe.
 pub async fn run_process_manager_server(
     router: ProcessManagerRouter,
     default_port: u16,
 ) -> Result<(), tonic::transport::Error> {
     let name = router.name();
-    let outputs = router.output_domains();
+    let sync_outputs = router.sync_output_domains();
+    let has_async_outputs = router.has_async_outputs();
     let svc = ProcessManagerServiceServer::new(ProcessManagerGrpc::new(router));
     run_kind(
         name,
         get_transport_config(default_port),
-        outputs,
+        sync_outputs,
+        has_async_outputs,
         HEALTH_NAME_PROCESS_MANAGER,
         |r| r.add_service(svc),
     )
@@ -237,6 +247,7 @@ pub async fn run_upcaster_server(
         name,
         get_transport_config(default_port),
         Vec::new(),
+        false,
         HEALTH_NAME_UPCASTER,
         |r| r.add_service(svc),
     )
@@ -253,7 +264,8 @@ pub async fn run_upcaster_server(
 async fn run_kind<F>(
     instance_name: String,
     config: ServerConfig,
-    output_domains: Vec<String>,
+    sync_output_domains: Vec<String>,
+    has_async_outputs: bool,
     health_service_name: &'static str,
     add_kind_service: F,
 ) -> Result<(), tonic::transport::Error>
@@ -270,8 +282,15 @@ where
 
     let (transport_probe, transport_signal) = TransportProbe::new();
     let mut probes: Vec<Box<dyn Probe>> = vec![Box::new(transport_probe)];
-    for domain in output_domains {
+    // Audit #74: probe sync targets directly; if any handler emits async,
+    // add a single BusProbe iff the operator configured `ANGZARR_BUS_ENDPOINT`.
+    for domain in sync_output_domains {
         probes.push(Box::new(OutputDomainProbe::for_domain(domain)));
+    }
+    if has_async_outputs {
+        if let Some(bus) = BusProbe::from_env() {
+            probes.push(Box::new(bus));
+        }
     }
 
     let (interval, timeout) = probe_config_from_env();

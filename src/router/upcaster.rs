@@ -27,15 +27,20 @@ use crate::router::handler::{Handler, HandlerConfig, HandlerRequest, HandlerResp
 /// Runtime router dispatching upcast requests through registered upcaster handlers.
 pub struct UpcasterRouter {
     pub(crate) factories: Vec<Factory>,
+    /// Cached upcaster `name` (audit #42).
+    pub(crate) cached_name: std::sync::OnceLock<String>,
 }
 
 impl UpcasterRouter {
     /// Upcaster name (`#[upcaster(name = ...)]` from the first registered handler).
+    /// Audit #42: cached after the first call.
     pub fn name(&self) -> String {
-        match self.factories.first().map(|f| (f.produce)().config()) {
-            Some(HandlerConfig::Upcaster { name, .. }) => name,
-            _ => String::new(),
-        }
+        self.cached_name
+            .get_or_init(|| match self.factories.first().map(|f| (f.produce)().config()) {
+                Some(HandlerConfig::Upcaster { name, .. }) => name,
+                _ => String::new(),
+            })
+            .clone()
     }
 
     /// Upcasters are stream transformers; no outbound destinations.
