@@ -160,8 +160,15 @@ pub use validation::{
     require_not_exists, require_positive, require_status, require_status_not,
 };
 
+/// Re-export of `tracing` so macro-generated code can emit
+/// `tracing::warn!` / `tracing::info!` without requiring user crates to
+/// add `tracing` to their own `Cargo.toml`. Internal — the underscore
+/// prefix signals "macro plumbing; do not depend on this path directly."
+#[doc(hidden)]
+pub use tracing as __tracing;
+
 // Re-export proc macros for Tier 5 OO-style component definitions
 pub use angzarr_macros::{
-    applies, command_handler, handles, handles_fact, process_manager, projector, rejected, saga,
-    state_factory, upcaster, upcasts,
+    applies, command_handler, handles, handles_fact, handles_unknown, process_manager, projector,
+    rejected, saga, state_factory, upcaster, upcasts,
 };
