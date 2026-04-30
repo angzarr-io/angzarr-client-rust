@@ -714,6 +714,9 @@ struct MethodMetadata {
     /// Audit #45: `(method name, fact event type)` pairs for HandleFact
     /// dispatch-arm generation.
     handles_fact_with_methods: Vec<(Ident, Ident)>,
+    /// Name of the method annotated with `#[handles_unknown]`, if any
+    /// (projector-only catch-all for events with no matching `#[handles]`).
+    handles_unknown: Option<Ident>,
 }
 
 fn collect_method_metadata(input: &ItemImpl) -> MethodMetadata {
@@ -727,6 +730,7 @@ fn collect_method_metadata(input: &ItemImpl) -> MethodMetadata {
     let mut upcasts_with_methods = Vec::new();
     let mut handles_fact = Vec::new();
     let mut handles_fact_with_methods = Vec::new();
+    let mut handles_unknown = None;
 
     for item in &input.items {
         let ImplItem::Fn(method) = item else { continue };
@@ -755,6 +759,8 @@ fn collect_method_metadata(input: &ItemImpl) -> MethodMetadata {
                 }
             } else if attr.path().is_ident("state_factory") {
                 state_factory = Some(method.sig.ident.clone());
+            } else if attr.path().is_ident("handles_unknown") {
+                handles_unknown = Some(method.sig.ident.clone());
             } else if attr.path().is_ident("upcasts") {
                 if let Ok((from, to)) = get_upcasts_args(attr) {
                     upcasts_with_methods.push((method.sig.ident.clone(), from, to));
@@ -774,6 +780,7 @@ fn collect_method_metadata(input: &ItemImpl) -> MethodMetadata {
         upcasts_with_methods,
         handles_fact,
         handles_fact_with_methods,
+        handles_unknown,
     }
 }
 
@@ -839,6 +846,7 @@ fn strip_method_markers(input: &mut ItemImpl) {
                     && !attr.path().is_ident("rejected")
                     && !attr.path().is_ident("applies")
                     && !attr.path().is_ident("state_factory")
+                    && !attr.path().is_ident("handles_unknown")
                     && !attr.path().is_ident("upcasts")
             });
         }
@@ -1604,6 +1612,17 @@ fn expand_projector(args: ProjectorArgs, mut input: ItemImpl) -> TokenStream2 {
         })
         .collect();
 
+    // Catch-all branch for events whose `type_url` matches no `#[handles]`
+    // arm. Always log a `tracing::warn!` so unhandled events are visible
+    // in production telemetry; if the user declared `#[handles_unknown]`,
+    // also invoke that method so projectors can render or count unknowns.
+    let unknown_call = match &meta.handles_unknown {
+        Some(method_ident) => quote! {
+            self.#method_ident(event_any.type_url.as_str());
+        },
+        None => quote! {},
+    };
+
     let self_ty = &input.self_ty;
     quote! {
         #input
@@ -1656,7 +1675,15 @@ fn expand_projector(args: ProjectorArgs, mut input: ItemImpl) -> TokenStream2 {
                         _ => continue,
                     };
                     #(#dispatch_arms)*
-                    // Unmatched event type → skip silently.
+                    // No `#[handles]` arm matched — log + optionally invoke
+                    // the user's `#[handles_unknown]` hook.
+                    ::angzarr_client::__tracing::warn!(
+                        target: "angzarr_client::router::projector",
+                        projector = #name,
+                        type_url = %event_any.type_url,
+                        "projector received event with no matching #[handles] arm",
+                    );
+                    #unknown_call
                 }
 
                 // Return a skeleton Projection (no merged payload — side effects
@@ -1734,6 +1761,20 @@ impl syn::parse::Parse for RejectedArgs {
             command: require_non_empty_str(command, "command")?,
         })
     }
+}
+
+/// Marks a method as the projector's catch-all handler for events whose
+/// `type_url` matches no `#[handles(T)]` arm.
+///
+/// Method signature: `fn on_unknown(&self, type_url: &str)`. The
+/// `#[projector]` macro emits an unconditional `tracing::warn!` for every
+/// unknown event; if a method bears this attribute, the macro additionally
+/// invokes it after the warn so user code can render or count unknowns.
+/// Without `#[handles_unknown]` the warn still fires and dispatch is a no-op.
+#[proc_macro_attribute]
+pub fn handles_unknown(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    // Marker attribute — `#[projector]` strips and consumes it.
+    item
 }
 
 /// Marks a method as the state factory for its aggregate / process manager.
