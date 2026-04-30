@@ -22,7 +22,6 @@
 
 pub(crate) mod builder;
 mod handler;
-mod helpers;
 pub mod responses;
 pub mod runtime;
 mod state;
@@ -34,7 +33,6 @@ pub use handler::{
     BuildError, Built, DispatchError, Handler, HandlerConfig, HandlerKind, HandlerRequest,
     HandlerResponse, Kind,
 };
-pub use helpers::{event_book_from, event_page, new_event_book, new_event_book_multi};
 pub use responses::{ProcessManagerResponse, RejectionHandlerResponse, SagaHandlerResponse};
 pub use runtime::{CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter};
 pub use state::Destinations;

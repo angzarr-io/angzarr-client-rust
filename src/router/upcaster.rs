@@ -17,8 +17,6 @@
 //! been removed in favor of the unified `Router::new(name).with_handler(…)`
 //! flow.
 
-use std::sync::Arc;
-
 use crate::error::ClientError;
 use crate::proto::{event_page, EventPage, UpcastRequest, UpcastResponse};
 use crate::router::builder::Factory;
@@ -126,14 +124,3 @@ impl UpcasterRouter {
         Ok(UpcastResponse { events: out })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Internal helper type used by the proc-macro expansion of `#[upcaster]` so
-// generated code doesn't need to reach into `router::upcaster::UpcasterRouter`
-// internals directly.
-// ---------------------------------------------------------------------------
-
-/// Opaque handle to a boxed upcaster function used in macro-generated dispatch
-/// tables. Exported for `angzarr-macros` expansion; no public use expected.
-#[doc(hidden)]
-pub type UpcastFn = Arc<dyn Fn(&prost_types::Any) -> prost_types::Any + Send + Sync>;

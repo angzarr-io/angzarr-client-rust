@@ -245,6 +245,15 @@ impl<'a, C: traits::QueryClient> QueryBuilder<'a, C> {
         client.get_event_book(query).await
     }
 
+    /// Execute the query and return all matching EventBooks (streaming RPC).
+    ///
+    /// Mirrors Python's `QueryBuilder.get_events` (`builder.py:235`).
+    pub async fn get_events(self) -> Result<Vec<EventBook>> {
+        let client = self.client;
+        let query = self.build_inner();
+        client.get_events(query).await
+    }
+
     /// Execute the query and return just the event pages.
     pub async fn get_pages(self) -> Result<Vec<EventPage>> {
         let event_book = self.get_event_book().await?;
@@ -344,6 +353,10 @@ mod tests {
     impl traits::QueryClient for MockQueryClient {
         async fn get_event_book(&self, _query: Query) -> Result<EventBook> {
             Ok(self.event_book.clone())
+        }
+
+        async fn get_events(&self, _query: Query) -> Result<Vec<EventBook>> {
+            Ok(vec![self.event_book.clone(), self.event_book.clone()])
         }
     }
 
@@ -916,6 +929,25 @@ mod tests {
             builder.merge_strategy,
             crate::proto::MergeStrategy::MergeStrict
         );
+    }
+
+    #[tokio::test]
+    async fn test_query_builder_get_events_returns_streaming_results() {
+        // Mirrors Python's `QueryBuilder.get_events` which calls the
+        // streaming `GetEvents` RPC and returns `list[EventBook]`.
+        let client = MockQueryClient {
+            event_book: EventBook {
+                next_sequence: 7,
+                ..Default::default()
+            },
+        };
+        let books = QueryBuilder::new(&client, "orders", None)
+            .range(0)
+            .get_events()
+            .await
+            .unwrap();
+        assert_eq!(books.len(), 2);
+        assert_eq!(books[0].next_sequence, 7);
     }
 
     #[test]

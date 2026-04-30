@@ -119,11 +119,6 @@ pub use proto_ext::{
 
 // Re-export Tier 5 unified router surface
 pub use router::{
-    // Helper functions
-    event_book_from,
-    event_page,
-    new_event_book,
-    new_event_book_multi,
     // Tier 5 unified Handler contract
     BuildError,
     Built,
@@ -150,9 +145,7 @@ pub use router::{
 };
 
 // Re-export handler types
-pub use handler::{
-    CommandHandlerGrpc, ProcessManagerGrpc, ProjectorGrpc, SagaGrpc, StatePacker, UpcasterGrpc,
-};
+pub use handler::{CommandHandlerGrpc, ProcessManagerGrpc, ProjectorGrpc, SagaGrpc, UpcasterGrpc};
 
 // Re-export server utilities
 pub use server::{

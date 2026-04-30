@@ -35,7 +35,6 @@ impl std::fmt::Debug for Factory {
 
 /// Builder that accumulates handler factories before dispatch.
 pub struct Router {
-    #[allow(dead_code)] // surfaced via `.name()` once runtime routers carry it in R6+
     name: String,
     factories: Vec<Factory>,
 }
@@ -47,6 +46,12 @@ impl Router {
             name: name.into(),
             factories: Vec::new(),
         }
+    }
+
+    /// The (business-level) name passed to [`Router::new`]. Mirrors Python's
+    /// `Router.name` public attribute.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Register a handler factory.

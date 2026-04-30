@@ -237,6 +237,10 @@ impl traits::QueryClient for QueryClient {
     async fn get_event_book(&self, query: Query) -> Result<EventBook> {
         self.get_event_book(query).await
     }
+
+    async fn get_events(&self, query: Query) -> Result<Vec<EventBook>> {
+        self.get_events(query).await
+    }
 }
 
 /// Default command handler coordinator client using tonic gRPC.
@@ -488,6 +492,10 @@ impl traits::GatewayClient for DomainClient {
 impl traits::QueryClient for DomainClient {
     async fn get_event_book(&self, query: Query) -> Result<EventBook> {
         self.get_event_book(query).await
+    }
+
+    async fn get_events(&self, query: Query) -> Result<Vec<EventBook>> {
+        self.get_events(query).await
     }
 }
 

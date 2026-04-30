@@ -71,10 +71,16 @@ pub trait SpeculativeClient: Send + Sync {
 #[async_trait]
 pub trait QueryClient: Send + Sync {
     /// Fetch a single EventBook for the query (unary RPC).
-    ///
-    /// Named to match the inherent `QueryClient::get_event_book` method on the
-    /// concrete client and the cross-language `get_event_book` / `GetEventBook`
-    /// convention. The streaming variant that returns a `Vec<EventBook>` is
-    /// the inherent `get_events` method, not part of this trait.
     async fn get_event_book(&self, query: Query) -> Result<EventBook>;
+
+    /// Fetch all matching EventBooks for the query (streaming RPC).
+    ///
+    /// Default implementation wraps `get_event_book` as a single-element
+    /// vector — safe for mock impls that don't differentiate the unary
+    /// and streaming RPCs. The real gRPC client overrides this to drain
+    /// the streaming response. Mirrors Python's
+    /// `QueryClient.get_events` (`client.py:187`).
+    async fn get_events(&self, query: Query) -> Result<Vec<EventBook>> {
+        Ok(vec![self.get_event_book(query).await?])
+    }
 }

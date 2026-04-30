@@ -276,8 +276,8 @@ pub fn pm_emit_compensation_events(
 /// Check if a type URL refers to a rejection Notification.
 ///
 /// Audit finding #58: matches against the fully qualified type name per
-/// `google.protobuf.Any` spec — no `wire_name` strip. The previous
-/// short-form expectation diverged from Python-emitted URLs.
+/// `google.protobuf.Any` spec. The previous short-form expectation
+/// diverged from Python-emitted URLs.
 pub fn is_notification(type_url: &str) -> bool {
     type_url == format!("{}{}", TYPE_URL_PREFIX, NOTIFICATION_TYPE_NAME)
 }

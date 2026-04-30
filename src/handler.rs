@@ -222,6 +222,3 @@ impl UpcasterService for UpcasterGrpc {
         Ok(Response::new(response))
     }
 }
-
-/// Re-export retained for back-compat in callers that might use it.
-pub type StatePacker<S> = fn(&S) -> Result<prost_types::Any, Status>;

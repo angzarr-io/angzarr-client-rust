@@ -8,39 +8,12 @@ use prost::Name;
 use prost_types::{Any, Timestamp};
 use uuid::Uuid;
 
-/// Default type URL prefix for protocol buffer messages.
-pub const TYPE_URL_PREFIX: &str = "type.googleapis.com/";
-
-/// Canonical domain identifiers — match Python's `angzarr_client.helpers`.
-pub const UNKNOWN_DOMAIN: &str = "unknown";
-pub const WILDCARD_DOMAIN: &str = "*";
-pub const DEFAULT_EDITION: &str = "";
-pub const META_ANGZARR_DOMAIN: &str = "_angzarr";
-pub const PROJECTION_DOMAIN_PREFIX: &str = "_projection";
-pub const PROJECTION_TYPE_URL: &str = "angzarr_client.proto.angzarr.Projection";
-
-/// Proto package prefix used by the angzarr_client.proto.* proto package
-/// declarations. **NOT** stripped from proto-Any `type_url`s — per the
-/// `google.protobuf.Any` spec the URL must contain the *fully qualified*
-/// type name (i.e., the value of `Message::DESCRIPTOR.full_name()`),
-/// which includes the package prefix verbatim. Audit finding #58.
-///
-/// Retained because the angzarr-internal `type.angzarr.io/` routing
-/// scheme (`proto_ext::type_url`) intentionally uses a short form for
-/// readability — that's a different URL contract from Any's.
-pub const INTERNAL_PACKAGE_PREFIX: &str = "angzarr_client.proto.";
-
-/// Strip the `angzarr_client.proto.` package prefix from a full proto
-/// type name. Used **only** by the angzarr-internal
-/// `type.angzarr.io/` URL scheme (`proto_ext::type_url::for_type`),
-/// where short forms are deliberate. **Do not call from any code that
-/// builds a `type.googleapis.com/...` proto-Any URL** — Any URLs must
-/// carry the fully qualified type name per spec (audit finding #58).
-pub fn wire_name(full_name: &str) -> &str {
-    full_name
-        .strip_prefix(INTERNAL_PACKAGE_PREFIX)
-        .unwrap_or(full_name)
-}
+// Canonical constants live in `proto_ext::constants`; re-exported here
+// for callers that import from the `convert::` namespace.
+pub use crate::proto_ext::constants::{
+    DEFAULT_EDITION, META_ANGZARR_DOMAIN, PROJECTION_DOMAIN_PREFIX, PROJECTION_TYPE_URL,
+    TYPE_URL_PREFIX, UNKNOWN_DOMAIN, WILDCARD_DOMAIN,
+};
 
 /// Build a fully-qualified `type.googleapis.com/...` URL from a message's
 /// fully-qualified proto type name.
@@ -48,9 +21,8 @@ pub fn wire_name(full_name: &str) -> &str {
 /// Per `google.protobuf.Any` spec, the URL's last path segment **must**
 /// be the message's fully qualified name (`<package>.<MessageName>`).
 /// Audit finding #58: this used to incorrectly strip the
-/// `angzarr_client.proto.` prefix via `wire_name`, producing
-/// non-spec-compliant URLs that diverged from Python's emission. The
-/// strip has been removed.
+/// `angzarr_client.proto.` package prefix, producing non-spec-compliant
+/// URLs that diverged from Python's emission. The strip has been removed.
 ///
 /// # Examples
 /// ```
@@ -67,8 +39,6 @@ pub fn type_url(type_name: &str) -> String {
 /// Extract the wire-format type name from a type URL.
 ///
 /// Returns the part after the last `/` (e.g., "examples.PlayerRegistered").
-/// Callers that need the Rust-internal name can prepend
-/// [`INTERNAL_PACKAGE_PREFIX`] or use [`wire_name`]'s inverse.
 pub fn type_name_from_url(type_url: &str) -> &str {
     type_url.rsplit('/').next().unwrap_or(type_url)
 }
@@ -76,8 +46,8 @@ pub fn type_name_from_url(type_url: &str) -> &str {
 /// Check if a type URL matches the given fully-qualified type name exactly.
 ///
 /// Audit finding #58: comparison uses the spec-compliant fully qualified
-/// name verbatim — no `wire_name` strip — so it matches Python's
-/// emission and the `google.protobuf.Any` contract.
+/// name verbatim — so it matches Python's emission and the
+/// `google.protobuf.Any` contract.
 ///
 /// # Examples
 /// ```
@@ -169,7 +139,7 @@ pub fn unpack<T: prost::Message + Default + Name>(any: &Any) -> Result<T> {
 /// ```
 pub fn full_type_url<T: Name>() -> String {
     // Audit finding #58: emit the fully qualified name verbatim per
-    // `google.protobuf.Any` spec — no `wire_name` strip.
+    // `google.protobuf.Any` spec.
     format!("{}{}", TYPE_URL_PREFIX, T::full_name())
 }
 

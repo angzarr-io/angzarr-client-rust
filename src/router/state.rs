@@ -128,19 +128,6 @@ impl Destinations {
         self.sequences.contains_key(domain)
     }
 
-    /// Deprecated alias for [`Destinations::has_domain`].
-    ///
-    /// Kept for backwards compatibility with the pre-P2.1 surface where
-    /// the method was named after the internal storage rather than the
-    /// queried concept. Will be removed in a future major version.
-    #[deprecated(
-        since = "0.5.0",
-        note = "use `has_domain` — see PARITY_AUDIT.md plan item P2.1"
-    )]
-    pub fn has_sequence(&self, domain: &str) -> bool {
-        self.has_domain(domain)
-    }
-
     /// Get all domain names that have sequences.
     ///
     /// Iteration order matches the insertion order from
@@ -196,23 +183,6 @@ mod tests {
         let destinations = Destinations::from_sequences(pairs);
         let actual: Vec<&str> = destinations.domains().collect();
         assert_eq!(actual, vec!["zulu", "alpha", "mike"]);
-    }
-
-    #[test]
-    fn destinations_has_sequence_alias_still_works() {
-        // P2.1 deprecated alias — `#[deprecated]` attribute fires a
-        // compile-time warning but does not change runtime behavior. This
-        // test pins that the alias still returns the same answer as the
-        // canonical `has_domain`. Remove when the alias is removed.
-        let mut seqs = HashMap::new();
-        seqs.insert("order".to_string(), 5u32);
-        let destinations = Destinations::from_sequences(seqs);
-
-        #[allow(deprecated)]
-        {
-            assert!(destinations.has_sequence("order"));
-            assert!(!destinations.has_sequence("inventory"));
-        }
     }
 
     #[test]
