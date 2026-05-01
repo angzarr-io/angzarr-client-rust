@@ -108,11 +108,10 @@ const EXPORTED: &[&str] = &[
     "pm_delegate_to_framework",
     "pm_emit_compensation_events",
     // Event packing — pack_event/pack_events removed in audit #57
+    // and new_event_book/new_event_book_multi removed under @C-0103
     // (zero production callers; per-language helpers had divergent
     // contracts). Production code uses inline `Any { type_url, value }`
     // or `testing::pack_event(msg)` for fixtures.
-    "new_event_book",
-    "new_event_book_multi",
     // Builders (direct types, distinct from *Ext traits)
     "CommandBuilder",
     "QueryBuilder",
@@ -190,19 +189,19 @@ mod compile_probe {
         create_server, customer_root, default_retry_policy, delegate_to_framework,
         emit_compensation_events, fulfillment_root, get_transport_config, handles,
         inventory_product_root, inventory_root, make_command_book, make_command_page, make_cover,
-        make_event_book, make_event_page, make_timestamp, new_event_book, new_event_book_multi,
-        order_root, pm_delegate_to_framework, pm_emit_compensation_events, process_manager,
-        product_root, projector, rejected, require_exists, require_non_negative, require_not_empty,
-        require_not_empty_str, require_not_exists, require_positive, require_status,
-        require_status_not, run_server, saga, state_factory, to_proto_bytes, upcaster, upcasts,
-        uuid_for, uuid_obj_for, uuid_str_for, BuildError, ClientError, CommandBuilder,
-        CommandHandlerClient, CommandHandlerGrpc, CommandHandlerRouter, CommandRejectedError,
-        CompensationContext, Destinations, DispatchError, DomainClient, ExponentialBackoffRetry,
-        ProcessManagerGrpc, ProcessManagerResponse, ProcessManagerRouter, ProjectorGrpc,
-        ProjectorRouter, QueryBuilder, QueryClient, RejectionHandlerResponse, RetryPolicy, Router,
-        SagaGrpc, SagaHandlerResponse, SagaRouter, ScenarioContext, SpeculativeClient,
-        UpcasterGrpc, UpcasterRouter, DEFAULT_EDITION, DEFAULT_TEST_NAMESPACE,
-        INVENTORY_PRODUCT_NAMESPACE, META_ANGZARR_DOMAIN, PROJECTION_DOMAIN_PREFIX,
-        PROJECTION_TYPE_URL, TYPE_URL_PREFIX, UNKNOWN_DOMAIN, WILDCARD_DOMAIN,
+        make_event_book, make_event_page, make_timestamp, order_root, pm_delegate_to_framework,
+        pm_emit_compensation_events, process_manager, product_root, projector, rejected,
+        require_exists, require_non_negative, require_not_empty, require_not_empty_str,
+        require_not_exists, require_positive, require_status, require_status_not, run_server, saga,
+        state_factory, to_proto_bytes, upcaster, upcasts, uuid_for, uuid_obj_for, uuid_str_for,
+        BuildError, ClientError, CommandBuilder, CommandHandlerClient, CommandHandlerGrpc,
+        CommandHandlerRouter, CommandRejectedError, CompensationContext, Destinations,
+        DispatchError, DomainClient, ExponentialBackoffRetry, ProcessManagerGrpc,
+        ProcessManagerResponse, ProcessManagerRouter, ProjectorGrpc, ProjectorRouter, QueryBuilder,
+        QueryClient, RejectionHandlerResponse, RetryPolicy, Router, SagaGrpc, SagaHandlerResponse,
+        SagaRouter, ScenarioContext, SpeculativeClient, UpcasterGrpc, UpcasterRouter,
+        DEFAULT_EDITION, DEFAULT_TEST_NAMESPACE, INVENTORY_PRODUCT_NAMESPACE, META_ANGZARR_DOMAIN,
+        PROJECTION_DOMAIN_PREFIX, PROJECTION_TYPE_URL, TYPE_URL_PREFIX, UNKNOWN_DOMAIN,
+        WILDCARD_DOMAIN,
     };
 }

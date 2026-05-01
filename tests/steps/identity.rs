@@ -4,7 +4,7 @@ use angzarr_client::{
     cart_root, compute_root, customer_root, fulfillment_root, inventory_product_root,
     inventory_root, order_root, product_root, to_proto_bytes, INVENTORY_PRODUCT_NAMESPACE,
 };
-use cucumber::{given, then, when, World};
+use cucumber::{then, when, World};
 use uuid::Uuid;
 
 #[derive(Debug, Default, World)]

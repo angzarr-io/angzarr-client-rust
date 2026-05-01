@@ -7,7 +7,6 @@ use angzarr_client::proto::{event_page, Cover, EventBook, EventPage};
 use angzarr_client::router::{Built, Router};
 use angzarr_client::{full_type_url, projector, CommandResult};
 use cucumber::{given, then, when, World};
-use prost::Message as _;
 use prost_types::Any;
 
 #[derive(Clone, PartialEq, ::prost::Message)]

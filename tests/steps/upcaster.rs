@@ -9,13 +9,12 @@
 //! chain stops when no further upcaster matches the running event type.
 
 use cucumber::{given, then, when, World};
-use prost::Message as _;
 use prost_types::Any;
 
 use angzarr_client::full_type_url;
 use angzarr_client::proto::{event_page, EventPage, UpcastRequest};
 use angzarr_client::router::{Built, Router};
-use angzarr_client::{state_factory, upcaster, upcasts};
+use angzarr_client::upcaster;
 
 // Compile-time application of each macro — the test binary linking is
 // itself evidence that `#[upcaster(...)]`, `#[upcasts(...)]`, and
