@@ -18,7 +18,7 @@
 //!     let response = client.command_handler
 //!         .command("cart", cart_id)
 //!         .with_command("type.googleapis.com/examples.CreateCart", &create_cart)
-//!         .execute()
+//!         .execute(angzarr_client::proto::SyncMode::Async)
 //!         .await?;
 //!
 //!     // Query events
@@ -102,7 +102,7 @@ pub use compensation::{
 };
 
 // Re-export helpers
-pub use builder::{decode_event, events_from_response, root_from_cover};
+pub use builder::{decode_event, events_from_response};
 pub use convert::{
     full_type_name, full_type_url, now, parse_timestamp, proto_to_uuid, try_unpack, type_matches,
     type_name_from_url, type_url, type_url_matches, type_url_matches_exact, unpack, uuid_to_proto,

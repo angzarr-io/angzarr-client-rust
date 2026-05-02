@@ -90,6 +90,7 @@ impl Destinations {
                 source: Some(source_cover),
                 source_seq,
             })),
+            sync_mode: None,
         }
     }
 

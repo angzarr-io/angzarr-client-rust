@@ -251,7 +251,7 @@ async fn when_build_and_execute(world: &mut CommandBuilderWorld, domain: String)
         .command(&domain, Uuid::new_v4())
         .with_sequence(0)
         .with_command("type.googleapis.com/test.TestCommand", &cmd)
-        .execute()
+        .execute(angzarr_client::proto::SyncMode::Async)
         .await;
     match result {
         Ok(resp) => world.execute_response = Some(resp),
@@ -270,7 +270,7 @@ async fn when_execute_directly(world: &mut CommandBuilderWorld) {
         .command("orders", root)
         .with_sequence(0)
         .with_command("type.googleapis.com/test.CreateOrder", &cmd)
-        .execute()
+        .execute(angzarr_client::proto::SyncMode::Async)
         .await;
     match result {
         Ok(resp) => world.execute_response = Some(resp),

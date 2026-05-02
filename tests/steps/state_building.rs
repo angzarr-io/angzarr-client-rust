@@ -58,6 +58,7 @@ fn make_event_page(seq: u32, type_url: &str, data: &str) -> EventPage {
     EventPage {
         header: Some(PageHeader {
             sequence_type: Some(page_header::SequenceType::Sequence(seq)),
+            sync_mode: None,
         }),
         created_at: None,
         payload: Some(event_page::Payload::Event(Any {
@@ -77,6 +78,7 @@ fn make_increment_event(seq: u32, increment: i32) -> EventPage {
     EventPage {
         header: Some(PageHeader {
             sequence_type: Some(page_header::SequenceType::Sequence(seq)),
+            sync_mode: None,
         }),
         created_at: None,
         payload: Some(event_page::Payload::Event(Any {
@@ -303,6 +305,7 @@ async fn given_corrupted_payload(world: &mut StateBuildingWorld) {
     let events = vec![EventPage {
         header: Some(PageHeader {
             sequence_type: Some(page_header::SequenceType::Sequence(0)),
+            sync_mode: None,
         }),
         created_at: None,
         payload: Some(event_page::Payload::Event(Any {

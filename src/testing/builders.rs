@@ -55,6 +55,7 @@ pub fn make_event_page(sequence: u32, event: Any) -> EventPage {
     EventPage {
         header: Some(PageHeader {
             sequence_type: Some(SequenceType::Sequence(sequence)),
+            sync_mode: None,
         }),
         created_at: Some(make_timestamp()),
         payload: Some(event_page::Payload::Event(event)),
@@ -84,6 +85,7 @@ pub fn make_command_page(sequence: u32, command: Any) -> CommandPage {
     CommandPage {
         header: Some(PageHeader {
             sequence_type: Some(SequenceType::Sequence(sequence)),
+            sync_mode: None,
         }),
         payload: Some(command_page::Payload::Command(command)),
         merge_strategy: 0, // MERGE_COMMUTATIVE default
@@ -91,10 +93,14 @@ pub fn make_command_page(sequence: u32, command: Any) -> CommandPage {
 }
 
 /// Build a single-command `CommandBook`.
-pub fn make_command_book(cover: Cover, command: Any, sequence: u32) -> CommandBook {
+///
+/// `sequence` defaults to `0` when `None` — mirrors Python's
+/// `make_command_book(cover, command, sequence=0)`. Pass `Some(n)` to
+/// override.
+pub fn make_command_book(cover: Cover, command: Any, sequence: Option<u32>) -> CommandBook {
     CommandBook {
         cover: Some(cover),
-        pages: vec![make_command_page(sequence, command)],
+        pages: vec![make_command_page(sequence.unwrap_or(0), command)],
     }
 }
 
@@ -158,8 +164,26 @@ mod tests {
                 type_url: "t".into(),
                 value: vec![],
             },
-            0,
+            None,
         );
         assert_eq!(book.pages.len(), 1);
+    }
+
+    #[test]
+    fn make_command_book_default_sequence_is_zero() {
+        let cover = make_cover("x", [0u8; 16], "");
+        let book = make_command_book(
+            cover,
+            Any {
+                type_url: "t".into(),
+                value: vec![],
+            },
+            None,
+        );
+        let header = book.pages[0].header.as_ref().expect("header");
+        match header.sequence_type.as_ref().expect("sequence_type") {
+            SequenceType::Sequence(s) => assert_eq!(*s, 0),
+            _ => panic!("expected explicit sequence"),
+        }
     }
 }
