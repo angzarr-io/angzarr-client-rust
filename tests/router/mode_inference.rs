@@ -104,7 +104,9 @@ impl Handler for StubProjector {
 
 #[test]
 fn empty_router_yields_build_error_empty() {
-    let err = Router::new("empty").build().expect_err("empty router rejected");
+    let err = Router::new("empty")
+        .build()
+        .expect_err("empty router rejected");
     assert!(matches!(err, BuildError::Empty(_)), "got {:?}", err);
 }
 
