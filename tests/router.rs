@@ -23,3 +23,6 @@ mod validation;
 
 #[path = "router/fact_replay.rs"]
 mod fact_replay;
+
+#[path = "router/mode_inference.rs"]
+mod mode_inference;

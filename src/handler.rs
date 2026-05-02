@@ -222,3 +222,89 @@ impl UpcasterService for UpcasterGrpc {
         Ok(Response::new(response))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Adapter-level error-mapping tests. Mirrors Python's
+    //! `tests/router/test_grpc_adapters.py` coverage of how each
+    //! `ClientError` variant projects onto a `tonic::Status`. Audit #59.
+    use super::*;
+    use crate::CommandRejectedError;
+
+    #[test]
+    fn invalid_argument_maps_to_invalid_argument() {
+        let err = ClientError::invalid_argument(
+            "BAD_INPUT",
+            "value must be positive",
+            std::iter::empty::<(String, String)>(),
+        );
+        let status = client_error_to_status(err);
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(status.message(), "value must be positive");
+    }
+
+    #[test]
+    fn invalid_timestamp_maps_to_invalid_argument() {
+        let err = ClientError::invalid_timestamp(
+            "BAD_TS",
+            "not RFC3339",
+            std::iter::empty::<(String, String)>(),
+        );
+        let status = client_error_to_status(err);
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn connection_error_maps_to_unavailable() {
+        let err = ClientError::connection(
+            "DOWN",
+            "backend unreachable",
+            std::iter::empty::<(String, String)>(),
+        );
+        let status = client_error_to_status(err);
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(status.message(), "backend unreachable");
+    }
+
+    #[test]
+    fn grpc_passes_through_upstream_status_code() {
+        let upstream = Status::resource_exhausted("quota");
+        let err = ClientError::from(upstream);
+        let status = client_error_to_status(err);
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert_eq!(status.message(), "quota");
+    }
+
+    #[test]
+    fn rejected_invalid_argument_status_maps_to_invalid_argument() {
+        let rej = CommandRejectedError::invalid_argument(
+            "BAD",
+            "bad input",
+            std::iter::empty::<(String, String)>(),
+        );
+        let status = client_error_to_status(ClientError::Rejected(rej));
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn rejected_not_found_status_maps_to_not_found() {
+        let rej = CommandRejectedError::not_found(
+            "MISSING",
+            "no such record",
+            std::iter::empty::<(String, String)>(),
+        );
+        let status = client_error_to_status(ClientError::Rejected(rej));
+        assert_eq!(status.code(), tonic::Code::NotFound);
+    }
+
+    #[test]
+    fn rejected_precondition_failed_default_maps_to_failed_precondition() {
+        let rej = CommandRejectedError::precondition_failed(
+            "CONFLICT",
+            "out of order",
+            std::iter::empty::<(String, String)>(),
+        );
+        let status = client_error_to_status(ClientError::Rejected(rej));
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+    }
+}

@@ -22,7 +22,6 @@ pub struct CommandBuilder<'a, C: traits::GatewayClient> {
     merge_strategy: crate::proto::MergeStrategy,
     type_url: Option<String>,
     payload: Option<Vec<u8>>,
-    sync_mode: crate::proto::SyncMode,
 }
 
 impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
@@ -45,7 +44,6 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
             merge_strategy: crate::proto::MergeStrategy::MergeCommutative,
             type_url: None,
             payload: None,
-            sync_mode: crate::proto::SyncMode::Async,
         }
     }
 
@@ -67,18 +65,6 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
     /// Defaults to `MergeCommutative`.
     pub fn with_merge_strategy(mut self, strategy: crate::proto::MergeStrategy) -> Self {
         self.merge_strategy = strategy;
-        self
-    }
-
-    /// Set the execution sync mode.
-    ///
-    /// Defaults to `SyncMode::Async` (fire-and-forget). Use
-    /// `SyncMode::Simple` to wait for sync projectors, or
-    /// `SyncMode::Cascade` for full sync including saga cascade.
-    /// Mirrors Python's `CommandBuilder.execute(sync_mode=...)`
-    /// (`builder.py:104`). P2.4b / audit finding #13.
-    pub fn with_sync_mode(mut self, mode: crate::proto::SyncMode) -> Self {
-        self.sync_mode = mode;
         self
     }
 
@@ -132,6 +118,7 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
             pages: vec![CommandPage {
                 header: Some(PageHeader {
                     sequence_type: Some(SequenceType::Sequence(sequence)),
+                    sync_mode: None,
                 }),
                 merge_strategy: self.merge_strategy as i32,
                 payload: Some(crate::proto::command_page::Payload::Command(
@@ -144,11 +131,15 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
         })
     }
 
-    /// Execute the command using the configured sync mode (default
-    /// `SyncMode::Async`).
-    pub async fn execute(self) -> Result<CommandResponse> {
+    /// Execute the command with the given sync mode.
+    ///
+    /// Pass `SyncMode::Async` for fire-and-forget (the cross-language
+    /// default), `SyncMode::Simple` to wait for sync projectors, or
+    /// `SyncMode::Cascade` for full sync including saga cascade.
+    /// Mirrors Python's `CommandBuilder.execute(sync_mode=...)`
+    /// (`builder.py:104`). P2.4b / audit finding #13.
+    pub async fn execute(self, sync_mode: crate::proto::SyncMode) -> Result<CommandResponse> {
         let client = self.client;
-        let sync_mode = self.sync_mode;
         let command = self.build()?;
         client.execute_with_sync_mode(command, sync_mode).await
     }
@@ -299,14 +290,6 @@ pub trait QueryBuilderExt: traits::QueryClient + Sized {
 }
 
 impl<T: traits::QueryClient> QueryBuilderExt for T {}
-
-/// Helper to extract the root UUID from a Cover.
-pub fn root_from_cover(cover: &Cover) -> Option<Uuid> {
-    cover
-        .root
-        .as_ref()
-        .and_then(|r| Uuid::from_slice(&r.value).ok())
-}
 
 /// Helper to extract events from a CommandResponse.
 pub fn events_from_response(response: &CommandResponse) -> &[EventPage] {
@@ -534,9 +517,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_command_builder_default_sync_mode_is_async() {
-        // P2.4b / audit finding #13: builder defaults to ASYNC,
-        // matching Python's `CommandBuilder.execute(sync_mode=ASYNC)`.
+    async fn test_command_builder_execute_propagates_async() {
+        // P2.4b / audit finding #13: `execute(sync_mode)` mirrors
+        // Python's `CommandBuilder.execute(sync_mode=...)` — the
+        // per-call mode reaches the gateway untouched.
         let client = MockGatewayClient::new(CommandResponse::default());
         let root = Uuid::new_v4();
         let msg = prost_types::Duration {
@@ -546,7 +530,7 @@ mod tests {
         let _ = CommandBuilder::new(&client, "orders", root)
             .with_sequence(0)
             .with_command("type.googleapis.com/test.Command", &msg)
-            .execute()
+            .execute(crate::proto::SyncMode::Async)
             .await;
         assert_eq!(
             *client.last_sync_mode.lock().unwrap(),
@@ -555,7 +539,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_command_builder_with_sync_mode_overrides_default() {
+    async fn test_command_builder_execute_propagates_cascade() {
         let client = MockGatewayClient::new(CommandResponse::default());
         let root = Uuid::new_v4();
         let msg = prost_types::Duration {
@@ -564,9 +548,8 @@ mod tests {
         };
         let _ = CommandBuilder::new(&client, "orders", root)
             .with_sequence(0)
-            .with_sync_mode(crate::proto::SyncMode::Cascade)
             .with_command("type.googleapis.com/test.Command", &msg)
-            .execute()
+            .execute(crate::proto::SyncMode::Cascade)
             .await;
         assert_eq!(
             *client.last_sync_mode.lock().unwrap(),
@@ -761,32 +744,6 @@ mod tests {
 
     // Helper function tests
     #[test]
-    fn test_root_from_cover_some() {
-        let root = Uuid::new_v4();
-        let cover = make_cover("orders", "", Some(root));
-        assert_eq!(root_from_cover(&cover), Some(root));
-    }
-
-    #[test]
-    fn test_root_from_cover_none() {
-        let cover = make_cover("orders", "", None);
-        assert_eq!(root_from_cover(&cover), None);
-    }
-
-    #[test]
-    fn test_root_from_cover_invalid_uuid() {
-        let cover = Cover {
-            domain: "orders".to_string(),
-            correlation_id: String::new(),
-            root: Some(ProtoUuid {
-                value: vec![1, 2, 3], // invalid - not 16 bytes
-            }),
-            edition: None,
-        };
-        assert_eq!(root_from_cover(&cover), None);
-    }
-
-    #[test]
     fn test_events_from_response_with_events() {
         let events = EventBook {
             cover: None,
@@ -826,6 +783,7 @@ mod tests {
         let event = EventPage {
             header: Some(PageHeader {
                 sequence_type: Some(SequenceType::Sequence(1)),
+                sync_mode: None,
             }),
             created_at: None,
             payload: Some(Payload::Event(prost_types::Any {
@@ -853,6 +811,7 @@ mod tests {
         let event = EventPage {
             header: Some(PageHeader {
                 sequence_type: Some(SequenceType::Sequence(1)),
+                sync_mode: None,
             }),
             created_at: None,
             payload: Some(Payload::Event(prost_types::Any {
@@ -873,6 +832,7 @@ mod tests {
         let event = EventPage {
             header: Some(PageHeader {
                 sequence_type: Some(SequenceType::Sequence(1)),
+                sync_mode: None,
             }),
             created_at: None,
             payload: None,
@@ -892,6 +852,7 @@ mod tests {
         let event = EventPage {
             header: Some(PageHeader {
                 sequence_type: Some(SequenceType::Sequence(1)),
+                sync_mode: None,
             }),
             created_at: None,
             payload: Some(Payload::Event(prost_types::Any {

@@ -28,6 +28,7 @@ fn make_event_page(seq: u32, type_url: &str, value: Vec<u8>) -> EventPage {
     EventPage {
         header: Some(PageHeader {
             sequence_type: Some(page_header::SequenceType::Sequence(seq)),
+            sync_mode: None,
         }),
         created_at: Some(prost_types::Timestamp {
             seconds: 1704067200, // 2024-01-01
@@ -144,6 +145,7 @@ async fn given_event_page_with_offloaded(world: &mut EventDecodingWorld) {
     world.current_event = Some(EventPage {
         header: Some(PageHeader {
             sequence_type: Some(page_header::SequenceType::Sequence(0)),
+            sync_mode: None,
         }),
         created_at: None,
         payload: Some(event_page::Payload::External(
@@ -226,6 +228,7 @@ async fn given_event_page_no_payload(world: &mut EventDecodingWorld) {
     world.current_event = Some(EventPage {
         header: Some(PageHeader {
             sequence_type: Some(page_header::SequenceType::Sequence(0)),
+            sync_mode: None,
         }),
         created_at: None,
         payload: None,

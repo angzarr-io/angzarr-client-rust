@@ -309,6 +309,7 @@ mod tests {
             pages: vec![CommandPage {
                 header: Some(PageHeader {
                     sequence_type: Some(page_header::SequenceType::AngzarrDeferred(deferred)),
+                    sync_mode: None,
                 }),
                 merge_strategy: 0,
                 payload: Some(command_page::Payload::Command(Any {

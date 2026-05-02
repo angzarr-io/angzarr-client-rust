@@ -123,6 +123,7 @@ impl CompensationContext {
             pages: vec![CommandPage {
                 header: Some(PageHeader {
                     sequence_type: Some(page_header::SequenceType::Sequence(0)),
+                    sync_mode: None,
                 }),
                 merge_strategy: MergeStrategy::MergeCommutative as i32,
                 payload: Some(command_page::Payload::Command(Any {
@@ -164,6 +165,7 @@ fn make_saga_command(
         pages: vec![CommandPage {
             header: Some(PageHeader {
                 sequence_type: Some(page_header::SequenceType::Sequence(0)),
+                sync_mode: None,
             }),
             merge_strategy: 0,
             payload: Some(command_page::Payload::Command(Any {

@@ -371,13 +371,13 @@ async fn then_two_factories(world: &mut BuilderWorld) {
     }
 }
 
-#[then("the factory invocation count is 0")]
-async fn then_factory_invocation_zero(world: &mut BuilderWorld) {
+#[then(expr = "the factory invocation count is {int}")]
+async fn then_factory_invocation_count(world: &mut BuilderWorld, n: u32) {
     let counter = world
         .counted_factory
         .as_ref()
         .expect("counted_factory not set");
-    assert_eq!(counter.load(Ordering::SeqCst), 0);
+    assert_eq!(counter.load(Ordering::SeqCst), n);
 }
 
 // Trivial no-op step to keep prost::Message and full_type_url used in case the

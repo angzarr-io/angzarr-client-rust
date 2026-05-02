@@ -366,8 +366,17 @@ async fn then_code_permission_denied(world: &mut ErrorHandlingWorld) {
 #[then("the error message should describe access denial")]
 async fn then_message_describes_access_denial(world: &mut ErrorHandlingWorld) {
     let err = world.current_error.as_ref().expect("no error");
-    let msg = err.message();
-    assert!(msg.contains("denied") || msg.contains("access"));
+    // Per audit #59 / #76: comparisons stay on the static error
+    // taxonomy — `code()` for the SCREAMING_SNAKE class id, `grpc_code()`
+    // for the typed transport code — never on the dynamic message text.
+    // Dynamic details remain publicly recoverable via `status()` for
+    // diagnostic display; tests must not assert on the wrapped string.
+    assert_eq!(err.code(), angzarr_client::error_codes::codes::GRPC_ERROR);
+    assert_eq!(err.grpc_code(), Some(Code::PermissionDenied));
+    assert!(
+        err.status().is_some(),
+        "dynamic Status detail must remain publicly accessible"
+    );
 }
 
 #[then("code should return INTERNAL")]
