@@ -15,7 +15,77 @@
 
 use std::collections::BTreeMap;
 
+use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::{Code, Status};
+
+/// Metadata trailer carrying the SCREAMING_SNAKE error code so polyglot
+/// siblings can route on the structured identifier without parsing the
+/// human-readable Status message.
+pub const ERROR_CODE_HEADER: &str = "x-angzarr-error-code";
+
+/// Prefix for metadata trailers carrying structured error details.
+/// One header per detail entry: `x-angzarr-detail-<key>: <value>`.
+pub const ERROR_DETAIL_HEADER_PREFIX: &str = "x-angzarr-detail-";
+
+/// Metadata trailer carrying the addressing-envelope domain from a
+/// rejection's [`CommandRejectedError::cover`].
+pub const ERROR_COVER_DOMAIN_HEADER: &str = "x-angzarr-cover-domain";
+
+/// Metadata trailer carrying the addressing-envelope correlation_id.
+pub const ERROR_COVER_CORRELATION_ID_HEADER: &str = "x-angzarr-cover-correlation-id";
+
+/// Metadata trailer carrying the hex-encoded root UUID.
+pub const ERROR_COVER_ROOT_HEX_HEADER: &str = "x-angzarr-cover-root-hex";
+
+/// Stamp `x-angzarr-error-code` + `x-angzarr-detail-<key>` headers onto a
+/// gRPC Status's trailing metadata. Silently skips any header that
+/// isn't ASCII-safe — pathological detail values shouldn't hard-fail
+/// the caller. Cross-language siblings that ignore unknown trailing
+/// metadata see exactly the previous behavior.
+pub fn attach_error_metadata(
+    md: &mut MetadataMap,
+    code: &'static str,
+    details: Option<&BTreeMap<String, String>>,
+) {
+    if let Ok(v) = MetadataValue::try_from(code) {
+        md.insert(ERROR_CODE_HEADER, v);
+    }
+    let Some(details) = details else { return };
+    for (k, v) in details {
+        let header = format!("{}{}", ERROR_DETAIL_HEADER_PREFIX, k);
+        let Ok(key) = header.parse::<MetadataKey<_>>() else {
+            continue;
+        };
+        let Ok(value) = MetadataValue::try_from(v.as_str()) else {
+            continue;
+        };
+        md.insert(key, value);
+    }
+}
+
+/// Stamp the addressing-envelope (cover) onto a gRPC Status's trailing
+/// metadata. Each non-empty cover field rides as its own header so a
+/// polyglot sibling reading `x-angzarr-cover-domain` /
+/// `-correlation-id` / `-root-hex` can reconstruct (domain, root,
+/// correlation_id) without needing to decode a packed proto.
+pub fn attach_cover_metadata(md: &mut MetadataMap, cover: &crate::proto::Cover) {
+    if !cover.domain.is_empty() {
+        if let Ok(v) = MetadataValue::try_from(cover.domain.as_str()) {
+            md.insert(ERROR_COVER_DOMAIN_HEADER, v);
+        }
+    }
+    if !cover.correlation_id.is_empty() {
+        if let Ok(v) = MetadataValue::try_from(cover.correlation_id.as_str()) {
+            md.insert(ERROR_COVER_CORRELATION_ID_HEADER, v);
+        }
+    }
+    if let Some(root) = &cover.root {
+        let hex_str = hex::encode(&root.value);
+        if let Ok(v) = MetadataValue::try_from(hex_str.as_str()) {
+            md.insert(ERROR_COVER_ROOT_HEX_HEADER, v);
+        }
+    }
+}
 
 /// Result type for client operations.
 pub type Result<T> = std::result::Result<T, ClientError>;
@@ -338,11 +408,25 @@ impl std::error::Error for CommandRejectedError {}
 
 impl From<CommandRejectedError> for Status {
     fn from(err: CommandRejectedError) -> Self {
-        match err.status_code {
+        // Build the bare Status with the right gRPC code and the
+        // static message. Then stamp the structured `code` and
+        // `details` map into trailing metadata so polyglot callers
+        // that read `x-angzarr-error-code` / `x-angzarr-detail-<key>`
+        // see full structured fidelity. The cover, if stamped by the
+        // dispatch boundary, also rides as its own headers — keeping
+        // the on-the-wire message a static greppable string while
+        // surfacing the dynamic addressing envelope to siblings that
+        // want to reconstruct it.
+        let mut status = match err.status_code {
             "INVALID_ARGUMENT" => Status::invalid_argument(err.message),
             "NOT_FOUND" => Status::not_found(err.message),
             _ => Status::failed_precondition(err.message),
+        };
+        attach_error_metadata(status.metadata_mut(), err.code, Some(&err.details));
+        if let Some(cover) = &err.cover {
+            attach_cover_metadata(status.metadata_mut(), cover);
         }
+        status
     }
 }
 
@@ -451,6 +535,83 @@ mod tests {
             std::iter::empty::<(String, String)>(),
         );
         assert_eq!(err.to_string(), "registration already open");
+    }
+
+    #[test]
+    fn rejected_into_status_stamps_code_and_details() {
+        // From<CommandRejectedError> for Status now stamps trailing
+        // metadata so the Into-conversion path is symmetric with the
+        // gRPC adapter's `client_error_to_status`. Polyglot siblings
+        // reading the trailers see structured fidelity regardless of
+        // which path produced the Status.
+        let rej = CommandRejectedError::precondition_failed(
+            "ALREADY_OPEN",
+            "registration already open",
+            [("field", "status")],
+        );
+        let status: Status = rej.into();
+        assert_eq!(status.code(), Code::FailedPrecondition);
+        let md = status.metadata();
+        assert_eq!(
+            md.get(ERROR_CODE_HEADER).map(|v| v.to_str().unwrap()),
+            Some("ALREADY_OPEN"),
+        );
+        assert_eq!(
+            md.get("x-angzarr-detail-field").map(|v| v.to_str().unwrap()),
+            Some("status"),
+        );
+    }
+
+    #[test]
+    fn rejected_into_status_stamps_cover_when_present() {
+        use crate::proto::{Cover, Uuid as ProtoUuid};
+        let rej = CommandRejectedError::not_found(
+            "ENTITY_NOT_FOUND",
+            "entity not found",
+            std::iter::empty::<(String, String)>(),
+        )
+        .with_cover(Cover {
+            domain: "player".into(),
+            root: Some(ProtoUuid {
+                value: vec![0xab, 0xcd, 0xef],
+            }),
+            correlation_id: "corr-42".into(),
+            edition: None,
+        });
+        let status: Status = rej.into();
+        let md = status.metadata();
+        assert_eq!(
+            md.get(ERROR_COVER_DOMAIN_HEADER).map(|v| v.to_str().unwrap()),
+            Some("player"),
+        );
+        assert_eq!(
+            md.get(ERROR_COVER_CORRELATION_ID_HEADER)
+                .map(|v| v.to_str().unwrap()),
+            Some("corr-42"),
+        );
+        assert_eq!(
+            md.get(ERROR_COVER_ROOT_HEX_HEADER).map(|v| v.to_str().unwrap()),
+            Some("abcdef"),
+        );
+    }
+
+    #[test]
+    fn rejected_into_status_omits_empty_cover_headers() {
+        use crate::proto::Cover;
+        // A cover with empty domain / correlation_id and no root must
+        // not stamp any cover headers — keeps the metadata noise-free
+        // for partially-populated covers.
+        let rej = CommandRejectedError::precondition_failed(
+            "X",
+            "x",
+            std::iter::empty::<(String, String)>(),
+        )
+        .with_cover(Cover::default());
+        let status: Status = rej.into();
+        let md = status.metadata();
+        assert!(md.get(ERROR_COVER_DOMAIN_HEADER).is_none());
+        assert!(md.get(ERROR_COVER_CORRELATION_ID_HEADER).is_none());
+        assert!(md.get(ERROR_COVER_ROOT_HEX_HEADER).is_none());
     }
 
     // Audit #76 + #78: Transport / Grpc variants emit static inventory

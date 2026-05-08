@@ -3,12 +3,11 @@
 //! Each wrapper takes the matching `router::runtime::*Router` produced by
 //! `Router::build().into_*()?` and exposes it as a `tonic` service.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::{Request, Response, Status};
 
+use crate::error::attach_error_metadata;
 use crate::error_codes::{codes, messages};
 use crate::proto::{
     command_handler_service_server::CommandHandlerService,
@@ -23,14 +22,11 @@ use crate::router::runtime::{
 };
 use crate::ClientError;
 
-/// Metadata trailer carrying the SCREAMING_SNAKE error code so polyglot
-/// siblings can route on the structured identifier without parsing the
-/// human-readable Status message.
-pub const ERROR_CODE_HEADER: &str = "x-angzarr-error-code";
-
-/// Prefix for metadata trailers carrying structured error details.
-/// One header per detail entry: `x-angzarr-detail-<key>: <value>`.
-pub const ERROR_DETAIL_HEADER_PREFIX: &str = "x-angzarr-detail-";
+// Re-exports for backward compatibility — the actual constants now
+// live in `crate::error` so the `From<CommandRejectedError> for Status`
+// impl can stamp the same headers without crate-cycling. Kept here so
+// callers using `handler::ERROR_CODE_HEADER` keep compiling.
+pub use crate::error::{ERROR_CODE_HEADER, ERROR_DETAIL_HEADER_PREFIX};
 
 /// gRPC command-handler service wrapping a [`CommandHandlerRouter`].
 pub struct CommandHandlerGrpc {
@@ -216,26 +212,36 @@ fn client_error_to_status(err: ClientError) -> Status {
     // Structured `code` + `details` ride in trailing metadata so polyglot
     // siblings that read them get full fidelity; siblings that ignore
     // unknown trailers see exactly the previous behavior.
+    //
+    // The Rejected branch delegates to `From<CommandRejectedError>
+    // for Status` which now stamps the metadata symmetrically — so a
+    // direct `Into<Status>::into(rej)` call from outside this adapter
+    // produces the identical wire output.
     let code = err.code();
-    let (mut status, details): (Status, Option<&BTreeMap<String, String>>) = match err {
-        ClientError::InvalidArgument(ref d) => (Status::invalid_argument(d.message), Some(&d.details)),
-        ClientError::Connection(ref d) => (Status::unavailable(d.message), Some(&d.details)),
-        ClientError::Transport(ref e) => (Status::unavailable(e.to_string()), None),
-        ClientError::Grpc(s) => return *s,
-        ClientError::InvalidTimestamp(ref d) => {
-            (Status::invalid_argument(d.message), Some(&d.details))
+    match err {
+        ClientError::InvalidArgument(d) => {
+            let mut s = Status::invalid_argument(d.message);
+            attach_error_metadata(s.metadata_mut(), code, Some(&d.details));
+            s
         }
-        ClientError::Rejected(ref r) => {
-            // Reuse the existing CommandRejectedError → Status mapping
-            // for status code, then attach structured details from the
-            // rejection (including cover, if stamped).
-            let mut s: Status = r.clone().into();
-            attach_error_metadata(s.metadata_mut(), code, Some(&r.details));
-            return s;
+        ClientError::Connection(d) => {
+            let mut s = Status::unavailable(d.message);
+            attach_error_metadata(s.metadata_mut(), code, Some(&d.details));
+            s
         }
-    };
-    attach_error_metadata(status.metadata_mut(), code, details);
-    status
+        ClientError::Transport(e) => {
+            let mut s = Status::unavailable(e.to_string());
+            attach_error_metadata(s.metadata_mut(), code, None);
+            s
+        }
+        ClientError::Grpc(s) => *s,
+        ClientError::InvalidTimestamp(d) => {
+            let mut s = Status::invalid_argument(d.message);
+            attach_error_metadata(s.metadata_mut(), code, Some(&d.details));
+            s
+        }
+        ClientError::Rejected(r) => r.into(),
+    }
 }
 
 /// Build a `Status::unimplemented` whose trailing metadata carries the
@@ -246,30 +252,6 @@ fn unimplemented_with_code(code: &'static str, message: &'static str) -> Status 
     status
 }
 
-/// Stamp `x-angzarr-error-code` + `x-angzarr-detail-<key>` headers onto a
-/// gRPC Status's trailing metadata. Skips silently on any header that
-/// isn't ASCII-safe — keeps callers from accidentally hard-failing on
-/// pathological detail values.
-fn attach_error_metadata(
-    md: &mut MetadataMap,
-    code: &'static str,
-    details: Option<&BTreeMap<String, String>>,
-) {
-    if let Ok(v) = MetadataValue::try_from(code) {
-        md.insert(ERROR_CODE_HEADER, v);
-    }
-    let Some(details) = details else { return };
-    for (k, v) in details {
-        let header = format!("{}{}", ERROR_DETAIL_HEADER_PREFIX, k);
-        let Ok(key) = header.parse::<MetadataKey<_>>() else {
-            continue;
-        };
-        let Ok(value) = MetadataValue::try_from(v.as_str()) else {
-            continue;
-        };
-        md.insert(key, value);
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Upcaster wrappers — unified-Router factory-based dispatch (R8b).

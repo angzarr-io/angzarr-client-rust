@@ -46,6 +46,14 @@ use crate::router::runtime::{CommandHandlerRouter, ProcessManagerRouter, SagaRou
 
 /// Fully-qualified gRPC service names — matched against `Health.Check` and
 /// used as health-reporter keys.
+///
+/// The `angzarr_client.proto.angzarr.` prefix is the **proto package**
+/// (declared in `angzarr-project/proto/angzarr_client/proto/angzarr/*.proto`),
+/// not a Rust-language identifier. All six sibling clients
+/// (Python / Go / Java / C# / C++ / Rust) emit the same package because
+/// they all generate from the same `.proto` files; the name is part of
+/// the wire-format spec. Renaming would require coordinated proto-package
+/// rename across every client + every coordinator.
 const HEALTH_NAME_COMMAND_HANDLER: &str = "angzarr_client.proto.angzarr.CommandHandlerService";
 const HEALTH_NAME_SAGA: &str = "angzarr_client.proto.angzarr.SagaService";
 const HEALTH_NAME_PROCESS_MANAGER: &str = "angzarr_client.proto.angzarr.ProcessManagerService";
@@ -79,6 +87,17 @@ impl ServerConfig {
     /// Resolve from env. UDS mode is selected when all three of `UDS_BASE_PATH`,
     /// `SERVICE_NAME`, and `DOMAIN` are set; otherwise TCP, with port read from
     /// `PORT` or `GRPC_PORT`, falling back to `default_port`.
+    ///
+    /// **Naming note**: server-side reads `UDS_BASE_PATH` (no
+    /// `ANGZARR_` prefix) while client-side
+    /// [`crate::transport::resolve_ch_endpoint`] reads `ANGZARR_UDS_BASE`
+    /// — this asymmetry is the **established cross-language convention**:
+    /// Python (`server.py` reads `UDS_BASE_PATH`, `client.py` reads
+    /// `ANGZARR_UDS_BASE`), Go (`server.go` reads `UDS_BASE_PATH`,
+    /// `client.go` reads `ANGZARR_UDS_BASE`), and so on. Aligning the
+    /// names would require coordinating all six clients in lockstep
+    /// with deployment manifests in the field. Do not "fix" this in
+    /// isolation.
     ///
     /// This function is **pure** — no filesystem side effects. The runner is
     /// responsible for creating the parent directory and removing any stale

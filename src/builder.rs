@@ -367,7 +367,6 @@ pub fn decode_event<M: Message + Default>(event: &EventPage, full_type_name: &st
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{Cover, Uuid as ProtoUuid};
     use async_trait::async_trait;
 
     // Mock client for testing QueryBuilder
