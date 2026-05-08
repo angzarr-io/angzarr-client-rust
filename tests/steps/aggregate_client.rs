@@ -26,6 +26,14 @@ pub struct AggregateClientWorld {
     service_available: bool,
     service_slow: bool,
     current_sequence: Option<u32>,
+    /// Original literal root identifier from the spec (e.g. "order-001"),
+    /// kept so Then steps can compare back against the spec's verbatim
+    /// text for spec-mutation detection. Distinct from `root` which may
+    /// be UUID-coerced for protocol use.
+    root_label: String,
+    /// Last sequence value passed to an `execute … at sequence N` When,
+    /// for spec-mutation verification.
+    last_executed_sequence: Option<u32>,
 }
 
 // ==========================================================================
@@ -59,6 +67,7 @@ async fn given_aggregate_at_sequence(
     seq: u32,
 ) {
     world.domain = domain.clone();
+    world.root_label = root.clone();
     world.root = root.clone();
     world.sequence = seq;
     world.aggregates.insert(format!("{}:{}", domain, root), seq);
@@ -67,6 +76,7 @@ async fn given_aggregate_at_sequence(
 #[given(expr = "an aggregate {string} with root {string}")]
 async fn given_aggregate(world: &mut AggregateClientWorld, domain: String, root: String) {
     world.domain = domain.clone();
+    world.root_label = root.clone();
     world.root = root.clone();
     world.sequence = 0;
     world.aggregates.insert(format!("{}:{}", domain, root), 0);
@@ -75,6 +85,7 @@ async fn given_aggregate(world: &mut AggregateClientWorld, domain: String, root:
 #[given(expr = "no aggregate exists for domain {string} root {string}")]
 async fn given_no_aggregate(world: &mut AggregateClientWorld, domain: String, root: String) {
     world.domain = domain;
+    world.root_label = root.clone();
     world.root = root;
     world.sequence = 0;
 }
@@ -131,6 +142,7 @@ async fn when_execute_command_at_sequence(
     seq: u32,
 ) {
     world.command_type = cmd_type.clone();
+    world.last_executed_sequence = Some(seq);
     let key = format!("{}:{}", world.domain, world.root);
     let current_seq = *world.aggregates.get(&key).unwrap_or(&0);
 
@@ -146,6 +158,7 @@ async fn when_execute_command_at_sequence(
 
 #[when(expr = "I execute a command at sequence {int}")]
 async fn when_execute_at_sequence(world: &mut AggregateClientWorld, seq: u32) {
+    world.last_executed_sequence = Some(seq);
     let key = format!("{}:{}", world.domain, world.root);
     let current_seq = *world.aggregates.get(&key).unwrap_or(&0);
 
@@ -437,4 +450,39 @@ async fn then_fail_timeout(world: &mut AggregateClientWorld) {
 async fn then_aggregate_exists(world: &mut AggregateClientWorld, count: u32) {
     let key = format!("{}:{}", world.domain, world.root);
     assert_eq!(world.aggregates.get(&key), Some(&count));
+}
+
+// --------------------------------------------------------------------------
+// Spec-mutation guards: independent capture of values from the spec so that
+// mutations to the captured strings/ints in Given/When are observable here.
+// See angzarr-project Tier 1 spec rewording (sour-mutants findings).
+// --------------------------------------------------------------------------
+
+#[then(expr = "the targeted aggregate has domain {string}")]
+async fn then_targeted_domain(world: &mut AggregateClientWorld, expected: String) {
+    assert_eq!(
+        world.domain, expected,
+        "world.domain={:?} expected={:?}",
+        world.domain, expected
+    );
+}
+
+#[then(expr = "the targeted aggregate has root {string}")]
+async fn then_targeted_root(world: &mut AggregateClientWorld, expected: String) {
+    assert_eq!(
+        world.root_label, expected,
+        "world.root_label={:?} expected={:?}",
+        world.root_label, expected
+    );
+}
+
+#[then(expr = "the executed command was at sequence {int}")]
+async fn then_executed_sequence(world: &mut AggregateClientWorld, expected: u32) {
+    assert_eq!(
+        world.last_executed_sequence,
+        Some(expected),
+        "last_executed_sequence={:?} expected={}",
+        world.last_executed_sequence,
+        expected
+    );
 }

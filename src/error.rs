@@ -226,12 +226,20 @@ impl ClientError {
 ///   - `code: &'static str` — SCREAMING_SNAKE stable identifier.
 ///   - `status_code: &'static str` — `FAILED_PRECONDITION` / `INVALID_ARGUMENT` / `NOT_FOUND`.
 ///   - `details: BTreeMap<String, String>` — runtime context.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `cover` is the addressing envelope (`domain`, `root`, `correlation_id`,
+/// `edition`) of the command that produced this rejection. Handlers do
+/// not populate it; the router stamps it from the incoming
+/// `ContextualCommand` at the dispatch boundary so every rejection is
+/// traceable to its originating workflow without each call site having
+/// to thread the context.
+#[derive(Debug, Clone, PartialEq)]
 pub struct CommandRejectedError {
     pub code: &'static str,
     pub message: &'static str,
     pub status_code: &'static str,
     pub details: BTreeMap<String, String>,
+    pub cover: Option<crate::proto::Cover>,
 }
 
 impl CommandRejectedError {
@@ -254,6 +262,7 @@ impl CommandRejectedError {
                 .into_iter()
                 .map(|(k, v)| (k.into(), v.into()))
                 .collect(),
+            cover: None,
         }
     }
 
@@ -272,6 +281,7 @@ impl CommandRejectedError {
                 .into_iter()
                 .map(|(k, v)| (k.into(), v.into()))
                 .collect(),
+            cover: None,
         }
     }
 
@@ -292,7 +302,15 @@ impl CommandRejectedError {
                 .into_iter()
                 .map(|(k, v)| (k.into(), v.into()))
                 .collect(),
+            cover: None,
         }
+    }
+
+    /// Stamp the addressing envelope. Builder-style for the dispatch
+    /// boundary to attach the request's cover to a propagating rejection.
+    pub fn with_cover(mut self, cover: crate::proto::Cover) -> Self {
+        self.cover = Some(cover);
+        self
     }
 
     pub fn is_precondition_failed(&self) -> bool {
@@ -334,6 +352,30 @@ pub type CommandResult<T> = std::result::Result<T, CommandRejectedError>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn with_cover_stamps_addressing_envelope() {
+        use crate::proto::{Cover, Uuid};
+        let rej = CommandRejectedError::precondition_failed(
+            "TEST_CODE",
+            "test message",
+            std::iter::empty::<(&str, &str)>(),
+        );
+        assert!(rej.cover.is_none(), "default cover is None");
+
+        let stamped = rej.with_cover(Cover {
+            domain: "player".into(),
+            root: Some(Uuid {
+                value: vec![0xab, 0xcd],
+            }),
+            correlation_id: "corr-123".into(),
+            edition: None,
+        });
+        let cover = stamped.cover.expect("cover stamped");
+        assert_eq!(cover.domain, "player");
+        assert_eq!(cover.correlation_id, "corr-123");
+        assert_eq!(cover.root.unwrap().value, vec![0xab, 0xcd]);
+    }
 
     #[test]
     fn rejected_static_message_and_code() {

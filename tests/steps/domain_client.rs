@@ -7,6 +7,10 @@ use std::collections::HashMap;
 #[derive(Debug, Default, World)]
 pub struct DomainClientWorld {
     domain: String,
+    /// Captured from `a registered aggregate handler for domain "X"`. Stored
+    /// (rather than discarded) so a Then step can verify the spec contract
+    /// independently of the coordinator's domain capture.
+    handler_domain: String,
     endpoint: String,
     domain_client_created: bool,
     domain_client_connected: bool,
@@ -33,8 +37,10 @@ async fn given_running_coordinator(world: &mut DomainClientWorld, domain: String
 }
 
 #[given(expr = "a registered aggregate handler for domain {string}")]
-async fn given_registered_handler(_world: &mut DomainClientWorld, _domain: String) {
-    // Handler is registered
+async fn given_registered_handler(world: &mut DomainClientWorld, domain: String) {
+    // Capture the spec-named domain so the Then step can verify it
+    // independently of the coordinator's domain capture.
+    world.handler_domain = domain;
 }
 
 // ==========================================================================
@@ -122,7 +128,8 @@ async fn when_close_domain_client(world: &mut DomainClientWorld) {
 }
 
 #[when(expr = "I create a DomainClient from environment variable {string}")]
-async fn when_create_from_env(world: &mut DomainClientWorld, _var_name: String) {
+async fn when_create_from_env(world: &mut DomainClientWorld, var_name: String) {
+    world.env_var = Some(var_name);
     world.domain_client_created = true;
     world.domain_client_connected = true;
 }
@@ -173,4 +180,36 @@ async fn then_queries_fail_connection_error(world: &mut DomainClientWorld) {
 #[then("the DomainClient should be connected")]
 async fn then_domain_client_connected(world: &mut DomainClientWorld) {
     assert!(world.domain_client_connected);
+}
+
+// --------------------------------------------------------------------------
+// Spec-mutation guards: independent capture from the spec text.
+// --------------------------------------------------------------------------
+
+#[then(expr = "the active domain is {string}")]
+async fn then_active_domain(world: &mut DomainClientWorld, expected: String) {
+    assert_eq!(
+        world.domain, expected,
+        "world.domain={:?} expected={:?}",
+        world.domain, expected
+    );
+}
+
+#[then(expr = "the registered handler is for domain {string}")]
+async fn then_handler_domain(world: &mut DomainClientWorld, expected: String) {
+    assert_eq!(
+        world.handler_domain, expected,
+        "world.handler_domain={:?} expected={:?}",
+        world.handler_domain, expected
+    );
+}
+
+#[then(expr = "the env var name was {string}")]
+async fn then_env_var_name(world: &mut DomainClientWorld, expected: String) {
+    let actual = world.env_var.as_deref().unwrap_or("");
+    assert_eq!(
+        actual, expected,
+        "world.env_var={:?} expected={:?}",
+        actual, expected
+    );
 }

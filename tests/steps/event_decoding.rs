@@ -743,3 +743,27 @@ async fn then_both_item_added(world: &mut EventDecodingWorld) {
         }
     }
 }
+
+// --------------------------------------------------------------------------
+// Spec-mutation guard: the spec's Given captures the type_url; this Then
+// independently re-captures from the spec text and verifies the stored
+// event's type_url matches. Mutations to either capture site become
+// observable as a mismatch.
+// --------------------------------------------------------------------------
+
+#[then(expr = "the event's type_url is {string}")]
+async fn then_event_type_url_is(world: &mut EventDecodingWorld, expected: String) {
+    let event = world
+        .current_event
+        .as_ref()
+        .expect("current_event must be set by a Given");
+    let actual = match &event.payload {
+        Some(event_page::Payload::Event(any)) => &any.type_url,
+        _ => panic!("current_event payload is not Event variant"),
+    };
+    assert_eq!(
+        actual, &expected,
+        "event.type_url={:?} expected={:?}",
+        actual, expected
+    );
+}

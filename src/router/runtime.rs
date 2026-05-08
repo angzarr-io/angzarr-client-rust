@@ -12,7 +12,7 @@
 //! [`Router::build`]: crate::router::Router::build
 
 use crate::proto::{
-    business_response, BusinessResponse, ContextualCommand, EventBook, Notification,
+    business_response, BusinessResponse, ContextualCommand, Cover, EventBook, Notification,
     ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, RejectionNotification,
     SagaHandleRequest, SagaResponse,
 };
@@ -21,6 +21,21 @@ use crate::router::{Handler, HandlerConfig, HandlerRequest, HandlerResponse};
 use crate::ClientError;
 use prost::Message;
 use std::sync::OnceLock;
+
+/// Attach the request's cover to a propagating rejection so callers can
+/// trace which (domain, root, correlation_id) produced it. No-op for
+/// non-rejection errors and when the cover is missing or already set.
+fn stamp_cover(err: ClientError, cover: Option<Cover>) -> ClientError {
+    let Some(cover) = cover else {
+        return err;
+    };
+    match err {
+        ClientError::Rejected(rej) if rej.cover.is_none() => {
+            ClientError::Rejected(rej.with_cover(cover))
+        }
+        other => other,
+    }
+}
 
 // Audit #86 reverted 2026-04-29: `propagate_edition_into_books`
 // helper removed. Edition propagation is the coordinator's
@@ -63,10 +78,13 @@ impl CommandHandlerRouter {
         // `type_url` alone. Audit finding #18: at most one handler per
         // `(domain, type_url)` — enforced at build time, so this loop
         // either finds zero or one match.
-        let cover_domain = cmd
+        let cover = cmd
             .command
             .as_ref()
             .and_then(|cb| cb.cover.as_ref())
+            .cloned();
+        let cover_domain = cover
+            .as_ref()
             .map(|c| c.domain.as_str())
             .unwrap_or("")
             .to_string();
@@ -86,7 +104,9 @@ impl CommandHandlerRouter {
                 continue;
             }
 
-            let response = handler.dispatch(HandlerRequest::CommandHandler(cmd))?;
+            let response = handler
+                .dispatch(HandlerRequest::CommandHandler(cmd))
+                .map_err(|err| stamp_cover(err, cover.clone()))?;
             let HandlerResponse::CommandHandler(br) = response else {
                 return Err(ClientError::invalid_argument(
                     crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
