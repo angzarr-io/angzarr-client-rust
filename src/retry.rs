@@ -113,6 +113,10 @@ impl ExponentialBackoffRetry {
     /// hash; see audit finding #29).
     pub fn compute_delay(&self, attempt: u32) -> Duration {
         // min_delay * 2^attempt
+        // Clamp the shift at 30 (not 63) so even with `min_delay` near
+        // its theoretical maximum the multiplication can't overflow
+        // `u128`. The result is capped at `max_delay` immediately
+        // below, so deeper attempts don't observe the clamp anyway.
         let raw_nanos = self.min_delay.as_nanos() * (1u128 << attempt.min(30));
         let cap_nanos = self.max_delay.as_nanos();
         let capped = raw_nanos.min(cap_nanos);

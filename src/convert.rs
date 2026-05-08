@@ -156,6 +156,14 @@ pub fn uuid_to_proto(uuid: Uuid) -> ProtoUuid {
 }
 
 /// Convert a protobuf UUID to a standard UUID.
+///
+/// Validates byte-shape only (`Uuid::from_slice` rejects `len != 16`);
+/// does **not** verify RFC 4122 variant/version bits. Matches Python's
+/// permissive `uuid.UUID(bytes=...)` for cross-language parity — a
+/// payload of 16 bytes that violates RFC 4122 produces a `Uuid` whose
+/// methods may surprise (e.g., `get_version()` returns `None`). Callers
+/// that need semantic validation should check `uuid.get_version()`
+/// after this returns.
 pub fn proto_to_uuid(proto: &ProtoUuid) -> Result<Uuid> {
     Uuid::from_slice(&proto.value).map_err(|e| {
         ClientError::invalid_argument(
@@ -167,6 +175,14 @@ pub fn proto_to_uuid(proto: &ProtoUuid) -> Result<Uuid> {
 }
 
 /// Parse an RFC3339 timestamp string into a protobuf Timestamp.
+///
+/// Per `google.protobuf.Timestamp`, `nanos` must be in `[0, 999_999_999]`
+/// and `seconds` may be negative for instants before the Unix epoch. This
+/// function preserves both invariants — `chrono::DateTime::timestamp()`
+/// returns the right `seconds` for negative values, and `timestamp_subsec_nanos()`
+/// is documented to be in the valid range; the assertion here is a guard
+/// against a future chrono regression rather than a runtime check the
+/// caller should rely on.
 ///
 /// # Examples
 /// ```
@@ -186,21 +202,31 @@ pub fn parse_timestamp(rfc3339: &str) -> Result<Timestamp> {
         )
     })?;
 
+    let nanos = dt.timestamp_subsec_nanos();
+    debug_assert!(nanos < 1_000_000_000, "chrono nanos out of range: {}", nanos);
     Ok(Timestamp {
         seconds: dt.timestamp(),
-        nanos: dt.timestamp_subsec_nanos() as i32,
+        nanos: nanos as i32,
     })
 }
 
 /// Get the current time as a protobuf Timestamp.
+///
+/// Saturates to the Unix epoch (`Timestamp { seconds: 0, nanos: 0 }`)
+/// rather than panicking when the system clock is before 1970. This is
+/// theoretically impossible on a sane system, but a stuck/skewed clock
+/// during test runs shouldn't kill the process — the caller's clock
+/// expectations decide whether the saturated value is acceptable.
 pub fn now() -> Timestamp {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time before unix epoch");
-
-    Timestamp {
-        seconds: now.as_secs() as i64,
-        nanos: now.subsec_nanos() as i32,
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => Timestamp {
+            seconds: d.as_secs() as i64,
+            nanos: d.subsec_nanos() as i32,
+        },
+        Err(_) => Timestamp {
+            seconds: 0,
+            nanos: 0,
+        },
     }
 }
 
@@ -289,5 +315,28 @@ mod tests {
     #[test]
     fn test_parse_timestamp_invalid() {
         assert!(parse_timestamp("not a timestamp").is_err());
+    }
+
+    #[test]
+    fn test_parse_timestamp_pre_unix_epoch() {
+        // protobuf Timestamp permits negative `seconds`; chrono returns
+        // the right value for instants before 1970 and `nanos` stays
+        // in [0, 1e9). Pin both invariants here so a future chrono
+        // change can't silently break wire compat.
+        let ts = parse_timestamp("1969-12-31T23:59:59.500Z").unwrap();
+        assert_eq!(ts.seconds, -1);
+        assert_eq!(ts.nanos, 500_000_000);
+        assert!(ts.nanos >= 0 && ts.nanos < 1_000_000_000);
+    }
+
+    #[test]
+    fn test_now_returns_valid_protobuf_timestamp() {
+        // Saturation path is only taken when the system clock is
+        // before the Unix epoch — a failure mode we'd rather log than
+        // panic on. Document the steady-state shape: positive seconds,
+        // nanos in [0, 1e9).
+        let ts = now();
+        assert!(ts.seconds >= 0);
+        assert!(ts.nanos >= 0 && ts.nanos < 1_000_000_000);
     }
 }

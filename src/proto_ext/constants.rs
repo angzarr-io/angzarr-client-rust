@@ -31,3 +31,11 @@ pub const DEFAULT_EDITION: &str = "";
 ///
 /// Used by `decode_typed` to match type URLs in Event/Command payloads.
 pub const TYPE_URL_PREFIX: &str = "type.googleapis.com/";
+
+/// Type URL prefix for angzarr-internal framework messages
+/// (Notification, Revocation, Confirmation, Compensate, NoOp, …).
+///
+/// Pinned by the `type_url_constants_share_prefix` test in
+/// `proto_ext::type_url` so a typo in any one of the
+/// `proto_ext::type_url::*` constants fails compilation tests.
+pub const ANGZARR_TYPE_URL_PREFIX: &str = "type.angzarr.io/";

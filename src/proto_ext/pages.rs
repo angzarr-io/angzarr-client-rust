@@ -10,6 +10,18 @@ use crate::proto::{
 };
 use prost::Name;
 
+/// Compare a wire `type_url` against the canonical URL for type `M`
+/// without allocating the full `"prefix + name"` string. The previous
+/// `format!("{}{}", TYPE_URL_PREFIX, M::full_name()) == type_url`
+/// pattern allocated a fresh `String` on every page comparison; this
+/// version only allocates `M::full_name()` (one `String`).
+fn type_url_matches<M: Name>(type_url: &str) -> bool {
+    let Some(suffix) = type_url.strip_prefix(TYPE_URL_PREFIX) else {
+        return false;
+    };
+    suffix == M::full_name()
+}
+
 /// Extension trait for PageHeader.
 pub trait PageHeaderExt {
     /// Get the explicit sequence number, if set.
@@ -121,8 +133,7 @@ impl EventPageExt for EventPage {
             Some(crate::proto::event_page::Payload::Event(e)) => e,
             _ => return None,
         };
-        let expected = format!("{}{}", TYPE_URL_PREFIX, M::full_name());
-        if event.type_url != expected {
+        if !type_url_matches::<M>(&event.type_url) {
             return None;
         }
         M::decode(event.value.as_slice()).ok()
@@ -199,8 +210,7 @@ impl CommandPageExt for CommandPage {
             Some(crate::proto::command_page::Payload::Command(c)) => c,
             _ => return None,
         };
-        let expected = format!("{}{}", TYPE_URL_PREFIX, M::full_name());
-        if command.type_url != expected {
+        if !type_url_matches::<M>(&command.type_url) {
             return None;
         }
         M::decode(command.value.as_slice()).ok()
