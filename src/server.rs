@@ -27,8 +27,10 @@ use std::path::{Path, PathBuf};
 use tonic::transport::Server;
 use tonic_health::server::HealthReporter;
 use tonic_health::ServingStatus;
-use tracing::info;
+use tracing::{info, warn};
 
+use crate::error::{ClientError, Result};
+use crate::error_codes::{codes, keys, messages};
 use crate::handler::{
     CommandHandlerGrpc, ProcessManagerGrpc, ProjectorGrpc, SagaGrpc, UpcasterGrpc,
 };
@@ -141,10 +143,7 @@ pub fn create_server() -> Server {
 /// Run a server for any [`crate::router::Built`] router kind.
 ///
 /// Dispatches to the per-kind `run_*_server` function based on the variant.
-pub async fn run_server(
-    default_port: u16,
-    built: crate::router::Built,
-) -> Result<(), tonic::transport::Error> {
+pub async fn run_server(default_port: u16, built: crate::router::Built) -> Result<()> {
     match built {
         crate::router::Built::CommandHandler(router) => {
             run_command_handler_server(router, default_port).await
@@ -166,6 +165,87 @@ pub fn cleanup_socket(path: impl AsRef<Path>) {
     }
 }
 
+/// Parse a `host:port` string into a `SocketAddr`, surfacing a structured
+/// `INVALID_BIND_ADDRESS` error instead of panicking on operator typos.
+pub(crate) fn parse_bind_address(addr_str: &str) -> Result<SocketAddr> {
+    addr_str.parse::<SocketAddr>().map_err(|e| {
+        ClientError::invalid_argument(
+            codes::INVALID_BIND_ADDRESS,
+            messages::INVALID_BIND_ADDRESS,
+            [
+                (keys::INPUT, addr_str.to_string()),
+                (keys::CAUSE, e.to_string()),
+            ],
+        )
+    })
+}
+
+/// Ensure the parent directory exists for a UDS path, surfacing a
+/// structured error if the create fails (read-only fs, EACCES, etc.).
+pub(crate) fn ensure_uds_parent_dir(uds_path: &Path) -> Result<()> {
+    let Some(parent) = uds_path.parent() else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(parent).map_err(|e| {
+        ClientError::connection(
+            codes::UDS_DIRECTORY_CREATE_FAILED,
+            messages::UDS_DIRECTORY_CREATE_FAILED,
+            [
+                (keys::INPUT, parent.display().to_string()),
+                (keys::CAUSE, e.to_string()),
+            ],
+        )
+    })
+}
+
+/// Bind a Unix domain socket, surfacing a structured `UDS_BIND_FAILED`
+/// error rather than panicking.
+pub(crate) fn bind_uds_listener(uds_path: &Path) -> Result<tokio::net::UnixListener> {
+    tokio::net::UnixListener::bind(uds_path).map_err(|e| {
+        ClientError::connection(
+            codes::UDS_BIND_FAILED,
+            messages::UDS_BIND_FAILED,
+            [
+                (keys::INPUT, uds_path.display().to_string()),
+                (keys::CAUSE, e.to_string()),
+            ],
+        )
+    })
+}
+
+/// Future that resolves on the first SIGINT (Ctrl+C) or, on Unix, SIGTERM.
+///
+/// Wired into `Server::serve_with_shutdown` so the server drains in-flight
+/// requests on a signal instead of being killed mid-stream by the runtime.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            warn!(error = %e, "failed to install ctrl_c handler");
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(e) => {
+                warn!(error = %e, "failed to install SIGTERM handler");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Per-kind runners
 // ---------------------------------------------------------------------------
@@ -175,7 +255,7 @@ pub fn cleanup_socket(path: impl AsRef<Path>) {
 pub async fn run_command_handler_server(
     router: CommandHandlerRouter,
     default_port: u16,
-) -> Result<(), tonic::transport::Error> {
+) -> Result<()> {
     let name = router.name();
     // CH never emits cross-domain commands at the framework level —
     // events flow back through the response. No probes.
@@ -195,10 +275,7 @@ pub async fn run_command_handler_server(
 /// metadata. Audit #74: only `target`s declared with `#[saga(sync = true)]`
 /// get an `OutputDomainProbe`; async-only sagas rely on the `BusProbe`
 /// (configured via `ANGZARR_BUS_ENDPOINT`).
-pub async fn run_saga_server(
-    router: SagaRouter,
-    default_port: u16,
-) -> Result<(), tonic::transport::Error> {
+pub async fn run_saga_server(router: SagaRouter, default_port: u16) -> Result<()> {
     let name = router.name();
     let sync_outputs = router.sync_output_domains();
     let has_async_outputs = router.has_async_outputs();
@@ -220,7 +297,7 @@ pub async fn run_saga_server(
 pub async fn run_projector_server(
     router: crate::router::ProjectorRouter,
     default_port: u16,
-) -> Result<(), tonic::transport::Error> {
+) -> Result<()> {
     let name = router.name();
     let svc = ProjectorServiceServer::new(ProjectorGrpc::new(router));
     run_kind(
@@ -241,7 +318,7 @@ pub async fn run_projector_server(
 pub async fn run_process_manager_server(
     router: ProcessManagerRouter,
     default_port: u16,
-) -> Result<(), tonic::transport::Error> {
+) -> Result<()> {
     let name = router.name();
     let sync_outputs = router.sync_output_domains();
     let has_async_outputs = router.has_async_outputs();
@@ -262,7 +339,7 @@ pub async fn run_process_manager_server(
 pub async fn run_upcaster_server(
     router: crate::router::upcaster::UpcasterRouter,
     default_port: u16,
-) -> Result<(), tonic::transport::Error> {
+) -> Result<()> {
     let name = router.name();
     let svc = UpcasterServiceServer::new(UpcasterGrpc::new(router));
     run_kind(
@@ -282,7 +359,8 @@ pub async fn run_upcaster_server(
 
 /// Common runner body shared by every per-kind `run_*_server`:
 /// builds probes + health, marks transport bound after the listener succeeds,
-/// then serves until the future resolves.
+/// then serves until either the server future resolves or a SIGINT/SIGTERM
+/// signal triggers graceful shutdown.
 async fn run_kind<F>(
     instance_name: String,
     config: ServerConfig,
@@ -290,7 +368,7 @@ async fn run_kind<F>(
     has_async_outputs: bool,
     health_service_name: &'static str,
     add_kind_service: F,
-) -> Result<(), tonic::transport::Error>
+) -> Result<()>
 where
     F: FnOnce(tonic::transport::server::Router) -> tonic::transport::server::Router,
 {
@@ -307,7 +385,7 @@ where
     // Audit #74: probe sync targets directly; if any handler emits async,
     // add a single BusProbe iff the operator configured `ANGZARR_BUS_ENDPOINT`.
     for domain in sync_output_domains {
-        probes.push(Box::new(OutputDomainProbe::for_domain(domain)));
+        probes.push(Box::new(OutputDomainProbe::for_domain(domain)?));
     }
     if has_async_outputs {
         if let Some(bus) = BusProbe::from_env() {
@@ -331,11 +409,14 @@ where
     let server = Server::builder().add_service(health_service);
     let router = add_kind_service(server);
 
+    // Resolve listener / address up front so binding errors surface
+    // immediately as structured `ClientError`s instead of unwinding
+    // the runtime from inside `run_kind`. Track the UDS path so we can
+    // remove it after `serve` resolves.
+    let uds_to_cleanup = config.uds_path.clone();
     let result = match config.uds_path.as_ref() {
         Some(uds_path) => {
-            if let Some(parent) = uds_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
+            ensure_uds_parent_dir(uds_path)?;
             cleanup_socket(uds_path);
             // Audit #89: cross-language log shape. Same event name +
             // field set as Python `_run_server_async` so operators
@@ -349,15 +430,16 @@ where
                 address = %uds_path.display(),
                 "server_started",
             );
-            let listener =
-                tokio::net::UnixListener::bind(uds_path).expect("Failed to bind UDS socket");
+            let listener = bind_uds_listener(uds_path)?;
             let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
             transport_signal.mark_bound();
-            router.serve_with_incoming(incoming).await
+            router
+                .serve_with_incoming_shutdown(incoming, shutdown_signal())
+                .await
         }
         None => {
             let addr_str = resolve_bind_address(config.port);
-            let addr: SocketAddr = addr_str.parse().expect("invalid TCP bind address");
+            let addr = parse_bind_address(&addr_str)?;
             info!(
                 service = health_service_name,
                 name = %instance_name,
@@ -366,7 +448,7 @@ where
                 "server_started",
             );
             transport_signal.mark_bound();
-            router.serve(addr).await
+            router.serve_with_shutdown(addr, shutdown_signal()).await
         }
     };
 
@@ -381,13 +463,21 @@ where
     supervisor.abort();
     let _ = supervisor.await;
     publish_shutdown_status(&shutdown_reporter, &shutdown_service_names).await;
+
+    // Always remove the UDS socket file on shutdown — leaving it
+    // behind makes the next start fail with EADDRINUSE if the runner
+    // is restarted before kubelet cleans up the volume.
+    if let Some(path) = uds_to_cleanup {
+        cleanup_socket(&path);
+    }
+
     // Audit #89: same event name + field set on shutdown.
     info!(
         service = health_service_name,
         name = %instance_name,
         "server_shutdown",
     );
-    result
+    result.map_err(ClientError::from)
 }
 
 /// Audit #83: flip every registered health name to `NOT_SERVING` so the
@@ -512,6 +602,63 @@ mod tests {
                 tonic_health::pb::health_check_response::ServingStatus::NotServing,
                 "shutdown must flip {name:?} to NOT_SERVING",
             );
+        }
+    }
+
+    #[test]
+    fn parse_bind_address_accepts_ipv4_and_ipv6() {
+        assert!(parse_bind_address("127.0.0.1:8080").is_ok());
+        assert!(parse_bind_address("[::1]:9090").is_ok());
+        assert!(parse_bind_address("[::]:50052").is_ok());
+    }
+
+    #[test]
+    fn parse_bind_address_rejects_garbage_with_invalid_bind_address_code() {
+        let err = parse_bind_address("not-a-real-address").unwrap_err();
+        assert_eq!(err.code(), codes::INVALID_BIND_ADDRESS);
+        // Operator should see the original input echoed back.
+        if let ClientError::InvalidArgument(d) = err {
+            assert_eq!(d.details[keys::INPUT], "not-a-real-address");
+        } else {
+            panic!("expected InvalidArgument");
+        }
+    }
+
+    #[test]
+    fn parse_bind_address_rejects_empty_string() {
+        let err = parse_bind_address("").unwrap_err();
+        assert_eq!(err.code(), codes::INVALID_BIND_ADDRESS);
+    }
+
+    #[test]
+    fn ensure_uds_parent_dir_creates_missing_parent() {
+        let tmpdir = std::env::temp_dir().join(format!(
+            "angzarr-uds-{}",
+            std::process::id(),
+        ));
+        // Make sure we start clean.
+        let _ = std::fs::remove_dir_all(&tmpdir);
+        let socket_path = tmpdir.join("nested/dir/foo.sock");
+        ensure_uds_parent_dir(&socket_path).expect("must create parent");
+        assert!(tmpdir.join("nested/dir").is_dir());
+        let _ = std::fs::remove_dir_all(&tmpdir);
+    }
+
+    #[test]
+    fn ensure_uds_parent_dir_surfaces_failure_with_structured_code() {
+        // /proc is read-only on Linux; creating a directory under it
+        // surfaces as UDS_DIRECTORY_CREATE_FAILED rather than panicking
+        // or being silently swallowed (the previous `let _ = ...` did
+        // the latter).
+        let bogus = PathBuf::from("/proc/this-cannot-be-created/foo.sock");
+        let result = ensure_uds_parent_dir(&bogus);
+        match result {
+            Err(e) => assert_eq!(e.code(), codes::UDS_DIRECTORY_CREATE_FAILED),
+            Ok(()) => {
+                // /proc allows directory creation in some unprivileged
+                // sandboxes — skip rather than fail spuriously.
+                let _ = std::fs::remove_dir_all("/proc/this-cannot-be-created");
+            }
         }
     }
 

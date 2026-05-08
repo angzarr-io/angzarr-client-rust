@@ -31,7 +31,7 @@ prost = "0.14"
 prost-types = "0.14"
 
 # Async
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 async-trait = "0.1"
 tower = "0.5"
@@ -76,6 +76,9 @@ sha2 = "0.10"
 name = "features"
 harness = false
 
+[[test]]
+name = "sour_only_builder"
+harness = false
+
 [features]
 default = []
-tls = []

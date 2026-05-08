@@ -125,13 +125,15 @@ impl ExponentialBackoffRetry {
         Duration::from_nanos(result.min(u64::MAX as u128) as u64)
     }
 
-    /// Run `op` up to `max_attempts` times, sleeping with exponential backoff
-    /// between attempts. Returns the first `Ok`; if every attempt fails,
+    /// Run a synchronous `op` up to `max_attempts` times, sleeping
+    /// (`std::thread::sleep`) with exponential backoff between
+    /// attempts. Returns the first `Ok`; if every attempt fails,
     /// returns the last error.
     ///
-    /// The operation closure is synchronous; `std::thread::sleep` runs between
-    /// attempts. For async retries, use an async-aware wrapper at the call site.
-    pub fn execute<F, T, E>(&self, mut op: F) -> Result<T, E>
+    /// **Do not call this from inside async tasks** — `thread::sleep`
+    /// blocks the runtime worker. Use [`Self::execute_async`] from
+    /// async contexts.
+    pub fn execute_blocking<F, T, E>(&self, mut op: F) -> Result<T, E>
     where
         F: FnMut() -> Result<T, E>,
         E: std::fmt::Display,
@@ -148,6 +150,36 @@ impl ExponentialBackoffRetry {
                             cb(attempt, &e.to_string());
                         }
                         std::thread::sleep(self.compute_delay(attempt));
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.expect("max_attempts >= 1 implies last_err is Some"))
+    }
+
+    /// Async-friendly variant of [`Self::execute_blocking`]. The
+    /// closure produces a future per attempt; backoff sleeps run on
+    /// `tokio::time::sleep` so calling worker threads remain free to
+    /// service other tasks.
+    pub async fn execute_async<F, Fut, T, E>(&self, mut op: F) -> Result<T, E>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T, E>>,
+        E: std::fmt::Display,
+    {
+        debug_assert!(self.max_attempts > 0);
+        let mut last_err: Option<E> = None;
+        for attempt in 0..self.max_attempts {
+            match op().await {
+                Ok(value) => return Ok(value),
+                Err(e) => {
+                    let is_last = attempt + 1 >= self.max_attempts;
+                    if !is_last {
+                        if let Some(cb) = &self.on_retry {
+                            cb(attempt, &e.to_string());
+                        }
+                        tokio::time::sleep(self.compute_delay(attempt)).await;
                     }
                     last_err = Some(e);
                 }
@@ -189,7 +221,7 @@ mod tests {
             .with_max_attempts(5)
             .with_min_delay(Duration::from_nanos(1))
             .with_jitter(false);
-        let result: Result<u32, &'static str> = policy.execute(|| {
+        let result: Result<u32, &'static str> = policy.execute_blocking(|| {
             let n = counter.fetch_add(1, Ordering::SeqCst);
             if n < 2 {
                 Err("not yet")
@@ -208,7 +240,7 @@ mod tests {
             .with_max_attempts(3)
             .with_min_delay(Duration::from_nanos(1))
             .with_jitter(false);
-        let result: Result<u32, String> = policy.execute(|| {
+        let result: Result<u32, String> = policy.execute_blocking(|| {
             let n = counter.fetch_add(1, Ordering::SeqCst);
             Err(format!("fail-{n}"))
         });
@@ -223,12 +255,52 @@ mod tests {
             .with_max_attempts(5)
             .with_min_delay(Duration::from_nanos(1))
             .with_jitter(false);
-        let result: Result<u32, &'static str> = policy.execute(|| {
+        let result: Result<u32, &'static str> = policy.execute_blocking(|| {
             counter.fetch_add(1, Ordering::SeqCst);
             Ok(42)
         });
         assert_eq!(result, Ok(42));
         assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn execute_async_returns_first_ok() {
+        let counter = AtomicU32::new(0);
+        let policy = ExponentialBackoffRetry::default()
+            .with_max_attempts(5)
+            .with_min_delay(Duration::from_nanos(1))
+            .with_jitter(false);
+        let result: Result<u32, &'static str> = policy
+            .execute_async(|| {
+                let n = counter.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if n < 2 {
+                        Err("not yet")
+                    } else {
+                        Ok(n)
+                    }
+                }
+            })
+            .await;
+        assert_eq!(result, Ok(2));
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn execute_async_returns_last_err_when_all_fail() {
+        let counter = AtomicU32::new(0);
+        let policy = ExponentialBackoffRetry::default()
+            .with_max_attempts(3)
+            .with_min_delay(Duration::from_nanos(1))
+            .with_jitter(false);
+        let result: Result<u32, String> = policy
+            .execute_async(|| {
+                let n = counter.fetch_add(1, Ordering::SeqCst);
+                async move { Err(format!("fail-{n}")) }
+            })
+            .await;
+        assert_eq!(result, Err("fail-2".to_string()));
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
 
     #[test]
@@ -242,7 +314,7 @@ mod tests {
             .with_on_retry(move |_attempt, _msg| {
                 f.fetch_add(1, Ordering::SeqCst);
             });
-        let _: Result<u32, &'static str> = policy.execute(|| Err("nope"));
+        let _: Result<u32, &'static str> = policy.execute_blocking(|| Err("nope"));
         // max_attempts=3: callback fires after attempts 0 and 1, not after 2 (the last).
         assert_eq!(fired.load(Ordering::SeqCst), 2);
     }

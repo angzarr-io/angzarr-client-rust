@@ -48,6 +48,10 @@ pub mod codes {
     pub const GRPC_ERROR: &str = "GRPC_ERROR";
     pub const INVALID_TRANSPORT_MODE: &str = "INVALID_TRANSPORT_MODE";
     pub const INVALID_PORT: &str = "INVALID_PORT";
+    pub const INVALID_BIND_ADDRESS: &str = "INVALID_BIND_ADDRESS";
+    pub const UDS_BIND_FAILED: &str = "UDS_BIND_FAILED";
+    pub const UDS_DIRECTORY_CREATE_FAILED: &str = "UDS_DIRECTORY_CREATE_FAILED";
+    pub const STREAM_LIMIT_EXCEEDED: &str = "STREAM_LIMIT_EXCEEDED";
 
     // Dispatch — common
     pub const HANDLER_WRONG_RESPONSE_KIND: &str = "HANDLER_WRONG_RESPONSE_KIND";
@@ -134,6 +138,11 @@ pub mod messages {
     pub const GRPC_ERROR: &str = "grpc error";
     pub const INVALID_TRANSPORT_MODE: &str = "invalid transport mode env value";
     pub const INVALID_PORT: &str = "invalid port env value";
+    pub const INVALID_BIND_ADDRESS: &str = "invalid TCP bind address";
+    pub const UDS_BIND_FAILED: &str = "failed to bind unix domain socket";
+    pub const UDS_DIRECTORY_CREATE_FAILED: &str =
+        "failed to create unix domain socket parent directory";
+    pub const STREAM_LIMIT_EXCEEDED: &str = "server stream exceeded the configured maximum";
 
     // Dispatch — common
     pub const HANDLER_WRONG_RESPONSE_KIND: &str = "handler returned wrong response kind";
