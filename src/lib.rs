@@ -24,7 +24,7 @@
 //!     // Query events
 //!     let events = client.query
 //!         .query("cart", cart_id)
-//!         .range(0)
+//!         .range(0..)
 //!         .get_pages()
 //!         .await?;
 //!     Ok(())

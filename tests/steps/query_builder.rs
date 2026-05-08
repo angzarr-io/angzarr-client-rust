@@ -99,7 +99,7 @@ async fn when_set_range_from(world: &mut QueryBuilderWorld, lower: u32) {
     let query = world
         .mock_client
         .query(&world.domain, root)
-        .range(lower)
+        .range(lower..)
         .build();
     world.built_query = Some(query);
 }
@@ -110,7 +110,7 @@ async fn when_set_range_from_to(world: &mut QueryBuilderWorld, lower: u32, upper
     let query = world
         .mock_client
         .query(&world.domain, root)
-        .range_to(lower, upper)
+        .range(lower..=upper)
         .build();
     world.built_query = Some(query);
 }
@@ -177,7 +177,7 @@ async fn when_build_fluent_chaining(world: &mut QueryBuilderWorld) {
         .mock_client
         .query("orders", root)
         .with_edition("test-branch")
-        .range(10)
+        .range(10..)
         .build();
     world.built_query = Some(query);
 }
@@ -188,11 +188,11 @@ async fn when_build_query_last_wins(world: &mut QueryBuilderWorld) {
     let root = Uuid::new_v4();
     world.root = Some(root);
 
-    // range(5) then as_of_sequence(10) - last wins
+    // range(5..) then as_of_sequence(10) - last wins
     let query = world
         .mock_client
         .query("orders", root)
-        .range(5)
+        .range(5..)
         .as_of_sequence(10)
         .build();
     world.built_query = Some(query);

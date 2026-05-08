@@ -154,6 +154,14 @@ impl ProcessManagerGrpc {
     }
 }
 
+impl Clone for ProcessManagerGrpc {
+    fn clone(&self) -> Self {
+        Self {
+            router: Arc::clone(&self.router),
+        }
+    }
+}
+
 #[tonic::async_trait]
 impl ProcessManagerService for ProcessManagerGrpc {
     async fn handle(
@@ -175,6 +183,14 @@ impl ProjectorGrpc {
     pub fn new(router: ProjectorRouter) -> Self {
         Self {
             router: Arc::new(router),
+        }
+    }
+}
+
+impl Clone for ProjectorGrpc {
+    fn clone(&self) -> Self {
+        Self {
+            router: Arc::clone(&self.router),
         }
     }
 }
