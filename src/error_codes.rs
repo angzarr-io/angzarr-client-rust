@@ -58,6 +58,11 @@ pub mod codes {
     pub const MISSING_COMMAND_PAYLOAD: &str = "MISSING_COMMAND_PAYLOAD";
     pub const NOTIFICATION_DECODE_FAILED: &str = "NOTIFICATION_DECODE_FAILED";
     pub const REJECTION_NOTIFICATION_DECODE_FAILED: &str = "REJECTION_NOTIFICATION_DECODE_FAILED";
+    pub const MISSING_NOTIFICATION_PAYLOAD: &str = "MISSING_NOTIFICATION_PAYLOAD";
+    pub const MISSING_REJECTED_COMMAND: &str = "MISSING_REJECTED_COMMAND";
+    pub const MISSING_DEFERRED_HEADER: &str = "MISSING_DEFERRED_HEADER";
+    pub const HANDLER_DOES_NOT_SUPPORT_FACT: &str = "HANDLER_DOES_NOT_SUPPORT_FACT";
+    pub const HANDLER_DOES_NOT_SUPPORT_REPLAY: &str = "HANDLER_DOES_NOT_SUPPORT_REPLAY";
 
     // Dispatch — saga
     pub const MISSING_SAGA_SOURCE: &str = "MISSING_SAGA_SOURCE";
@@ -141,6 +146,13 @@ pub mod messages {
     pub const NOTIFICATION_DECODE_FAILED: &str = "failed to decode Notification payload";
     pub const REJECTION_NOTIFICATION_DECODE_FAILED: &str =
         "failed to decode RejectionNotification payload";
+    pub const MISSING_NOTIFICATION_PAYLOAD: &str = "Notification has no payload";
+    pub const MISSING_REJECTED_COMMAND: &str = "RejectionNotification has no rejected_command";
+    pub const MISSING_DEFERRED_HEADER: &str =
+        "rejected command's first page is missing the AngzarrDeferred sequence header";
+    pub const HANDLER_DOES_NOT_SUPPORT_FACT: &str =
+        "handler does not declare any #[handles_fact] methods";
+    pub const HANDLER_DOES_NOT_SUPPORT_REPLAY: &str = "handler does not support replay";
 
     // Dispatch — saga
     pub const MISSING_SAGA_SOURCE: &str = "missing saga source";

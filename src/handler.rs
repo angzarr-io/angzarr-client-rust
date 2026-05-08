@@ -3,10 +3,13 @@
 //! Each wrapper takes the matching `router::runtime::*Router` produced by
 //! `Router::build().into_*()?` and exposes it as a `tonic` service.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::{Request, Response, Status};
 
+use crate::error_codes::{codes, messages};
 use crate::proto::{
     command_handler_service_server::CommandHandlerService,
     process_manager_service_server::ProcessManagerService,
@@ -19,6 +22,15 @@ use crate::router::runtime::{
     CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter,
 };
 use crate::ClientError;
+
+/// Metadata trailer carrying the SCREAMING_SNAKE error code so polyglot
+/// siblings can route on the structured identifier without parsing the
+/// human-readable Status message.
+pub const ERROR_CODE_HEADER: &str = "x-angzarr-error-code";
+
+/// Prefix for metadata trailers carrying structured error details.
+/// One header per detail entry: `x-angzarr-detail-<key>: <value>`.
+pub const ERROR_DETAIL_HEADER_PREFIX: &str = "x-angzarr-detail-";
 
 /// gRPC command-handler service wrapping a [`CommandHandlerRouter`].
 pub struct CommandHandlerGrpc {
@@ -62,8 +74,9 @@ impl CommandHandlerService for CommandHandlerGrpc {
         // The coordinator's pass-through-persist fallback handles
         // facts for non-opted-in aggregates.
         if !self.router.supports_handle_fact() {
-            return Err(Status::unimplemented(
-                "no #[handles_fact] methods declared on registered command_handler",
+            return Err(unimplemented_with_code(
+                codes::HANDLER_DOES_NOT_SUPPORT_FACT,
+                messages::HANDLER_DOES_NOT_SUPPORT_FACT,
             ));
         }
         let book = self
@@ -82,8 +95,9 @@ impl CommandHandlerService for CommandHandlerGrpc {
         // UNIMPLEMENTED. Coordinator degrades MERGE_COMMUTATIVE to
         // MERGE_STRICT.
         if !self.router.supports_replay() {
-            return Err(Status::unimplemented(
-                "command_handler did not opt in via #[command_handler(supports_replay = true)]",
+            return Err(unimplemented_with_code(
+                codes::HANDLER_DOES_NOT_SUPPORT_REPLAY,
+                messages::HANDLER_DOES_NOT_SUPPORT_REPLAY,
             ));
         }
         let resp = self
@@ -183,14 +197,61 @@ impl ProjectorService for ProjectorGrpc {
 
 fn client_error_to_status(err: ClientError) -> Status {
     // Audit #59: only the static `message` rides in `Status::message`.
-    // Structured details remain client-language-internal for now.
-    match err {
-        ClientError::InvalidArgument(d) => Status::invalid_argument(d.message),
-        ClientError::Connection(d) => Status::unavailable(d.message),
-        ClientError::Transport(e) => Status::unavailable(e.to_string()),
-        ClientError::Grpc(s) => *s,
-        ClientError::InvalidTimestamp(d) => Status::invalid_argument(d.message),
-        ClientError::Rejected(r) => r.into(),
+    // Structured `code` + `details` ride in trailing metadata so polyglot
+    // siblings that read them get full fidelity; siblings that ignore
+    // unknown trailers see exactly the previous behavior.
+    let code = err.code();
+    let (mut status, details): (Status, Option<&BTreeMap<String, String>>) = match err {
+        ClientError::InvalidArgument(ref d) => (Status::invalid_argument(d.message), Some(&d.details)),
+        ClientError::Connection(ref d) => (Status::unavailable(d.message), Some(&d.details)),
+        ClientError::Transport(ref e) => (Status::unavailable(e.to_string()), None),
+        ClientError::Grpc(s) => return *s,
+        ClientError::InvalidTimestamp(ref d) => {
+            (Status::invalid_argument(d.message), Some(&d.details))
+        }
+        ClientError::Rejected(ref r) => {
+            // Reuse the existing CommandRejectedError → Status mapping
+            // for status code, then attach structured details from the
+            // rejection (including cover, if stamped).
+            let mut s: Status = r.clone().into();
+            attach_error_metadata(s.metadata_mut(), code, Some(&r.details));
+            return s;
+        }
+    };
+    attach_error_metadata(status.metadata_mut(), code, details);
+    status
+}
+
+/// Build a `Status::unimplemented` whose trailing metadata carries the
+/// SCREAMING_SNAKE inventory code.
+fn unimplemented_with_code(code: &'static str, message: &'static str) -> Status {
+    let mut status = Status::unimplemented(message);
+    attach_error_metadata(status.metadata_mut(), code, None);
+    status
+}
+
+/// Stamp `x-angzarr-error-code` + `x-angzarr-detail-<key>` headers onto a
+/// gRPC Status's trailing metadata. Skips silently on any header that
+/// isn't ASCII-safe — keeps callers from accidentally hard-failing on
+/// pathological detail values.
+fn attach_error_metadata(
+    md: &mut MetadataMap,
+    code: &'static str,
+    details: Option<&BTreeMap<String, String>>,
+) {
+    if let Ok(v) = MetadataValue::try_from(code) {
+        md.insert(ERROR_CODE_HEADER, v);
+    }
+    let Some(details) = details else { return };
+    for (k, v) in details {
+        let header = format!("{}{}", ERROR_DETAIL_HEADER_PREFIX, k);
+        let Ok(key) = header.parse::<MetadataKey<_>>() else {
+            continue;
+        };
+        let Ok(value) = MetadataValue::try_from(v.as_str()) else {
+            continue;
+        };
+        md.insert(key, value);
     }
 }
 
@@ -241,6 +302,62 @@ mod tests {
         let status = client_error_to_status(err);
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
         assert_eq!(status.message(), "value must be positive");
+        assert_eq!(
+            status.metadata().get(ERROR_CODE_HEADER).map(|v| v.to_str().unwrap()),
+            Some("BAD_INPUT"),
+        );
+    }
+
+    #[test]
+    fn invalid_argument_attaches_detail_headers() {
+        let err = ClientError::invalid_argument(
+            "BAD_INPUT",
+            "bad",
+            [("field", "amount"), ("expected", "positive")],
+        );
+        let status = client_error_to_status(err);
+        let md = status.metadata();
+        assert_eq!(
+            md.get("x-angzarr-detail-field").map(|v| v.to_str().unwrap()),
+            Some("amount"),
+        );
+        assert_eq!(
+            md.get("x-angzarr-detail-expected").map(|v| v.to_str().unwrap()),
+            Some("positive"),
+        );
+    }
+
+    #[test]
+    fn rejected_status_attaches_code_and_details() {
+        let rej = CommandRejectedError::invalid_argument(
+            "VALUE_NOT_POSITIVE",
+            "value must be positive",
+            [("field", "amount")],
+        );
+        let status = client_error_to_status(ClientError::Rejected(rej));
+        let md = status.metadata();
+        assert_eq!(
+            md.get(ERROR_CODE_HEADER).map(|v| v.to_str().unwrap()),
+            Some("VALUE_NOT_POSITIVE"),
+        );
+        assert_eq!(
+            md.get("x-angzarr-detail-field").map(|v| v.to_str().unwrap()),
+            Some("amount"),
+        );
+    }
+
+    #[test]
+    fn unimplemented_with_code_carries_inventory_code() {
+        let status = unimplemented_with_code(
+            codes::HANDLER_DOES_NOT_SUPPORT_FACT,
+            messages::HANDLER_DOES_NOT_SUPPORT_FACT,
+        );
+        assert_eq!(status.code(), tonic::Code::Unimplemented);
+        assert_eq!(status.message(), messages::HANDLER_DOES_NOT_SUPPORT_FACT);
+        assert_eq!(
+            status.metadata().get(ERROR_CODE_HEADER).map(|v| v.to_str().unwrap()),
+            Some(codes::HANDLER_DOES_NOT_SUPPORT_FACT),
+        );
     }
 
     #[test]
