@@ -17,7 +17,7 @@ use crate::proto::{
     SagaHandleRequest, SagaResponse,
 };
 use crate::router::builder::Factory;
-use crate::router::{Handler, HandlerConfig, HandlerRequest, HandlerResponse};
+use crate::router::{Handler, HandlerConfig, HandlerRequest, HandlerResponse, Kind};
 use crate::ClientError;
 use prost::Message;
 use std::sync::OnceLock;
@@ -90,20 +90,20 @@ impl CommandHandlerRouter {
             .to_string();
 
         for factory in &self.factories {
-            let handler: Box<dyn Handler> = (factory.produce)();
-            let (declared_domain, handles) = match handler.config() {
+            let (declared_domain, handles) = match factory.config() {
                 HandlerConfig::CommandHandler {
                     domain, handled, ..
                 } => (domain, handled),
                 _ => continue,
             };
-            if declared_domain != cover_domain {
+            if declared_domain != &cover_domain {
                 continue;
             }
             if !handles.iter().any(|u| u == &type_url) {
                 continue;
             }
 
+            let handler: Box<dyn Handler> = (factory.produce)();
             let response = handler
                 .dispatch(HandlerRequest::CommandHandler(cmd))
                 .map_err(|err| stamp_cover(err, cover.clone()))?;
@@ -111,7 +111,7 @@ impl CommandHandlerRouter {
                 return Err(ClientError::invalid_argument(
                     crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
                     crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
-                    [(crate::error_codes::keys::EXPECTED_KIND, "CommandHandler")],
+                    [(crate::error_codes::keys::EXPECTED_KIND, Kind::CommandHandler.as_str())],
                 ));
             };
             return Ok(br);
@@ -143,6 +143,12 @@ impl CommandHandlerRouter {
     fn dispatch_rejection(&self, cmd: ContextualCommand) -> Result<BusinessResponse, ClientError> {
         let (target_domain, target_command_suffix) = extract_rejection_key(&cmd)?;
 
+        let cover = cmd
+            .command
+            .as_ref()
+            .and_then(|cb| cb.cover.as_ref())
+            .cloned();
+
         let initial_next_seq = cmd.events.as_ref().map(|eb| eb.next_sequence).unwrap_or(0);
         let mut running_seq = initial_next_seq;
         let mut merged = EventBook {
@@ -151,8 +157,7 @@ impl CommandHandlerRouter {
         };
 
         for factory in &self.factories {
-            let handler: Box<dyn Handler> = (factory.produce)();
-            let rejected = match handler.config() {
+            let rejected = match factory.config() {
                 HandlerConfig::CommandHandler { rejected, .. } => rejected,
                 _ => continue,
             };
@@ -168,16 +173,32 @@ impl CommandHandlerRouter {
                 eb.next_sequence = running_seq;
             }
 
-            let response = handler.dispatch(HandlerRequest::CommandHandler(scoped_cmd))?;
+            let handler: Box<dyn Handler> = (factory.produce)();
+            let response = handler
+                .dispatch(HandlerRequest::CommandHandler(scoped_cmd))
+                .map_err(|err| stamp_cover(err, cover.clone()))?;
             let HandlerResponse::CommandHandler(br) = response else {
                 return Err(ClientError::invalid_argument(
                     crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
                     crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
-                    [(crate::error_codes::keys::EXPECTED_KIND, "CommandHandler")],
+                    [(crate::error_codes::keys::EXPECTED_KIND, Kind::CommandHandler.as_str())],
                 ));
             };
             if let Some(business_response::Result::Events(events)) = br.result {
-                running_seq += events.pages.len() as u32;
+                let added = u32::try_from(events.pages.len()).map_err(|_| {
+                    ClientError::invalid_argument(
+                        crate::error_codes::codes::ROUTER_SEQUENCE_OVERFLOW,
+                        crate::error_codes::messages::ROUTER_SEQUENCE_OVERFLOW,
+                        [(crate::error_codes::keys::ACTUAL, events.pages.len().to_string())],
+                    )
+                })?;
+                running_seq = running_seq.checked_add(added).ok_or_else(|| {
+                    ClientError::invalid_argument(
+                        crate::error_codes::codes::ROUTER_SEQUENCE_OVERFLOW,
+                        crate::error_codes::messages::ROUTER_SEQUENCE_OVERFLOW,
+                        [(crate::error_codes::keys::ACTUAL, format!("{}+{}", running_seq, added))],
+                    )
+                })?;
                 merged.pages.extend(events.pages);
             }
         }
@@ -318,38 +339,43 @@ impl SagaRouter {
         // `dispatch_saga:387-389` (`if cls.__angzarr_meta__.get("source")
         // != source_domain: continue`). The source-book cover supplies
         // the runtime domain.
-        let source_domain = request
+        let cover = request
             .source
             .as_ref()
             .and_then(|eb| eb.cover.as_ref())
+            .cloned();
+        let source_domain = cover
+            .as_ref()
             .map(|c| c.domain.as_str())
             .unwrap_or("")
             .to_string();
 
         let mut merged = SagaResponse::default();
-        let mut matched = 0u32;
+        let mut matched = false;
 
         for factory in &self.factories {
-            let handler: Box<dyn Handler> = (factory.produce)();
-            let (declared_source, handles) = match handler.config() {
+            let (declared_source, handles) = match factory.config() {
                 HandlerConfig::Saga {
                     source, handled, ..
                 } => (source, handled),
                 _ => continue,
             };
-            if declared_source != source_domain {
+            if declared_source != &source_domain {
                 continue;
             }
             if !handles.iter().any(|u| u == &type_url) {
                 continue;
             }
 
-            let response = handler.dispatch(HandlerRequest::Saga(request.clone()))?;
+            let handler: Box<dyn Handler> = (factory.produce)();
+            let response = handler
+                .dispatch(HandlerRequest::Saga(request.clone()))
+                .map_err(|err| stamp_cover(err, cover.clone()))?;
             let HandlerResponse::Saga(sr) = response else {
                 return Err(ClientError::invalid_argument(
                     crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
                     crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
-                    [(crate::error_codes::keys::EXPECTED_KIND, "Saga")],
+                    [(crate::error_codes::keys::EXPECTED_KIND, Kind::Saga.as_str())],
                 ));
             };
             // Audit #86 reverted 2026-04-29: edition propagation moved to
@@ -357,14 +383,14 @@ impl SagaRouter {
             // coordinator stamps editions on cross-domain emissions.
             merged.commands.extend(sr.commands);
             merged.events.extend(sr.events);
-            matched += 1;
+            matched = true;
         }
 
         // P2.5 / audit finding #36: "no handler matched" is a normal
         // runtime condition (no saga subscribed to this event type), not
         // a failure. Log at info-level for observability and return an
         // empty SagaResponse — matches Python's silent return.
-        if matched == 0 {
+        if !matched {
             tracing::info!(
                 type_url = %type_url,
                 "no saga handler registered for event type — returning empty SagaResponse"
@@ -441,20 +467,22 @@ impl ProcessManagerRouter {
         // `dispatch_process_manager:444-446` (`if trigger_domain not in
         // sources: continue`). The trigger-book cover supplies the
         // runtime domain.
-        let trigger_domain = request
+        let cover = request
             .trigger
             .as_ref()
             .and_then(|eb| eb.cover.as_ref())
+            .cloned();
+        let trigger_domain = cover
+            .as_ref()
             .map(|c| c.domain.as_str())
             .unwrap_or("")
             .to_string();
 
         let mut merged = ProcessManagerHandleResponse::default();
-        let mut matched = 0u32;
+        let mut matched = false;
 
         for factory in &self.factories {
-            let handler: Box<dyn Handler> = (factory.produce)();
-            let (declared_sources, handles) = match handler.config() {
+            let (declared_sources, handles) = match factory.config() {
                 HandlerConfig::ProcessManager {
                     sources, handled, ..
                 } => (sources, handled),
@@ -467,12 +495,15 @@ impl ProcessManagerRouter {
                 continue;
             }
 
-            let response = handler.dispatch(HandlerRequest::ProcessManager(request.clone()))?;
+            let handler: Box<dyn Handler> = (factory.produce)();
+            let response = handler
+                .dispatch(HandlerRequest::ProcessManager(request.clone()))
+                .map_err(|err| stamp_cover(err, cover.clone()))?;
             let HandlerResponse::ProcessManager(pr) = response else {
                 return Err(ClientError::invalid_argument(
                     crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
                     crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
-                    [(crate::error_codes::keys::EXPECTED_KIND, "ProcessManager")],
+                    [(crate::error_codes::keys::EXPECTED_KIND, Kind::ProcessManager.as_str())],
                 ));
             };
             // Audit #86 reverted 2026-04-29: edition propagation moved
@@ -486,14 +517,14 @@ impl ProcessManagerRouter {
             merged.commands.extend(pr.commands);
             merged.facts.extend(pr.facts);
             merged.process_events.extend(pr.process_events);
-            matched += 1;
+            matched = true;
         }
 
         // Audit findings #36/#37: "no handler matched" is normal — no PM
         // subscribed to this event type. Log at info-level and return the
         // empty merged response instead of erroring. Matches Python's
         // silent return in `dispatch_process_manager`.
-        if matched == 0 {
+        if !matched {
             tracing::info!(
                 type_url = %type_url,
                 "no process-manager handler registered for event type — returning empty response"
@@ -577,41 +608,48 @@ impl ProjectorRouter {
         // Only filter by domain when the book explicitly carries a cover.
         // Coverless books (used by tests that don't assert domain scoping)
         // pass through to every projector unchanged.
-        let incoming_domain = book.cover.as_ref().map(|c| c.domain.clone());
+        let incoming_domain = book.cover.as_ref().map(|c| c.domain.as_str());
         let cover = book.cover.clone();
         let next_sequence = book.next_sequence;
 
         // Instantiate each matching projector once and hold across the
-        // page loop. Mirrors Python's
-        // `[cls() for cls, factory in self._factories if domain matches]`.
+        // page loop. Reads metadata from the cached config so a domain
+        // filter mismatch never produces a handler instance.
         let mut matched: Vec<Box<dyn Handler>> = Vec::new();
         for factory in &self.factories {
-            let handler: Box<dyn Handler> = (factory.produce)();
-            let declared_domains = match handler.config() {
+            let declared_domains = match factory.config() {
                 HandlerConfig::Projector { domains, .. } => domains,
                 _ => continue,
             };
             // Wildcard "*" matches any.
-            if let Some(ref d) = incoming_domain {
+            if let Some(d) = incoming_domain {
                 let matches = declared_domains.iter().any(|x| x == d || x == "*");
                 if !matches {
                     continue;
                 }
             }
-            matched.push(handler);
+            matched.push((factory.produce)());
         }
 
         // Per-page outer loop. Each projector sees one page at a time
         // via a single-page book; the framework drives the iteration so
         // hand-rolled Handler::dispatch implementations don't silently
         // miss pages 2..N.
+        //
+        // The single-page wrapper is built once per page and reused
+        // across every matched projector — the previous implementation
+        // cloned the *entire* incoming book per-page (and again per
+        // matched projector), an O(B × H) cost in book size that
+        // collapsed to O(B + H) here.
+        let mut page_book = EventBook {
+            cover: cover.clone(),
+            pages: Vec::with_capacity(1),
+            next_sequence,
+            ..book.clone()
+        };
         for page in book.pages.iter() {
-            let page_book = EventBook {
-                cover: cover.clone(),
-                pages: vec![page.clone()],
-                next_sequence,
-                ..book.clone()
-            };
+            page_book.pages.clear();
+            page_book.pages.push(page.clone());
             for handler in &matched {
                 let response = handler.dispatch(HandlerRequest::Projector(page_book.clone()))?;
                 // Validate response variant but DROP the payload —
@@ -620,7 +658,7 @@ impl ProjectorRouter {
                     return Err(ClientError::invalid_argument(
                         crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
                         crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
-                        [(crate::error_codes::keys::EXPECTED_KIND, "Projector")],
+                        [(crate::error_codes::keys::EXPECTED_KIND, Kind::Projector.as_str())],
                     ));
                 };
             }
@@ -653,10 +691,12 @@ impl_handler_count!(CommandHandlerRouter);
 impl_handler_count!(SagaRouter);
 impl_handler_count!(ProcessManagerRouter);
 impl_handler_count!(ProjectorRouter);
+impl_handler_count!(crate::router::upcaster::UpcasterRouter);
 
-/// Extract the first handler's [`HandlerConfig`] by invoking its factory once.
-fn first_config(factories: &[Factory]) -> Option<HandlerConfig> {
-    factories.first().map(|f| (f.produce)().config())
+/// Read the first handler's [`HandlerConfig`] from the cached metadata —
+/// no factory invocation. Returns `None` for an empty router.
+fn first_config(factories: &[Factory]) -> Option<&HandlerConfig> {
+    factories.first().map(|f| f.config())
 }
 
 impl CommandHandlerRouter {
@@ -667,7 +707,7 @@ impl CommandHandlerRouter {
     pub fn name(&self) -> String {
         self.cached_name
             .get_or_init(|| match first_config(&self.factories) {
-                Some(HandlerConfig::CommandHandler { domain, .. }) => domain,
+                Some(HandlerConfig::CommandHandler { domain, .. }) => domain.clone(),
                 _ => String::new(),
             })
             .clone()
@@ -688,7 +728,7 @@ impl CommandHandlerRouter {
     /// enough to call per-request.
     pub fn supports_handle_fact(&self) -> bool {
         for factory in &self.factories {
-            if let HandlerConfig::CommandHandler { handles_fact, .. } = (factory.produce)().config()
+            if let HandlerConfig::CommandHandler { handles_fact, .. } = factory.config()
             {
                 if !handles_fact.is_empty() {
                     return true;
@@ -705,9 +745,9 @@ impl CommandHandlerRouter {
         for factory in &self.factories {
             if let HandlerConfig::CommandHandler {
                 supports_replay, ..
-            } = (factory.produce)().config()
+            } = factory.config()
             {
-                if supports_replay {
+                if *supports_replay {
                     return true;
                 }
             }
@@ -782,7 +822,7 @@ impl SagaRouter {
     pub fn name(&self) -> String {
         self.cached_name
             .get_or_init(|| match first_config(&self.factories) {
-                Some(HandlerConfig::Saga { name, .. }) => name,
+                Some(HandlerConfig::Saga { name, .. }) => name.clone(),
                 _ => String::new(),
             })
             .clone()
@@ -791,11 +831,11 @@ impl SagaRouter {
     /// Output target domains from every registered saga's `#[saga(target = ...)]`,
     /// deduplicated.
     pub fn output_domains(&self) -> Vec<String> {
-        let mut seen = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
         for factory in &self.factories {
-            if let HandlerConfig::Saga { target, .. } = (factory.produce)().config() {
-                if !target.is_empty() && !seen.contains(&target) {
-                    seen.push(target);
+            if let HandlerConfig::Saga { target, .. } = factory.config() {
+                if !target.is_empty() && !seen.iter().any(|s| s == target) {
+                    seen.push(target.clone());
                 }
             }
         }
@@ -807,11 +847,11 @@ impl SagaRouter {
     /// Drives readiness probing — only sync targets need their
     /// coordinator reachable for traffic to be safe.
     pub fn sync_output_domains(&self) -> Vec<String> {
-        let mut seen = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
         for factory in &self.factories {
-            if let HandlerConfig::Saga { target, sync, .. } = (factory.produce)().config() {
-                if sync && !target.is_empty() && !seen.contains(&target) {
-                    seen.push(target);
+            if let HandlerConfig::Saga { target, sync, .. } = factory.config() {
+                if *sync && !target.is_empty() && !seen.iter().any(|s| s == target) {
+                    seen.push(target.clone());
                 }
             }
         }
@@ -827,10 +867,10 @@ impl SagaRouter {
     pub fn has_async_outputs(&self) -> bool {
         self.factories.iter().any(|factory| {
             matches!(
-                (factory.produce)().config(),
+                factory.config(),
                 HandlerConfig::Saga {
                     sync: false,
-                    ref target,
+                    target,
                     ..
                 } if !target.is_empty()
             )
@@ -844,7 +884,7 @@ impl ProcessManagerRouter {
     pub fn name(&self) -> String {
         self.cached_name
             .get_or_init(|| match first_config(&self.factories) {
-                Some(HandlerConfig::ProcessManager { name, .. }) => name,
+                Some(HandlerConfig::ProcessManager { name, .. }) => name.clone(),
                 _ => String::new(),
             })
             .clone()
@@ -852,12 +892,12 @@ impl ProcessManagerRouter {
 
     /// Flattened, deduplicated `targets` across every registered PM.
     pub fn output_domains(&self) -> Vec<String> {
-        let mut seen = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
         for factory in &self.factories {
-            if let HandlerConfig::ProcessManager { targets, .. } = (factory.produce)().config() {
+            if let HandlerConfig::ProcessManager { targets, .. } = factory.config() {
                 for t in targets {
-                    if !t.is_empty() && !seen.contains(&t) {
-                        seen.push(t);
+                    if !t.is_empty() && !seen.iter().any(|s| s == t) {
+                        seen.push(t.clone());
                     }
                 }
             }
@@ -869,13 +909,12 @@ impl ProcessManagerRouter {
     /// registered PM — the subset of [`output_domains`] that ever uses
     /// sync mode.
     pub fn sync_output_domains(&self) -> Vec<String> {
-        let mut seen = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
         for factory in &self.factories {
-            if let HandlerConfig::ProcessManager { sync_targets, .. } = (factory.produce)().config()
-            {
+            if let HandlerConfig::ProcessManager { sync_targets, .. } = factory.config() {
                 for t in sync_targets {
-                    if !t.is_empty() && !seen.contains(&t) {
-                        seen.push(t);
+                    if !t.is_empty() && !seen.iter().any(|s| s == t) {
+                        seen.push(t.clone());
                     }
                 }
             }
@@ -892,7 +931,7 @@ impl ProcessManagerRouter {
                 targets,
                 sync_targets,
                 ..
-            } = (factory.produce)().config()
+            } = factory.config()
             {
                 targets
                     .iter()
@@ -910,7 +949,7 @@ impl ProjectorRouter {
     pub fn name(&self) -> String {
         self.cached_name
             .get_or_init(|| match first_config(&self.factories) {
-                Some(HandlerConfig::Projector { name, .. }) => name,
+                Some(HandlerConfig::Projector { name, .. }) => name.clone(),
                 _ => String::new(),
             })
             .clone()

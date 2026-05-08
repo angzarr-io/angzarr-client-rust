@@ -10,19 +10,34 @@ use crate::router::runtime::{
     CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter,
 };
 use crate::router::upcaster::UpcasterRouter;
-use crate::router::{BuildError, Built, Handler, HandlerKind, Kind};
+use crate::router::{BuildError, Built, Handler, HandlerConfig, HandlerKind, Kind};
 
 /// Type-erased handler factory paired with the kind of handler it produces.
 ///
 /// Kind is captured at registration (via `H::KIND`) so the builder can infer
-/// the target runtime router without invoking the factory.
+/// the target runtime router without invoking the factory. The handler's
+/// `HandlerConfig` is memoized lazily on the first call to [`Self::config`]
+/// so build-time validation and per-dispatch matching never construct
+/// handler instances solely to read metadata. Memoization is sound because
+/// proc-macro–emitted `config()` returns values derived from compile-time
+/// attribute data; the value is stable across produce calls.
 pub(crate) struct Factory {
     pub(crate) kind: Kind,
     /// Closure that constructs a new handler instance on each call.
-    ///
-    /// Read by dispatch starting in R6; storage-only in R3/R4.
-    #[allow(dead_code)]
     pub(crate) produce: Box<dyn Fn() -> Box<dyn Handler> + Send + Sync>,
+    /// Memoized handler config — populated lazily on the first call to
+    /// [`Self::config`].
+    pub(crate) cached_config: std::sync::OnceLock<HandlerConfig>,
+}
+
+impl Factory {
+    /// Return the handler's metadata, constructing exactly one handler
+    /// instance the first time this is called and caching the result.
+    /// Subsequent calls reuse the cached value.
+    pub(crate) fn config(&self) -> &HandlerConfig {
+        self.cached_config
+            .get_or_init(|| (self.produce)().config())
+    }
 }
 
 impl std::fmt::Debug for Factory {
@@ -56,10 +71,16 @@ impl Router {
 
     /// Register a handler factory.
     ///
-    /// `factory` is a closure that produces a fresh handler instance on each
-    /// dispatch call. It is **not** invoked at registration or build time.
-    /// Use this to close over shared dependencies (e.g. a connection pool) or
-    /// to hand in a pool checkout.
+    /// `factory` is a closure that produces a fresh handler instance on
+    /// each dispatch call. It is invoked at most once during build /
+    /// registration — the lazy `Factory::config` cache constructs one
+    /// instance the first time the runtime needs to read metadata, and
+    /// reuses the cached value afterward. Per-dispatch behavior is
+    /// unchanged: a fresh instance is produced for each matched call.
+    ///
+    /// Use this to close over shared dependencies (e.g. a connection
+    /// pool clone). Avoid producing scarce resources eagerly inside the
+    /// closure — the first config read still allocates one instance.
     pub fn with_handler<H, F>(mut self, factory: F) -> Self
     where
         H: Handler + HandlerKind + 'static,
@@ -68,6 +89,7 @@ impl Router {
         self.factories.push(Factory {
             kind: H::KIND,
             produce: Box::new(move || Box::new(factory())),
+            cached_config: std::sync::OnceLock::new(),
         });
         self
     }
@@ -102,8 +124,8 @@ impl Router {
                     codes::MIXED_HANDLER_KINDS,
                     messages::MIXED_HANDLER_KINDS,
                     [
-                        (keys::HANDLER_KIND, format!("{:?}", first_kind)),
-                        (keys::OTHER_KIND, format!("{:?}", f.kind)),
+                        (keys::HANDLER_KIND, first_kind.to_string()),
+                        (keys::OTHER_KIND, f.kind.to_string()),
                         (keys::ROUTER_NAME, self.name.clone()),
                     ],
                 )));
@@ -113,15 +135,18 @@ impl Router {
         // Audit #18: at most one CommandHandler per (domain, command_type)
         // within a Router. Saga / PM / projector / upcaster fan-out is
         // unaffected (those kinds legitimately broadcast).
+        //
+        // Reads the memoized config (one factory call across the
+        // factory's lifetime) instead of constructing a fresh handler
+        // here. Closures that hold scarce resources (pool checkouts,
+        // file handles) are no longer invoked once per build call.
         if first_kind == Kind::CommandHandler {
-            use crate::router::HandlerConfig;
             use std::collections::HashSet;
             let mut seen: HashSet<(String, String)> = HashSet::new();
             for f in &self.factories {
-                let handler = (f.produce)();
                 if let HandlerConfig::CommandHandler {
                     domain, handled, ..
-                } = handler.config()
+                } = f.config()
                 {
                     for type_url in handled {
                         let key = (domain.clone(), type_url.clone());
@@ -130,8 +155,8 @@ impl Router {
                                 codes::DUPLICATE_COMMAND_HANDLER,
                                 messages::DUPLICATE_COMMAND_HANDLER,
                                 [
-                                    (keys::DOMAIN, domain),
-                                    (keys::TYPE_URL, type_url),
+                                    (keys::DOMAIN, domain.clone()),
+                                    (keys::TYPE_URL, type_url.clone()),
                                     (keys::ROUTER_NAME, self.name.clone()),
                                 ],
                             )));

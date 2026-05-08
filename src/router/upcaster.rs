@@ -20,7 +20,7 @@
 use crate::error::ClientError;
 use crate::proto::{event_page, EventPage, UpcastRequest, UpcastResponse};
 use crate::router::builder::Factory;
-use crate::router::handler::{Handler, HandlerConfig, HandlerRequest, HandlerResponse};
+use crate::router::handler::{Handler, HandlerConfig, HandlerRequest, HandlerResponse, Kind};
 
 /// Runtime router dispatching upcast requests through registered upcaster handlers.
 pub struct UpcasterRouter {
@@ -34,12 +34,10 @@ impl UpcasterRouter {
     /// Audit #42: cached after the first call.
     pub fn name(&self) -> String {
         self.cached_name
-            .get_or_init(
-                || match self.factories.first().map(|f| (f.produce)().config()) {
-                    Some(HandlerConfig::Upcaster { name, .. }) => name,
-                    _ => String::new(),
-                },
-            )
+            .get_or_init(|| match self.factories.first().map(|f| f.config()) {
+                Some(HandlerConfig::Upcaster { name, .. }) => name.clone(),
+                _ => String::new(),
+            })
             .clone()
     }
 
@@ -58,11 +56,6 @@ impl std::fmt::Debug for UpcasterRouter {
 }
 
 impl UpcasterRouter {
-    /// Number of registered upcaster factories.
-    pub fn handler_count(&self) -> usize {
-        self.factories.len()
-    }
-
     /// Dispatch an [`UpcastRequest`] through every registered upcaster.
     ///
     /// Events pass through every matching handler in registration order.
@@ -87,11 +80,11 @@ impl UpcasterRouter {
             let mut current_page = page.clone();
 
             for factory in &self.factories {
-                let handler: Box<dyn Handler> = (factory.produce)();
-                let cfg = handler.config();
-                // Only dispatch to upcasters whose domain matches.
+                // Only dispatch to upcasters whose domain matches —
+                // metadata read from the cached config so a domain
+                // mismatch doesn't materialize a handler instance.
                 let matches_domain = matches!(
-                    &cfg,
+                    factory.config(),
                     HandlerConfig::Upcaster { domain: d, .. } if d == &domain
                 );
                 if !matches_domain {
@@ -105,12 +98,13 @@ impl UpcasterRouter {
                     domain: domain.clone(),
                     events: vec![current_page.clone()],
                 };
+                let handler: Box<dyn Handler> = (factory.produce)();
                 let response = handler.dispatch(HandlerRequest::Upcaster(single))?;
                 let HandlerResponse::Upcaster(r) = response else {
                     return Err(ClientError::invalid_argument(
                         crate::error_codes::codes::UPCASTER_WRONG_RESPONSE_KIND,
                         crate::error_codes::messages::UPCASTER_WRONG_RESPONSE_KIND,
-                        [(crate::error_codes::keys::EXPECTED_KIND, "Upcaster")],
+                        [(crate::error_codes::keys::EXPECTED_KIND, Kind::Upcaster.as_str())],
                     ));
                 };
                 if let Some(transformed) = r.events.into_iter().next() {

@@ -24,6 +24,28 @@ pub enum Kind {
     Upcaster,
 }
 
+impl Kind {
+    /// Stable string representation suitable for wire-visible metadata
+    /// (cucumber assertions, error details). Pinned via tests so a
+    /// future rename of an enum variant cannot silently change the
+    /// string the dispatch layer emits.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Kind::CommandHandler => "CommandHandler",
+            Kind::Saga => "Saga",
+            Kind::ProcessManager => "ProcessManager",
+            Kind::Projector => "Projector",
+            Kind::Upcaster => "Upcaster",
+        }
+    }
+}
+
+impl std::fmt::Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Metadata describing a handler produced by a kind macro.
 ///
 /// Populated by proc-macro expansion. The builder inspects this to infer the
@@ -259,6 +281,37 @@ pub trait Handler: Send + Sync {
     /// R1 stub — real implementations land in R6 (command), R11 (saga),
     /// R12 (pm), R13 (projector).
     fn dispatch(&self, request: HandlerRequest) -> Result<HandlerResponse, ClientError>;
+}
+
+#[cfg(test)]
+mod kind_str_tests {
+    use super::Kind;
+
+    /// Pin the wire-visible string for each Kind so a future rename of
+    /// an enum variant (CommandHandler → Aggregate, say) cannot
+    /// silently change the string the dispatch layer emits in error
+    /// details / cucumber assertions / metadata trailers.
+    #[test]
+    fn kind_as_str_pins_wire_strings() {
+        assert_eq!(Kind::CommandHandler.as_str(), "CommandHandler");
+        assert_eq!(Kind::Saga.as_str(), "Saga");
+        assert_eq!(Kind::ProcessManager.as_str(), "ProcessManager");
+        assert_eq!(Kind::Projector.as_str(), "Projector");
+        assert_eq!(Kind::Upcaster.as_str(), "Upcaster");
+    }
+
+    #[test]
+    fn kind_display_matches_as_str() {
+        for kind in [
+            Kind::CommandHandler,
+            Kind::Saga,
+            Kind::ProcessManager,
+            Kind::Projector,
+            Kind::Upcaster,
+        ] {
+            assert_eq!(kind.to_string(), kind.as_str());
+        }
+    }
 }
 
 /// Compile-time kind marker.

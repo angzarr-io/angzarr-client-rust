@@ -67,6 +67,7 @@ pub mod codes {
     pub const MISSING_DEFERRED_HEADER: &str = "MISSING_DEFERRED_HEADER";
     pub const HANDLER_DOES_NOT_SUPPORT_FACT: &str = "HANDLER_DOES_NOT_SUPPORT_FACT";
     pub const HANDLER_DOES_NOT_SUPPORT_REPLAY: &str = "HANDLER_DOES_NOT_SUPPORT_REPLAY";
+    pub const ROUTER_SEQUENCE_OVERFLOW: &str = "ROUTER_SEQUENCE_OVERFLOW";
 
     // Dispatch — saga
     pub const MISSING_SAGA_SOURCE: &str = "MISSING_SAGA_SOURCE";
@@ -162,6 +163,8 @@ pub mod messages {
     pub const HANDLER_DOES_NOT_SUPPORT_FACT: &str =
         "handler does not declare any #[handles_fact] methods";
     pub const HANDLER_DOES_NOT_SUPPORT_REPLAY: &str = "handler does not support replay";
+    pub const ROUTER_SEQUENCE_OVERFLOW: &str =
+        "router sequence counter overflowed u32 — too many merged compensation events";
 
     // Dispatch — saga
     pub const MISSING_SAGA_SOURCE: &str = "missing saga source";

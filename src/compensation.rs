@@ -19,7 +19,6 @@
 //! }
 //! ```
 
-use crate::convert::TYPE_URL_PREFIX;
 use crate::error::ClientError;
 use crate::error_codes::{codes, keys, messages};
 use crate::proto::{
@@ -28,7 +27,9 @@ use crate::proto::{
 };
 use prost::Message;
 
-/// Fully-qualified proto type name for Notification.
+/// Fully-qualified proto type name for Notification — referenced only by
+/// the `notification_type_url_matches_prefix_plus_name` parity test.
+#[cfg(test)]
 const NOTIFICATION_TYPE_NAME: &str = "angzarr_client.proto.angzarr.Notification";
 
 /// Pre-computed full type URL for Notification — avoids per-call `format!`
@@ -321,6 +322,7 @@ pub fn is_notification(type_url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::convert::TYPE_URL_PREFIX;
     use crate::proto::{AngzarrDeferredSequence, CommandPage, PageHeader, Uuid as ProtoUuid};
     use prost::Message;
     use prost_types::Any;
