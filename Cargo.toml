@@ -29,6 +29,10 @@ angzarr-macros = { version = "0.1.0", path = "angzarr-macros" }
 tonic = { version = "0.14", features = ["tls-ring", "transport"] }
 prost = "0.14"
 prost-types = "0.14"
+# `Bytes` is the trailer type tonic's `Status::with_details` expects.
+# Already a transitive dep — making it explicit so the canonical
+# `grpc-status-details-bin` packing can build the trailer payload.
+bytes = "1"
 
 # Async
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }

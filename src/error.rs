@@ -13,78 +13,133 @@
 //! Callers MUST NOT interpolate runtime values into `message`. Put them
 //! in `details`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
-use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
+use prost::Message;
+use prost_types::Any;
 use tonic::{Code, Status};
 
-/// Metadata trailer carrying the SCREAMING_SNAKE error code so polyglot
-/// siblings can route on the structured identifier without parsing the
-/// human-readable Status message.
-pub const ERROR_CODE_HEADER: &str = "x-angzarr-error-code";
+/// Logical domain for `google.rpc.ErrorInfo.domain` — identifies the
+/// inventory the `reason` (= `code`) is defined in. Any sibling client
+/// that reads `grpc-status-details-bin` keys off this value to know
+/// it's looking at an angzarr-emitted error.
+pub const ERROR_INFO_DOMAIN: &str = "angzarr.io";
 
-/// Prefix for metadata trailers carrying structured error details.
-/// One header per detail entry: `x-angzarr-detail-<key>: <value>`.
-pub const ERROR_DETAIL_HEADER_PREFIX: &str = "x-angzarr-detail-";
-
-/// Metadata trailer carrying the addressing-envelope domain from a
-/// rejection's [`CommandRejectedError::cover`].
-pub const ERROR_COVER_DOMAIN_HEADER: &str = "x-angzarr-cover-domain";
-
-/// Metadata trailer carrying the addressing-envelope correlation_id.
-pub const ERROR_COVER_CORRELATION_ID_HEADER: &str = "x-angzarr-cover-correlation-id";
-
-/// Metadata trailer carrying the hex-encoded root UUID.
-pub const ERROR_COVER_ROOT_HEX_HEADER: &str = "x-angzarr-cover-root-hex";
-
-/// Stamp `x-angzarr-error-code` + `x-angzarr-detail-<key>` headers onto a
-/// gRPC Status's trailing metadata. Silently skips any header that
-/// isn't ASCII-safe — pathological detail values shouldn't hard-fail
-/// the caller. Cross-language siblings that ignore unknown trailing
-/// metadata see exactly the previous behavior.
-pub fn attach_error_metadata(
-    md: &mut MetadataMap,
-    code: &'static str,
-    details: Option<&BTreeMap<String, String>>,
-) {
-    if let Ok(v) = MetadataValue::try_from(code) {
-        md.insert(ERROR_CODE_HEADER, v);
-    }
-    let Some(details) = details else { return };
-    for (k, v) in details {
-        let header = format!("{}{}", ERROR_DETAIL_HEADER_PREFIX, k);
-        let Ok(key) = header.parse::<MetadataKey<_>>() else {
-            continue;
-        };
-        let Ok(value) = MetadataValue::try_from(v.as_str()) else {
-            continue;
-        };
-        md.insert(key, value);
-    }
+/// Subset of `google/rpc/status.proto` matching `google.rpc.Status`
+/// wire format. Hand-rolled to avoid a new build-time dep on the
+/// `googleapis` proto bundle — the struct is tiny and the wire layout
+/// is stable.
+#[derive(Clone, PartialEq, Message)]
+struct GoogleRpcStatus {
+    /// `google.rpc.Code` numeric value — the same int that rides on
+    /// `grpc-status`.
+    #[prost(int32, tag = "1")]
+    code: i32,
+    /// Human-readable message. We duplicate `Status::message()` here
+    /// per the spec ("should be the same as `Status.message`").
+    #[prost(string, tag = "2")]
+    message: String,
+    /// Heterogeneous structured details. Each entry is a packed proto
+    /// (typically `google.rpc.ErrorInfo`, `google.rpc.BadRequest`, …;
+    /// we additionally pack our own `Cover` here when present).
+    #[prost(message, repeated, tag = "3")]
+    details: Vec<Any>,
 }
 
-/// Stamp the addressing-envelope (cover) onto a gRPC Status's trailing
-/// metadata. Each non-empty cover field rides as its own header so a
-/// polyglot sibling reading `x-angzarr-cover-domain` /
-/// `-correlation-id` / `-root-hex` can reconstruct (domain, root,
-/// correlation_id) without needing to decode a packed proto.
-pub fn attach_cover_metadata(md: &mut MetadataMap, cover: &crate::proto::Cover) {
-    if !cover.domain.is_empty() {
-        if let Ok(v) = MetadataValue::try_from(cover.domain.as_str()) {
-            md.insert(ERROR_COVER_DOMAIN_HEADER, v);
+/// Subset of `google/rpc/error_details.proto` matching
+/// `google.rpc.ErrorInfo`. Carries our SCREAMING_SNAKE `code` (as
+/// `reason`), an inventory `domain` ([`ERROR_INFO_DOMAIN`]), and the
+/// detail map verbatim.
+#[derive(Clone, PartialEq, Message)]
+struct GoogleRpcErrorInfo {
+    /// SCREAMING_SNAKE identifier — the `code` from
+    /// [`crate::error_codes::codes`].
+    #[prost(string, tag = "1")]
+    reason: String,
+    /// Logical inventory the `reason` belongs to —
+    /// [`ERROR_INFO_DOMAIN`].
+    #[prost(string, tag = "2")]
+    domain: String,
+    /// Per-call structured context; matches the
+    /// [`ErrorDetail::details`] map verbatim.
+    #[prost(map = "string, string", tag = "3")]
+    metadata: HashMap<String, String>,
+}
+
+/// Type URL for `google.rpc.ErrorInfo` per the canonical `Any` packing.
+const ERROR_INFO_TYPE_URL: &str = "type.googleapis.com/google.rpc.ErrorInfo";
+
+/// Type URL for the project's `Cover` proto (declared in
+/// `angzarr_client/proto/angzarr/types.proto`).
+const COVER_TYPE_URL: &str = "type.googleapis.com/angzarr_client.proto.angzarr.Cover";
+
+/// Build the canonical `grpc-status-details-bin` payload (a serialized
+/// `google.rpc.Status` whose `details` is `repeated Any`) for an
+/// angzarr error. Returns the raw bytes ready to feed to
+/// [`Status::with_details`].
+///
+/// The payload always carries a `google.rpc.ErrorInfo`; when `cover`
+/// is `Some`, the `Cover` proto is appended as a second `Any`. Polyglot
+/// siblings read this trailer with whatever google.rpc bindings their
+/// language exposes; tonic stamps the binary trailer + base64 wrapping
+/// per gRPC spec.
+pub fn build_status_details(
+    grpc_code: Code,
+    message: &str,
+    error_code: &str,
+    error_details: Option<&BTreeMap<String, String>>,
+    cover: Option<&crate::proto::Cover>,
+) -> Vec<u8> {
+    let info = GoogleRpcErrorInfo {
+        reason: error_code.to_string(),
+        domain: ERROR_INFO_DOMAIN.to_string(),
+        metadata: error_details
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default(),
+    };
+    let info_bytes = info.encode_to_vec();
+    let mut details = vec![Any {
+        type_url: ERROR_INFO_TYPE_URL.to_string(),
+        value: info_bytes,
+    }];
+    if let Some(cover) = cover {
+        details.push(Any {
+            type_url: COVER_TYPE_URL.to_string(),
+            value: cover.encode_to_vec(),
+        });
+    }
+    let status_proto = GoogleRpcStatus {
+        code: i32::from(grpc_code),
+        message: message.to_string(),
+        details,
+    };
+    status_proto.encode_to_vec()
+}
+
+/// Decode the inverse of [`build_status_details`] for tests and
+/// inspection. Returns `(error_code, metadata, optional_cover)`.
+///
+/// Robust to siblings that pack extra `Any` entries we don't recognize
+/// — those are silently skipped.
+#[cfg(test)]
+pub fn unpack_status_details(
+    bytes: &[u8],
+) -> Option<(String, BTreeMap<String, String>, Option<crate::proto::Cover>)> {
+    let status = GoogleRpcStatus::decode(bytes).ok()?;
+    let mut error_code = String::new();
+    let mut metadata = BTreeMap::new();
+    let mut cover = None;
+    for any in &status.details {
+        if any.type_url == ERROR_INFO_TYPE_URL {
+            if let Ok(info) = GoogleRpcErrorInfo::decode(any.value.as_slice()) {
+                error_code = info.reason;
+                metadata = info.metadata.into_iter().collect();
+            }
+        } else if any.type_url == COVER_TYPE_URL {
+            cover = crate::proto::Cover::decode(any.value.as_slice()).ok();
         }
     }
-    if !cover.correlation_id.is_empty() {
-        if let Ok(v) = MetadataValue::try_from(cover.correlation_id.as_str()) {
-            md.insert(ERROR_COVER_CORRELATION_ID_HEADER, v);
-        }
-    }
-    if let Some(root) = &cover.root {
-        let hex_str = hex::encode(&root.value);
-        if let Ok(v) = MetadataValue::try_from(hex_str.as_str()) {
-            md.insert(ERROR_COVER_ROOT_HEX_HEADER, v);
-        }
-    }
+    Some((error_code, metadata, cover))
 }
 
 /// Result type for client operations.
@@ -408,25 +463,26 @@ impl std::error::Error for CommandRejectedError {}
 
 impl From<CommandRejectedError> for Status {
     fn from(err: CommandRejectedError) -> Self {
-        // Build the bare Status with the right gRPC code and the
-        // static message. Then stamp the structured `code` and
-        // `details` map into trailing metadata so polyglot callers
-        // that read `x-angzarr-error-code` / `x-angzarr-detail-<key>`
-        // see full structured fidelity. The cover, if stamped by the
-        // dispatch boundary, also rides as its own headers — keeping
-        // the on-the-wire message a static greppable string while
-        // surfacing the dynamic addressing envelope to siblings that
-        // want to reconstruct it.
-        let mut status = match err.status_code {
-            "INVALID_ARGUMENT" => Status::invalid_argument(err.message),
-            "NOT_FOUND" => Status::not_found(err.message),
-            _ => Status::failed_precondition(err.message),
+        // Static message rides in `Status::message()` (greppable across
+        // languages); the structured `code`, `details` map, and `cover`
+        // ride in `grpc-status-details-bin` as a `google.rpc.Status`
+        // whose `details: repeated Any` carries
+        // `google.rpc.ErrorInfo` + (when present) the angzarr `Cover`
+        // proto. Any sibling client with google.rpc bindings can
+        // unpack this directly — no custom trailer scheme.
+        let grpc_code = match err.status_code {
+            "INVALID_ARGUMENT" => Code::InvalidArgument,
+            "NOT_FOUND" => Code::NotFound,
+            _ => Code::FailedPrecondition,
         };
-        attach_error_metadata(status.metadata_mut(), err.code, Some(&err.details));
-        if let Some(cover) = &err.cover {
-            attach_cover_metadata(status.metadata_mut(), cover);
-        }
-        status
+        let payload = build_status_details(
+            grpc_code,
+            err.message,
+            err.code,
+            Some(&err.details),
+            err.cover.as_ref(),
+        );
+        Status::with_details(grpc_code, err.message, bytes::Bytes::from(payload))
     }
 }
 
@@ -538,12 +594,12 @@ mod tests {
     }
 
     #[test]
-    fn rejected_into_status_stamps_code_and_details() {
-        // From<CommandRejectedError> for Status now stamps trailing
-        // metadata so the Into-conversion path is symmetric with the
-        // gRPC adapter's `client_error_to_status`. Polyglot siblings
-        // reading the trailers see structured fidelity regardless of
-        // which path produced the Status.
+    fn rejected_into_status_packs_canonical_error_info() {
+        // From<CommandRejectedError> for Status packs the structured
+        // payload into `grpc-status-details-bin` as a google.rpc.Status
+        // carrying a google.rpc.ErrorInfo. Polyglot siblings read the
+        // canonical trailer via their google.rpc bindings — no custom
+        // trailer scheme.
         let rej = CommandRejectedError::precondition_failed(
             "ALREADY_OPEN",
             "registration already open",
@@ -551,19 +607,18 @@ mod tests {
         );
         let status: Status = rej.into();
         assert_eq!(status.code(), Code::FailedPrecondition);
-        let md = status.metadata();
-        assert_eq!(
-            md.get(ERROR_CODE_HEADER).map(|v| v.to_str().unwrap()),
-            Some("ALREADY_OPEN"),
-        );
-        assert_eq!(
-            md.get("x-angzarr-detail-field").map(|v| v.to_str().unwrap()),
-            Some("status"),
-        );
+        assert_eq!(status.message(), "registration already open");
+
+        let details = status.details();
+        assert!(!details.is_empty(), "binary details trailer must be set");
+        let (code, metadata, cover) = unpack_status_details(&details).expect("decode");
+        assert_eq!(code, "ALREADY_OPEN");
+        assert_eq!(metadata.get("field").map(String::as_str), Some("status"));
+        assert!(cover.is_none());
     }
 
     #[test]
-    fn rejected_into_status_stamps_cover_when_present() {
+    fn rejected_into_status_packs_cover_when_present() {
         use crate::proto::{Cover, Uuid as ProtoUuid};
         let rej = CommandRejectedError::not_found(
             "ENTITY_NOT_FOUND",
@@ -579,39 +634,37 @@ mod tests {
             edition: None,
         });
         let status: Status = rej.into();
-        let md = status.metadata();
-        assert_eq!(
-            md.get(ERROR_COVER_DOMAIN_HEADER).map(|v| v.to_str().unwrap()),
-            Some("player"),
-        );
-        assert_eq!(
-            md.get(ERROR_COVER_CORRELATION_ID_HEADER)
-                .map(|v| v.to_str().unwrap()),
-            Some("corr-42"),
-        );
-        assert_eq!(
-            md.get(ERROR_COVER_ROOT_HEX_HEADER).map(|v| v.to_str().unwrap()),
-            Some("abcdef"),
-        );
+        let (code, _metadata, unpacked) =
+            unpack_status_details(&status.details()).expect("decode");
+        assert_eq!(code, "ENTITY_NOT_FOUND");
+        let cover = unpacked.expect("cover roundtripped");
+        assert_eq!(cover.domain, "player");
+        assert_eq!(cover.correlation_id, "corr-42");
+        assert_eq!(cover.root.unwrap().value, vec![0xab, 0xcd, 0xef]);
     }
 
     #[test]
-    fn rejected_into_status_omits_empty_cover_headers() {
-        use crate::proto::Cover;
-        // A cover with empty domain / correlation_id and no root must
-        // not stamp any cover headers — keeps the metadata noise-free
-        // for partially-populated covers.
+    fn rejected_into_status_skips_cover_when_absent() {
+        // No cover stamped on the rejection → no Cover Any in
+        // `details`. ErrorInfo is always packed.
         let rej = CommandRejectedError::precondition_failed(
             "X",
             "x",
             std::iter::empty::<(String, String)>(),
-        )
-        .with_cover(Cover::default());
+        );
         let status: Status = rej.into();
-        let md = status.metadata();
-        assert!(md.get(ERROR_COVER_DOMAIN_HEADER).is_none());
-        assert!(md.get(ERROR_COVER_CORRELATION_ID_HEADER).is_none());
-        assert!(md.get(ERROR_COVER_ROOT_HEX_HEADER).is_none());
+        let (code, _metadata, cover) =
+            unpack_status_details(&status.details()).expect("decode");
+        assert_eq!(code, "X");
+        assert!(cover.is_none());
+    }
+
+    #[test]
+    fn error_info_domain_is_stable() {
+        // Pin the inventory domain. Any sibling that keys on this
+        // value to recognize an angzarr-emitted error fails fast if
+        // we ever rename it.
+        assert_eq!(ERROR_INFO_DOMAIN, "angzarr.io");
     }
 
     // Audit #76 + #78: Transport / Grpc variants emit static inventory

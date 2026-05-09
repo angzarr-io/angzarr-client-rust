@@ -5,9 +5,9 @@
 
 use std::sync::Arc;
 
-use tonic::{Request, Response, Status};
+use tonic::{Code, Request, Response, Status};
 
-use crate::error::attach_error_metadata;
+use crate::error::build_status_details;
 use crate::error_codes::{codes, messages};
 use crate::proto::{
     command_handler_service_server::CommandHandlerService,
@@ -21,12 +21,6 @@ use crate::router::runtime::{
     CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter,
 };
 use crate::ClientError;
-
-// Re-exports for backward compatibility — the actual constants now
-// live in `crate::error` so the `From<CommandRejectedError> for Status`
-// impl can stamp the same headers without crate-cycling. Kept here so
-// callers using `handler::ERROR_CODE_HEADER` keep compiling.
-pub use crate::error::{ERROR_CODE_HEADER, ERROR_DETAIL_HEADER_PREFIX};
 
 /// gRPC command-handler service wrapping a [`CommandHandlerRouter`].
 pub struct CommandHandlerGrpc {
@@ -209,47 +203,60 @@ impl ProjectorService for ProjectorGrpc {
 
 fn client_error_to_status(err: ClientError) -> Status {
     // Audit #59: only the static `message` rides in `Status::message`.
-    // Structured `code` + `details` ride in trailing metadata so polyglot
-    // siblings that read them get full fidelity; siblings that ignore
-    // unknown trailers see exactly the previous behavior.
+    // Structured `code` + `details` (+ optional cover for rejections)
+    // ride in `grpc-status-details-bin` as a canonical
+    // `google.rpc.Status` carrying `google.rpc.ErrorInfo`. Polyglot
+    // siblings read the trailer via their google.rpc bindings.
     //
     // The Rejected branch delegates to `From<CommandRejectedError>
-    // for Status` which now stamps the metadata symmetrically — so a
-    // direct `Into<Status>::into(rej)` call from outside this adapter
-    // produces the identical wire output.
+    // for Status` so the direct Into-conversion path produces
+    // identical wire output.
     let code = err.code();
     match err {
-        ClientError::InvalidArgument(d) => {
-            let mut s = Status::invalid_argument(d.message);
-            attach_error_metadata(s.metadata_mut(), code, Some(&d.details));
-            s
-        }
+        ClientError::InvalidArgument(d) => with_canonical_details(
+            Code::InvalidArgument,
+            d.message,
+            code,
+            Some(&d.details),
+        ),
         ClientError::Connection(d) => {
-            let mut s = Status::unavailable(d.message);
-            attach_error_metadata(s.metadata_mut(), code, Some(&d.details));
-            s
+            with_canonical_details(Code::Unavailable, d.message, code, Some(&d.details))
         }
         ClientError::Transport(e) => {
-            let mut s = Status::unavailable(e.to_string());
-            attach_error_metadata(s.metadata_mut(), code, None);
-            s
+            // The dynamic transport-level message rides in
+            // Status::message verbatim — Box<tonic::transport::Error>
+            // already produces a single-line summary.
+            let m = e.to_string();
+            let payload = build_status_details(Code::Unavailable, &m, code, None, None);
+            Status::with_details(Code::Unavailable, m, bytes::Bytes::from(payload))
         }
         ClientError::Grpc(s) => *s,
-        ClientError::InvalidTimestamp(d) => {
-            let mut s = Status::invalid_argument(d.message);
-            attach_error_metadata(s.metadata_mut(), code, Some(&d.details));
-            s
-        }
+        ClientError::InvalidTimestamp(d) => with_canonical_details(
+            Code::InvalidArgument,
+            d.message,
+            code,
+            Some(&d.details),
+        ),
         ClientError::Rejected(r) => r.into(),
     }
 }
 
+/// Build a `Status` whose `grpc-status-details-bin` trailer carries the
+/// canonical `google.rpc.Status`/`ErrorInfo` payload.
+fn with_canonical_details(
+    grpc_code: Code,
+    message: &'static str,
+    error_code: &'static str,
+    details: Option<&std::collections::BTreeMap<String, String>>,
+) -> Status {
+    let payload = build_status_details(grpc_code, message, error_code, details, None);
+    Status::with_details(grpc_code, message, bytes::Bytes::from(payload))
+}
+
 /// Build a `Status::unimplemented` whose trailing metadata carries the
-/// SCREAMING_SNAKE inventory code.
+/// SCREAMING_SNAKE inventory code via the canonical packing.
 fn unimplemented_with_code(code: &'static str, message: &'static str) -> Status {
-    let mut status = Status::unimplemented(message);
-    attach_error_metadata(status.metadata_mut(), code, None);
-    status
+    with_canonical_details(Code::Unimplemented, message, code, None)
 }
 
 
@@ -290,6 +297,8 @@ mod tests {
     use super::*;
     use crate::CommandRejectedError;
 
+    use crate::error::unpack_status_details;
+
     #[test]
     fn invalid_argument_maps_to_invalid_argument() {
         let err = ClientError::invalid_argument(
@@ -300,62 +309,51 @@ mod tests {
         let status = client_error_to_status(err);
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
         assert_eq!(status.message(), "value must be positive");
-        assert_eq!(
-            status.metadata().get(ERROR_CODE_HEADER).map(|v| v.to_str().unwrap()),
-            Some("BAD_INPUT"),
-        );
+        let (code, _meta, _cover) = unpack_status_details(&status.details()).expect("decode");
+        assert_eq!(code, "BAD_INPUT");
     }
 
     #[test]
-    fn invalid_argument_attaches_detail_headers() {
+    fn invalid_argument_packs_canonical_details() {
         let err = ClientError::invalid_argument(
             "BAD_INPUT",
             "bad",
             [("field", "amount"), ("expected", "positive")],
         );
         let status = client_error_to_status(err);
-        let md = status.metadata();
+        let (_code, metadata, _cover) =
+            unpack_status_details(&status.details()).expect("decode");
+        assert_eq!(metadata.get("field").map(String::as_str), Some("amount"));
         assert_eq!(
-            md.get("x-angzarr-detail-field").map(|v| v.to_str().unwrap()),
-            Some("amount"),
-        );
-        assert_eq!(
-            md.get("x-angzarr-detail-expected").map(|v| v.to_str().unwrap()),
+            metadata.get("expected").map(String::as_str),
             Some("positive"),
         );
     }
 
     #[test]
-    fn rejected_status_attaches_code_and_details() {
+    fn rejected_status_packs_code_and_details() {
         let rej = CommandRejectedError::invalid_argument(
             "VALUE_NOT_POSITIVE",
             "value must be positive",
             [("field", "amount")],
         );
         let status = client_error_to_status(ClientError::Rejected(rej));
-        let md = status.metadata();
-        assert_eq!(
-            md.get(ERROR_CODE_HEADER).map(|v| v.to_str().unwrap()),
-            Some("VALUE_NOT_POSITIVE"),
-        );
-        assert_eq!(
-            md.get("x-angzarr-detail-field").map(|v| v.to_str().unwrap()),
-            Some("amount"),
-        );
+        let (code, metadata, _cover) =
+            unpack_status_details(&status.details()).expect("decode");
+        assert_eq!(code, "VALUE_NOT_POSITIVE");
+        assert_eq!(metadata.get("field").map(String::as_str), Some("amount"));
     }
 
     #[test]
-    fn unimplemented_with_code_carries_inventory_code() {
+    fn unimplemented_with_code_packs_canonical_details() {
         let status = unimplemented_with_code(
             codes::HANDLER_DOES_NOT_SUPPORT_FACT,
             messages::HANDLER_DOES_NOT_SUPPORT_FACT,
         );
         assert_eq!(status.code(), tonic::Code::Unimplemented);
         assert_eq!(status.message(), messages::HANDLER_DOES_NOT_SUPPORT_FACT);
-        assert_eq!(
-            status.metadata().get(ERROR_CODE_HEADER).map(|v| v.to_str().unwrap()),
-            Some(codes::HANDLER_DOES_NOT_SUPPORT_FACT),
-        );
+        let (code, _meta, _cover) = unpack_status_details(&status.details()).expect("decode");
+        assert_eq!(code, codes::HANDLER_DOES_NOT_SUPPORT_FACT);
     }
 
     #[test]
