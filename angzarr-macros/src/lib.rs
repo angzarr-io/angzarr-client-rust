@@ -717,6 +717,11 @@ struct MethodMetadata {
     /// Name of the method annotated with `#[handles_unknown]`, if any
     /// (projector-only catch-all for events with no matching `#[handles]`).
     handles_unknown: Option<Ident>,
+    /// Set of `#[handles(T)]` method names whose signature includes a
+    /// second parameter beyond the event (typically `source_cover:
+    /// Option<Cover>` for sagas that need their source's cover). When a
+    /// method is in this set, dispatch arms must pass the extra arg.
+    handles_takes_cover: ::std::collections::HashSet<Ident>,
 }
 
 fn collect_method_metadata(input: &ItemImpl) -> MethodMetadata {
@@ -731,14 +736,28 @@ fn collect_method_metadata(input: &ItemImpl) -> MethodMetadata {
     let mut handles_fact = Vec::new();
     let mut handles_fact_with_methods = Vec::new();
     let mut handles_unknown = None;
+    let mut handles_takes_cover = ::std::collections::HashSet::new();
 
     for item in &input.items {
         let ImplItem::Fn(method) = item else { continue };
+        // Non-receiver arg count: subtract 1 if first input is `self`.
+        let extra_args = method
+            .sig
+            .inputs
+            .iter()
+            .filter(|arg| matches!(arg, syn::FnArg::Typed(_)))
+            .count();
         for attr in &method.attrs {
             if attr.path().is_ident("handles") {
                 if let Ok(ty) = get_attr_ident(attr) {
                     handled.push(ty.clone());
                     handled_with_methods.push((method.sig.ident.clone(), ty));
+                    // 1 arg = just event; >=2 args = event + source_cover (or
+                    // event + state for command handlers, which is handled
+                    // elsewhere). Saga / projector dispatch checks this set.
+                    if extra_args >= 2 {
+                        handles_takes_cover.insert(method.sig.ident.clone());
+                    }
                 }
             } else if attr.path().is_ident("handles_fact") {
                 // Audit #45: fact-event handler. Same shape as
@@ -781,6 +800,7 @@ fn collect_method_metadata(input: &ItemImpl) -> MethodMetadata {
         handles_fact,
         handles_fact_with_methods,
         handles_unknown,
+        handles_takes_cover,
     }
 }
 
@@ -1058,10 +1078,39 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
         quote! { (#d.to_string(), #c.to_string()) }
     });
 
+    // Source EventBook's cover, exposed to opt-in handlers whose signature
+    // takes `Option<Cover>` as a second arg. Only bound when at least one
+    // dispatched method needs it, to avoid an unused-variable warning when
+    // every saga handler is single-arg.
+    let any_takes_cover = meta
+        .handled_with_methods
+        .iter()
+        .any(|(method_ident, _)| meta.handles_takes_cover.contains(method_ident));
+    let source_cover_binding = if any_takes_cover {
+        quote! {
+            let source_cover: ::std::option::Option<
+                ::angzarr_client::proto::Cover,
+            > = source_book.cover.clone();
+        }
+    } else {
+        quote! {}
+    };
+
     let dispatch_arms: Vec<TokenStream2> = meta
         .handled_with_methods
         .iter()
         .map(|(method_ident, evt_ty)| {
+            // Saga handlers may opt into receiving the source EventBook's
+            // cover as a second argument (`Option<Cover>`). When the user's
+            // method signature has the extra param we pass `source_cover`;
+            // otherwise the existing single-arg call is preserved.
+            let call = if meta.handles_takes_cover.contains(method_ident) {
+                quote! {
+                    self.#method_ident(evt, source_cover.clone())
+                }
+            } else {
+                quote! { self.#method_ident(evt) }
+            };
             quote! {
                 if event_any.type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
                     let evt = <#evt_ty as ::prost::Message>::decode(event_any.value.as_slice())
@@ -1073,7 +1122,7 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
                                 (::angzarr_client::error_codes::keys::CAUSE, e.to_string()),
                             ],
                         ))?;
-                    let response = self.#method_ident(evt)
+                    let response = #call
                         .map_err(::angzarr_client::ClientError::Rejected)?;
                     return ::std::result::Result::Ok(
                         ::angzarr_client::router::HandlerResponse::Saga(response),
@@ -1134,6 +1183,7 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
                         ::std::iter::empty::<(&str, ::std::string::String)>(),
                     )
                 })?;
+                #source_cover_binding
                 let event_page = source_book.pages.last().ok_or_else(|| {
                     ::angzarr_client::ClientError::invalid_argument(
                         ::angzarr_client::error_codes::codes::EMPTY_SAGA_SOURCE,
