@@ -9,26 +9,88 @@ ROOT := `git rev-parse --show-toplevel`
 default:
     @just --list
 
-# Build all workspace crates (build.rs generates protos via prost/tonic)
-build:
+# =============================================================================
+# Proto generation (in-container) — see project_proto_generation_model
+# =============================================================================
+# `generate-proto-force` is the unconditional regen path. `generate-proto`
+# wraps it with the mtime guard so it's safe to use as a recipe-dependency
+# of build/test/lint.
+#
+# Mechanism: build.rs is gated on `GENERATE_PROTOS=1`. When set, build.rs
+# invokes tonic_prost_build to emit `.rs` files into `src/proto/`. Plain
+# `cargo build` skips codegen and consumes the pre-emitted files via
+# `include!`. We use `cargo check` here (vs `cargo build`) because it runs
+# build scripts but skips final linking — fastest path that still triggers
+# codegen.
+
+# Idempotent — skips when bindings are fresher than the newest .proto.
+generate-proto:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src_dir="{{ROOT}}/angzarr-project/proto"
+    out_dir="{{ROOT}}/src/proto"
+    if [ ! -d "$src_dir" ]; then
+        echo "[generate-proto] $src_dir missing — submodule not initialized?" >&2
+        exit 1
+    fi
+    newest_proto=$(find "$src_dir" -name '*.proto' -printf '%T@\n' 2>/dev/null \
+                    | sort -n | tail -1)
+    if [ -d "$out_dir" ]; then
+        oldest_pb=$(find "$out_dir" -name '*.rs' -printf '%T@\n' 2>/dev/null \
+                        | sort -n | head -1)
+    else
+        oldest_pb=""
+    fi
+    if [ -n "$newest_proto" ] && [ -n "$oldest_pb" ] \
+        && awk -v p="$newest_proto" -v b="$oldest_pb" 'BEGIN{exit !(b>p)}'; then
+        echo "[generate-proto] bindings up-to-date, skipping"
+        exit 0
+    fi
+    just generate-proto-force
+
+generate-proto-force:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src_dir="{{ROOT}}/angzarr-project/proto"
+    if [ ! -d "$src_dir" ]; then
+        echo "[generate-proto] $src_dir missing — submodule not initialized?" >&2
+        exit 1
+    fi
+    mkdir -p "{{ROOT}}/src/proto"
+    # Force the build script to re-run even when cargo's incremental cache
+    # thinks the inputs are unchanged. Bumping build.rs's mtime is the
+    # cheapest invalidation — `cargo clean -p` would force a full rebuild.
+    touch "{{ROOT}}/build.rs"
+    # GENERATE_PROTOS=1 flips build.rs from no-op into codegen mode.
+    # `cargo check -p angzarr-client` is the fastest path that runs build
+    # scripts; the actual compilation finishes against the freshly-emitted
+    # src/proto/*.rs files.
+    GENERATE_PROTOS=1 cargo check -p angzarr-client
+    echo "[generate-proto] emitted to src/proto/"
+
+# Build all workspace crates
+build: generate-proto
     cargo build --workspace
 
 # Run all tests: lib tests + cucumber feature suites + trybuild UI snapshots.
-test:
+test: generate-proto
     cargo test --workspace --lib
     cargo test --test features --no-fail-fast
 
 # Run clippy linter
-lint:
+lint: generate-proto
     cargo clippy --workspace -- -D warnings
 
 # Check formatting (use fmt-fix to auto-format)
-fmt:
+fmt: generate-proto
     cargo fmt --check
 
 # Auto-format code
-fmt-fix:
+fmt-fix: generate-proto
     cargo fmt
+
+# Cross-language alias — `just check` runs lint + fmt-check.
+check: lint fmt
 
 # Remove build artifacts
 clean:
@@ -42,11 +104,11 @@ check-all: build test lint fmt
 # === Additional Targets ===
 
 # Run tests with verbose output
-test-verbose:
+test-verbose: generate-proto
     cargo test --workspace --lib -- --nocapture
 
 # Run mutation testing (70% kill rate threshold)
-mutation-test:
+mutation-test: generate-proto
     #!/usr/bin/env bash
     set -euo pipefail
     output=$(cargo mutants --jobs 4 2>&1) || true
@@ -66,13 +128,13 @@ mutation-test:
     echo "PASS: Kill rate meets 70% threshold"
 
 # Dry-run mutation testing (show what would be mutated)
-mutation-test-dry:
+mutation-test-dry: generate-proto
     cargo mutants --list
 
 # Dry-run publish to crates.io
-publish-dry:
+publish-dry: generate-proto
     cargo publish --dry-run
 
 # Publish to crates.io
-publish:
+publish: generate-proto
     cargo publish

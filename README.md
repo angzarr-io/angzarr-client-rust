@@ -267,5 +267,14 @@ just test            # run lib + cucumber tests
 just lint            # cargo clippy -D warnings
 just fmt             # cargo fmt --check
 just fmt-fix         # cargo fmt
-just mutation-test   # cargo-mutants (70% kill-rate threshold)
+just mutation-test   # cargo-mutants (70% kill-rate threshold; ephemeral container)
 ```
+
+> **Mutation testing is ephemeral.** `just mutation-test` runs inside a
+> container with the workspace mounted **read-only**; mutated source lives
+> in the container's writable overlay and is destroyed by `--rm` on exit.
+> Running `cargo mutants` directly on the host is **forbidden** — a crashed
+> run would leak mutated files into your working tree. Only
+> `mutants.out/outcomes.json` is copied back to the host. The
+> `.mutants-cache/` directory holds compiled artifacts (never mutated
+> source) and is gitignored; purge with `just mutants-purge-cache`.

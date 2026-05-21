@@ -1,11 +1,20 @@
 {
   "mcpServers": {
-    "scm": {
-      "command": "/home/babbitt/go/bin/scm",
+    "ctxloom": {
+      "command": "/home/babbitt/go/bin/ctxloom",
       "args": [
         "mcp"
       ],
-      "_scm": "scm-auto"
+      "cwd": "${CLAUDE_PROJECT_DIR}",
+      "_ctxloom": "ctxloom-auto"
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@anthropics/mcp-server-sequential-thinking"
+      ],
+      "_ctxloom": "bundle:ctxloom-default/sequential-thinking"
     }
   }
 }

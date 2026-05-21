@@ -4,9 +4,37 @@
 # Setup: lefthook install
 # Bypass: git commit --no-verify (or LEFTHOOK=0 git commit)
 
+# Regenerate proto bindings after every checkout / merge (fresh clone,
+# branch switch, submodule bump). See project_proto_generation_model.md —
+# bindings are gitignored and reproduced on demand. The just recipe is
+# idempotent (mtime guard), so this is a no-op when nothing changed.
+post-checkout:
+  commands:
+    generate-proto:
+      run: just generate-proto
+    # Plant the in-submodule pre-commit guard in .git/modules/<name>/hooks/.
+    # The hook source is tracked in angzarr-project/scripts/ — this step
+    # copies it into the per-submodule hooks dir so an editor inside the
+    # submodule can't sneak a commit past us.
+    install-submodule-hooks:
+      run: just install-submodule-hooks
+
+# Same trigger for `git merge` (e.g. pulling tip changes that bumped the
+# angzarr-project submodule). post-checkout alone does not fire on merge.
+post-merge:
+  commands:
+    generate-proto:
+      run: just generate-proto
+    install-submodule-hooks:
+      run: just install-submodule-hooks
+
 pre-commit:
   parallel: false
   commands:
+    # Block the parent commit if any submodule has uncommitted edits or
+    # untracked files. Pointer-only bumps still pass.
+    check-submodules-clean:
+      run: just check-submodules-clean
     fmt:
       run: just fmt-fix
       stage_fixed: true

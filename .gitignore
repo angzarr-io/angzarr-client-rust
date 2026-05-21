@@ -3,7 +3,16 @@ target/
 Cargo.lock
 *.rs.bk
 
-# Generated Rust code (run `just gen` to regenerate)
+# cargo-mutants
+mutants.out/
+mutants.out.old/
+# Ephemeral mutation build cache (compiled artifacts only, never mutated source)
+.mutants-cache/
+
+# Generated Rust code — emitted by `just generate-proto`. Never committed.
+# See project_proto_generation_model.md.
+src/proto/*.rs
+!src/proto/.gitkeep
 
 # IDE
 .idea/
@@ -15,3 +24,6 @@ Cargo.lock
 # OS
 .DS_Store
 Thumbs.db
+
+# ctxloom ephemeral data (synced bundles, session data, context files)
+.ctxloom/ephemeral/
