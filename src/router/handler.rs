@@ -320,8 +320,17 @@ mod kind_str_tests {
 /// object-safe (`Box<dyn Handler>`) — associated constants on the main
 /// trait would bar it from trait-object use.
 ///
-/// The `with_handler::<H, F>` method captures `H::KIND` at registration
-/// without invoking the factory, enabling mode inference at build time.
+/// The `with_handler::<H, F>` method captures `H::KIND` and
+/// `H::handler_config` at registration without invoking the factory,
+/// enabling mode inference and config inspection at build time.
 pub trait HandlerKind {
     const KIND: Kind;
+
+    /// Static handler config — no instance required.
+    ///
+    /// Identical to `Handler::config(&self)`'s return value but callable
+    /// without producing a handler instance. Lets the router read
+    /// metadata at build time and during dispatch matching without
+    /// invoking the user's factory closure.
+    fn handler_config() -> HandlerConfig;
 }

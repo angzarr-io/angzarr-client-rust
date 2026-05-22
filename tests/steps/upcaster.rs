@@ -127,48 +127,26 @@ async fn then_method_compiles(world: &mut UpcasterWorld) {
 // C-0136 / C-0137: chain dispatch semantics (audit finding #43).
 //
 // Concrete prost types stand in for the cucumber's abstract V1/V2/V3
-// names. The Python counterpart reuses fixtures.OrderCreatedV1 / etc.;
-// here we define module-local prost Messages so the test binary is
-// self-contained.
+// names. Order types come from shared fixtures. The V3→V4 stand-in pair
+// (OrderUnrelatedV1 / OrderUnrelated) is module-local — its `from` type
+// must NOT collide with anything earlier in the chain, so it stays in the
+// "order" package (a different from-type than Python's PlayerRegistered*
+// stand-in, but the chain-stopping semantics are identical).
 // ---------------------------------------------------------------------------
 
+use crate::common::fixtures::{OrderCompleted, OrderCreated, OrderCreatedV1};
+
 #[derive(Clone, PartialEq, prost::Message)]
-struct OrderCreatedV1 {}
-impl prost::Name for OrderCreatedV1 {
-    const NAME: &'static str = "OrderCreatedV1";
+struct OrderUnrelatedV1 {}
+impl prost::Name for OrderUnrelatedV1 {
+    const NAME: &'static str = "OrderUnrelatedV1";
     const PACKAGE: &'static str = "order";
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
-struct OrderCreated {}
-impl prost::Name for OrderCreated {
-    const NAME: &'static str = "OrderCreated";
-    const PACKAGE: &'static str = "order";
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-struct OrderCompleted {}
-impl prost::Name for OrderCompleted {
-    const NAME: &'static str = "OrderCompleted";
-    const PACKAGE: &'static str = "order";
-}
-
-// Stand-in pair for the C-0137 V3→V4 upcaster: a different From-type
-// so the upcaster registered for it never fires against an OrderCreated
-// chain — exercising the "chain stops when no further upcaster matches"
-// branch. Mirrors the Python `PlayerRegisteredV1 → PlayerRegistered`
-// in `tests/client/steps/test_upcaster.py`.
-#[derive(Clone, PartialEq, prost::Message)]
-struct PlayerRegisteredV1 {}
-impl prost::Name for PlayerRegisteredV1 {
-    const NAME: &'static str = "PlayerRegisteredV1";
-    const PACKAGE: &'static str = "order";
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-struct PlayerRegistered {}
-impl prost::Name for PlayerRegistered {
-    const NAME: &'static str = "PlayerRegistered";
+struct OrderUnrelated {}
+impl prost::Name for OrderUnrelated {
+    const NAME: &'static str = "OrderUnrelated";
     const PACKAGE: &'static str = "order";
 }
 
@@ -196,9 +174,9 @@ struct V3ToV4;
 
 #[upcaster(name = "upcaster-other", domain = "order")]
 impl V3ToV4 {
-    #[upcasts(from = PlayerRegisteredV1, to = PlayerRegistered)]
-    fn migrate(_old: PlayerRegisteredV1) -> PlayerRegistered {
-        PlayerRegistered::default()
+    #[upcasts(from = OrderUnrelatedV1, to = OrderUnrelated)]
+    fn migrate(_old: OrderUnrelatedV1) -> OrderUnrelated {
+        OrderUnrelated::default()
     }
 }
 
@@ -209,14 +187,8 @@ enum ChainFactory {
     V3V4,
 }
 
-fn chain_event_page<T: prost::Message + prost::Name>(evt: T) -> EventPage {
-    EventPage {
-        payload: Some(event_page::Payload::Event(Any {
-            type_url: full_type_url::<T>(),
-            value: evt.encode_to_vec(),
-        })),
-        ..Default::default()
-    }
+fn chain_event_page<T: prost::Message + prost::Name>(evt: &T) -> EventPage {
+    crate::common::helpers::pack_event_page(evt, 0)
 }
 
 #[given("an upcaster registered for V1 → V2")]
@@ -236,7 +208,7 @@ async fn given_v3_v4(world: &mut UpcasterWorld) {
 
 #[given("an incoming event of type V1")]
 async fn given_incoming_v1(world: &mut UpcasterWorld) {
-    world.chain_incoming = Some(chain_event_page(OrderCreatedV1::default()));
+    world.chain_incoming = Some(chain_event_page(&OrderCreatedV1::default()));
 }
 
 #[when("I dispatch the upcast request")]

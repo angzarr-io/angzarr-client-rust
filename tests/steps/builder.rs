@@ -14,25 +14,7 @@ use angzarr_client::saga;
 use angzarr_client::{full_type_url, CommandResult};
 use cucumber::{given, then, when, World};
 
-use prost::Message;
-
-// ---------------------------------------------------------------------------
-// Test protos (shared across scenarios).
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct CreateOrder {}
-impl ::prost::Name for CreateOrder {
-    const NAME: &'static str = "CreateOrder";
-    const PACKAGE: &'static str = "order";
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct OrderCreated {}
-impl ::prost::Name for OrderCreated {
-    const NAME: &'static str = "OrderCreated";
-    const PACKAGE: &'static str = "order";
-}
+use crate::common::fixtures::{CreateOrder, OrderCreated};
 
 // ---------------------------------------------------------------------------
 // Test aggregates for the "Order" and "Payment" and "Alpha/Beta" handlers.
@@ -384,6 +366,7 @@ async fn then_factory_invocation_count(world: &mut BuilderWorld, n: u32) {
 // compiler flags unused imports at some point.
 #[allow(dead_code)]
 fn _linker() {
+    use prost::Message;
     let _ = full_type_url::<CreateOrder>();
-    let _ = OrderCreated {}.encode_to_vec();
+    let _ = OrderCreated::default().encode_to_vec();
 }

@@ -3,25 +3,13 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-use angzarr_client::proto::{event_page, Cover, EventBook, EventPage};
+use angzarr_client::proto::{Cover, EventBook};
 use angzarr_client::router::{Built, Router};
-use angzarr_client::{full_type_url, projector, CommandResult};
+use angzarr_client::{projector, CommandResult};
 use cucumber::{given, then, when, World};
-use prost_types::Any;
 
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct OrderCreated {}
-impl ::prost::Name for OrderCreated {
-    const NAME: &'static str = "OrderCreated";
-    const PACKAGE: &'static str = "order";
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct OrderCompleted {}
-impl ::prost::Name for OrderCompleted {
-    const NAME: &'static str = "OrderCompleted";
-    const PACKAGE: &'static str = "order";
-}
+use crate::common::fixtures::{OrderCompleted, OrderCreated};
+use crate::common::helpers::{event_book, pack_event_page};
 
 // ---------------------------------------------------------------------------
 // Projector under test.
@@ -71,16 +59,6 @@ impl ProjectorWorld {
     }
 }
 
-fn make_event<T: prost::Message + prost::Name>(evt: T) -> EventPage {
-    EventPage {
-        payload: Some(event_page::Payload::Event(Any {
-            type_url: full_type_url::<T>(),
-            value: evt.encode_to_vec(),
-        })),
-        ..Default::default()
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Given steps.
 // ---------------------------------------------------------------------------
@@ -117,59 +95,28 @@ async fn when_dispatch_five(world: &mut ProjectorWorld) {
 
 #[when("an EventBook mixing OrderCreated and OrderCompleted is dispatched")]
 async fn when_dispatch_mixed(world: &mut ProjectorWorld) {
-    let created = Arc::clone(&world.created);
-    let invocations = Arc::clone(&world.factory_invocations);
-    let built = Router::new("pr")
-        .with_handler(move || {
-            invocations.fetch_add(1, Ordering::SeqCst);
-            Output {
-                created: Arc::clone(&created),
-            }
-        })
-        .build()
-        .expect("build");
-    let Built::Projector(router) = built else {
-        panic!("expected Projector");
-    };
-    let book = EventBook {
-        pages: vec![
-            make_event(OrderCreated {}),
-            make_event(OrderCompleted {}),
-            make_event(OrderCreated {}),
-        ],
-        ..Default::default()
-    };
+    let router = build_projector(world);
+    let mut book = EventBook::default();
+    book.pages = vec![
+        pack_event_page(&OrderCreated::default(), 0),
+        pack_event_page(&OrderCompleted::default(), 1),
+        pack_event_page(&OrderCreated::default(), 2),
+    ];
     let _ = router.dispatch(book).expect("dispatch");
 }
 
 #[when(expr = "an EventBook in domain {string} is dispatched")]
 async fn when_dispatch_domain(world: &mut ProjectorWorld, domain: String) {
-    let created = Arc::clone(&world.created);
-    let invocations = Arc::clone(&world.factory_invocations);
-    let built = Router::new("pr")
-        .with_handler(move || {
-            invocations.fetch_add(1, Ordering::SeqCst);
-            Output {
-                created: Arc::clone(&created),
-            }
-        })
-        .build()
-        .expect("build");
-    let Built::Projector(router) = built else {
-        panic!("expected Projector");
-    };
-    let book = EventBook {
-        cover: Some(Cover {
-            domain,
-            ..Default::default()
-        }),
-        pages: vec![make_event(OrderCreated {})],
+    let router = build_projector(world);
+    let mut book = event_book(&[OrderCreated::default()], &domain);
+    book.cover = Some(Cover {
+        domain,
         ..Default::default()
-    };
+    });
     let _ = router.dispatch(book).expect("dispatch");
 }
 
-fn dispatch_n_events(world: &mut ProjectorWorld, n: usize) {
+fn build_projector(world: &ProjectorWorld) -> angzarr_client::router::runtime::ProjectorRouter {
     let created = Arc::clone(&world.created);
     let invocations = Arc::clone(&world.factory_invocations);
     let built = Router::new("pr")
@@ -184,10 +131,13 @@ fn dispatch_n_events(world: &mut ProjectorWorld, n: usize) {
     let Built::Projector(router) = built else {
         panic!("expected Projector");
     };
-    let book = EventBook {
-        pages: (0..n).map(|_| make_event(OrderCreated {})).collect(),
-        ..Default::default()
-    };
+    router
+}
+
+fn dispatch_n_events(world: &mut ProjectorWorld, n: usize) {
+    let router = build_projector(world);
+    let events: Vec<OrderCreated> = (0..n).map(|_| OrderCreated::default()).collect();
+    let book = event_book(&events, "order");
     let _ = router.dispatch(book).expect("dispatch");
 }
 

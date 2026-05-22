@@ -153,9 +153,7 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
     /// default. Use [`Self::execute_with_mode`] or
     /// [`Self::with_sync_mode`] + `execute()` to override.
     pub async fn execute(self) -> Result<CommandResponse> {
-        let mode = self
-            .sync_mode
-            .unwrap_or(crate::proto::SyncMode::Async);
+        let mode = self.sync_mode.unwrap_or(crate::proto::SyncMode::Async);
         self.execute_with_mode(mode).await
     }
 
@@ -199,14 +197,14 @@ impl<'a, C: traits::QueryClient> QueryBuilder<'a, C> {
         }
     }
 
-    /// Set the correlation ID stamped on the query's cover.
+    /// Set the correlation ID stamped on the query's cover, and clear
+    /// `root` — correlation-ID queries select across roots in the domain.
     ///
-    /// Does not modify `root` — earlier versions silently nulled it,
-    /// which made `client.query(d, root).by_correlation_id(c)` lose
-    /// the root with no signal. Use [`QueryBuilderExt::query_domain`]
-    /// for a builder that is rootless from construction.
+    /// Mirrors the cross-language gherkin contract `@C-0095` /
+    /// `@C-0096` and Python's `builder.py:178` (`self._root = None`).
     pub fn by_correlation_id(mut self, id: impl Into<String>) -> Self {
         self.correlation_id = Some(id.into());
+        self.root = None;
         self
     }
 
@@ -704,8 +702,14 @@ mod tests {
             .with_command("type.googleapis.com/test.Cmd", &msg)
             .build()
             .expect("build should succeed");
-        let header = book.pages[0].header.as_ref().expect("page must have header");
-        assert_eq!(header.sync_mode, Some(crate::proto::SyncMode::Cascade as i32));
+        let header = book.pages[0]
+            .header
+            .as_ref()
+            .expect("page must have header");
+        assert_eq!(
+            header.sync_mode,
+            Some(crate::proto::SyncMode::Cascade as i32)
+        );
     }
 
     #[test]
@@ -736,11 +740,11 @@ mod tests {
         let builder =
             QueryBuilder::new(&client, "orders", Some(root)).by_correlation_id("corr-123");
 
-        // by_correlation_id no longer silently nulls root — it just
-        // sets the correlation field. Callers wanting a rootless
-        // builder use QueryBuilderExt::query_domain.
+        // by_correlation_id clears root: correlation-ID queries select
+        // across roots in the domain. Mirrors Python `builder.py:178`
+        // and gherkin scenario `@C-0096 (Correlation ID clears root)`.
         assert_eq!(builder.correlation_id, Some("corr-123".to_string()));
-        assert_eq!(builder.root, Some(root));
+        assert_eq!(builder.root, None);
     }
 
     #[test]

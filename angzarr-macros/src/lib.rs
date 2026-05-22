@@ -441,6 +441,24 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
 
     let apply_arms_for_fact = apply_arms.iter();
 
+    // Build the config-expression once and emit it from both the static
+    // `HandlerKind::handler_config()` and the instance `Handler::config(&self)`.
+    // The static form lets the router read metadata at build time without
+    // invoking the user's factory closure (audit: gherkin C-0087 expects
+    // the factory to run exactly once per dispatch — no extra "config probe"
+    // call). The two methods are functionally identical.
+    let config_expr: TokenStream2 = quote! {
+        ::angzarr_client::router::HandlerConfig::CommandHandler {
+            domain: #domain.to_string(),
+            handled: ::std::vec![#(#handled_exprs),*],
+            rejected: ::std::vec![#(#rejected_exprs),*],
+            applies: ::std::vec![#(#applies_exprs),*],
+            state_factory: #state_factory_expr,
+            handles_fact: ::std::vec![#(#handles_fact_exprs),*],
+            supports_replay: #supports_replay,
+        }
+    };
+
     let self_ty = &input.self_ty;
     quote! {
         #input
@@ -448,6 +466,9 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
         impl ::angzarr_client::router::HandlerKind for #self_ty {
             const KIND: ::angzarr_client::router::Kind =
                 ::angzarr_client::router::Kind::CommandHandler;
+            fn handler_config() -> ::angzarr_client::router::HandlerConfig {
+                #config_expr
+            }
         }
 
         // Audit #45: HandleFact + Replay helper methods. Called from
@@ -512,15 +533,7 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
 
         impl ::angzarr_client::router::Handler for #self_ty {
             fn config(&self) -> ::angzarr_client::router::HandlerConfig {
-                ::angzarr_client::router::HandlerConfig::CommandHandler {
-                    domain: #domain.to_string(),
-                    handled: ::std::vec![#(#handled_exprs),*],
-                    rejected: ::std::vec![#(#rejected_exprs),*],
-                    applies: ::std::vec![#(#applies_exprs),*],
-                    state_factory: #state_factory_expr,
-                    handles_fact: ::std::vec![#(#handles_fact_exprs),*],
-                    supports_replay: #supports_replay,
-                }
+                <#self_ty as ::angzarr_client::router::HandlerKind>::handler_config()
             }
 
             fn dispatch(
@@ -1082,10 +1095,7 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
         impl ::angzarr_client::router::HandlerKind for #self_ty {
             const KIND: ::angzarr_client::router::Kind =
                 ::angzarr_client::router::Kind::Saga;
-        }
-
-        impl ::angzarr_client::router::Handler for #self_ty {
-            fn config(&self) -> ::angzarr_client::router::HandlerConfig {
+            fn handler_config() -> ::angzarr_client::router::HandlerConfig {
                 ::angzarr_client::router::HandlerConfig::Saga {
                     name: #name.to_string(),
                     source: #source.to_string(),
@@ -1094,6 +1104,12 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
                     handled: ::std::vec![#(#handled_exprs),*],
                     rejected: ::std::vec![#(#rejected_exprs),*],
                 }
+            }
+        }
+
+        impl ::angzarr_client::router::Handler for #self_ty {
+            fn config(&self) -> ::angzarr_client::router::HandlerConfig {
+                <#self_ty as ::angzarr_client::router::HandlerKind>::handler_config()
             }
 
             fn dispatch(
@@ -1401,10 +1417,7 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
         impl ::angzarr_client::router::HandlerKind for #self_ty {
             const KIND: ::angzarr_client::router::Kind =
                 ::angzarr_client::router::Kind::ProcessManager;
-        }
-
-        impl ::angzarr_client::router::Handler for #self_ty {
-            fn config(&self) -> ::angzarr_client::router::HandlerConfig {
+            fn handler_config() -> ::angzarr_client::router::HandlerConfig {
                 ::angzarr_client::router::HandlerConfig::ProcessManager {
                     name: #name.to_string(),
                     pm_domain: #pm_domain.to_string(),
@@ -1416,6 +1429,12 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
                     applies: ::std::vec![#(#applies_exprs),*],
                     state_factory: #state_factory_expr,
                 }
+            }
+        }
+
+        impl ::angzarr_client::router::Handler for #self_ty {
+            fn config(&self) -> ::angzarr_client::router::HandlerConfig {
+                <#self_ty as ::angzarr_client::router::HandlerKind>::handler_config()
             }
 
             fn dispatch(
@@ -1611,15 +1630,18 @@ fn expand_projector(args: ProjectorArgs, mut input: ItemImpl) -> TokenStream2 {
         impl ::angzarr_client::router::HandlerKind for #self_ty {
             const KIND: ::angzarr_client::router::Kind =
                 ::angzarr_client::router::Kind::Projector;
-        }
-
-        impl ::angzarr_client::router::Handler for #self_ty {
-            fn config(&self) -> ::angzarr_client::router::HandlerConfig {
+            fn handler_config() -> ::angzarr_client::router::HandlerConfig {
                 ::angzarr_client::router::HandlerConfig::Projector {
                     name: #name.to_string(),
                     domains: ::std::vec![#(#domains_vec),*],
                     handled: ::std::vec![#(#handled_exprs),*],
                 }
+            }
+        }
+
+        impl ::angzarr_client::router::Handler for #self_ty {
+            fn config(&self) -> ::angzarr_client::router::HandlerConfig {
+                <#self_ty as ::angzarr_client::router::HandlerKind>::handler_config()
             }
 
             fn dispatch(
@@ -1916,15 +1938,18 @@ fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
 
         impl ::angzarr_client::HandlerKind for #self_ty {
             const KIND: ::angzarr_client::Kind = ::angzarr_client::Kind::Upcaster;
-        }
-
-        impl ::angzarr_client::Handler for #self_ty {
-            fn config(&self) -> ::angzarr_client::HandlerConfig {
+            fn handler_config() -> ::angzarr_client::HandlerConfig {
                 ::angzarr_client::HandlerConfig::Upcaster {
                     name: #name.to_string(),
                     domain: #domain.to_string(),
                     upcasts: vec![#( #upcast_pairs ),*],
                 }
+            }
+        }
+
+        impl ::angzarr_client::Handler for #self_ty {
+            fn config(&self) -> ::angzarr_client::HandlerConfig {
+                <#self_ty as ::angzarr_client::HandlerKind>::handler_config()
             }
 
             fn dispatch(

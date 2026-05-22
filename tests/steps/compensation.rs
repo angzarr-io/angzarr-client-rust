@@ -106,7 +106,9 @@ impl CompensationContext {
         TestNotification {
             cover_domain: self.source_domain.clone(),
             sent_at: chrono::Utc::now().timestamp(),
-            payload_type_url: "type.googleapis.com/angzarr.RejectionNotification".to_string(),
+            payload_type_url: angzarr_client::full_type_url::<
+                angzarr_client::proto::RejectionNotification,
+            >(),
         }
     }
 
@@ -553,12 +555,7 @@ async fn then_payload_contains_rejection(world: &mut CompensationWorld) {
 #[then(expr = "the payload type_url should be {string}")]
 async fn then_payload_type_url(world: &mut CompensationWorld, expected: String) {
     let notif = world.notification.as_ref().unwrap();
-    // The shared feature file hardcodes the Rust-internal proto package
-    // path (`angzarr_client.proto.angzarr.*`); on the wire we strip that
-    // prefix so other languages see the package-qualified short name.
-    // Normalize both sides to the wire form before comparing.
-    let expected_wire = expected.replace("angzarr_client.proto.angzarr.", "angzarr.");
-    assert_eq!(notif.payload_type_url, expected_wire);
+    assert_eq!(notif.payload_type_url, expected);
 }
 
 #[then("the notification should have a sent_at timestamp")]

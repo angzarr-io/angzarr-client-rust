@@ -3,6 +3,7 @@
 
 #![allow(unused_imports, dead_code)]
 
+mod common;
 mod steps;
 
 use cucumber::World;

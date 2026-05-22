@@ -1,41 +1,14 @@
 //! Process-manager dispatch step definitions.
 
-use std::collections::HashMap;
-
-use angzarr_client::proto::{
-    event_page, CommandBook, Cover, EventBook, EventPage, ProcessManagerHandleRequest,
-    ProcessManagerHandleResponse,
-};
+use angzarr_client::proto::{CommandBook, Cover, EventBook, ProcessManagerHandleResponse};
 use angzarr_client::router::{Built, Router};
-use angzarr_client::{full_type_url, process_manager, CommandResult};
+use angzarr_client::{process_manager, CommandResult};
 use cucumber::{given, then, when, World};
-use prost_types::Any;
 
-// ---------------------------------------------------------------------------
-// Protos.
-// ---------------------------------------------------------------------------
+use crate::common::fixtures::{OrderCompleted, OrderCreated, StockReserved};
+use crate::common::helpers::{event_book, pm_request};
 
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct OrderCreated {}
-impl ::prost::Name for OrderCreated {
-    const NAME: &'static str = "OrderCreated";
-    const PACKAGE: &'static str = "order";
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct OrderCompleted {}
-impl ::prost::Name for OrderCompleted {
-    const NAME: &'static str = "OrderCompleted";
-    const PACKAGE: &'static str = "order";
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct StockReserved {}
-impl ::prost::Name for StockReserved {
-    const NAME: &'static str = "StockReserved";
-    const PACKAGE: &'static str = "inventory";
-}
-
+// WorkflowState is PM-internal; not in shared fixtures.
 #[derive(Clone, PartialEq, ::prost::Message)]
 struct WorkflowState {}
 impl ::prost::Name for WorkflowState {
@@ -123,16 +96,6 @@ fn build_router() -> angzarr_client::router::runtime::ProcessManagerRouter {
     r
 }
 
-fn event_page<T: prost::Message + prost::Name>(evt: T) -> EventPage {
-    EventPage {
-        payload: Some(event_page::Payload::Event(Any {
-            type_url: full_type_url::<T>(),
-            value: evt.encode_to_vec(),
-        })),
-        ..Default::default()
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Given steps.
 // ---------------------------------------------------------------------------
@@ -160,10 +123,10 @@ async fn given_pm_built(_world: &mut ProcessManagerWorld) {}
 
 #[given("process state events: OrderCompleted, OrderCompleted")]
 async fn given_state_events(world: &mut ProcessManagerWorld) {
-    world.process_state = EventBook {
-        pages: vec![event_page(OrderCompleted {}), event_page(OrderCompleted {})],
-        ..Default::default()
-    };
+    world.process_state = event_book(
+        &[OrderCompleted::default(), OrderCompleted::default()],
+        "fulfillment",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -173,39 +136,27 @@ async fn given_state_events(world: &mut ProcessManagerWorld) {
 #[when("an OrderCreated trigger is dispatched to the PM router")]
 async fn when_dispatch_order_created(world: &mut ProcessManagerWorld) {
     let router = build_router();
-    let req = ProcessManagerHandleRequest {
-        trigger: Some(EventBook {
-            // Audit #46: PM dispatch filters by handler-declared sources.
-            // The Fulfillment PM declares sources=["order","inventory"];
-            // pick "order" to match the OrderCreated trigger.
-            cover: Some(Cover {
-                domain: "order".to_string(),
-                ..Default::default()
-            }),
-            pages: vec![event_page(OrderCreated {})],
-            ..Default::default()
-        }),
-        process_state: Some(world.process_state.clone()),
-        destination_sequences: HashMap::new(),
-    };
+    let mut req = pm_request::<OrderCreated, OrderCompleted>(
+        &[OrderCreated::default()],
+        "order",
+        &[],
+        "fulfillment",
+        None,
+    );
+    req.process_state = Some(world.process_state.clone());
     world.response = Some(router.dispatch(req).expect("pm dispatch"));
 }
 
 #[when("a StockReserved trigger with a domain outside sources is dispatched")]
 async fn when_dispatch_outside(world: &mut ProcessManagerWorld) {
     let router = build_router();
-    let req = ProcessManagerHandleRequest {
-        trigger: Some(EventBook {
-            cover: Some(Cover {
-                domain: "unrelated".to_string(),
-                ..Default::default()
-            }),
-            pages: vec![event_page(StockReserved {})],
-            ..Default::default()
-        }),
-        process_state: Some(EventBook::default()),
-        destination_sequences: HashMap::new(),
-    };
+    let req = pm_request::<StockReserved, OrderCompleted>(
+        &[StockReserved::default()],
+        "unrelated",
+        &[],
+        "fulfillment",
+        None,
+    );
     world.response = Some(router.dispatch(req).unwrap_or_default());
 }
 

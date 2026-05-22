@@ -4,43 +4,15 @@
 //! sequence stamping on compensation events, and the empty-handler case.
 
 use angzarr_client::proto::{
-    business_response, command_page, event_page, BusinessResponse, CommandBook, CommandPage,
-    ContextualCommand, Cover, EventBook, EventPage, Notification, RejectionNotification,
+    business_response, event_page, BusinessResponse, EventBook, EventPage, Notification,
 };
 use angzarr_client::router::{Built, Router};
-use angzarr_client::{command_handler, full_type_url, CommandResult};
+use angzarr_client::{command_handler, CommandResult};
 use cucumber::{given, then, when, World};
-use prost::Message;
 use prost_types::Any;
 
-// ---------------------------------------------------------------------------
-// Protos.
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct ReserveStock {}
-impl ::prost::Name for ReserveStock {
-    const NAME: &'static str = "ReserveStock";
-    const PACKAGE: &'static str = "inventory";
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct ProcessPayment {}
-impl ::prost::Name for ProcessPayment {
-    const NAME: &'static str = "ProcessPayment";
-    const PACKAGE: &'static str = "payment";
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct CreateShipment {}
-impl ::prost::Name for CreateShipment {
-    const NAME: &'static str = "CreateShipment";
-    const PACKAGE: &'static str = "fulfillment";
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct FundsDeposited {}
-impl ::prost::Name for FundsDeposited {
-    const NAME: &'static str = "FundsDeposited";
-    const PACKAGE: &'static str = "payment";
-}
+use crate::common::fixtures::{CreateShipment, FundsDeposited, ProcessPayment, ReserveStock};
+use crate::common::helpers::{contextual_notification, notification_for, pack_event_page};
 
 // ---------------------------------------------------------------------------
 // Aggregates.
@@ -200,49 +172,6 @@ fn build(
     ch
 }
 
-fn notification_for<T: prost::Message + prost::Name>(domain: &str, cmd: T) -> ContextualCommand {
-    let rejected_any = Any {
-        type_url: full_type_url::<T>(),
-        value: cmd.encode_to_vec(),
-    };
-    let rejected_book = CommandBook {
-        cover: Some(Cover {
-            domain: domain.to_string(),
-            ..Default::default()
-        }),
-        pages: vec![CommandPage {
-            payload: Some(command_page::Payload::Command(rejected_any)),
-            ..Default::default()
-        }],
-    };
-    let rej = RejectionNotification {
-        rejected_command: Some(rejected_book),
-        rejection_reason: "test".into(),
-    };
-    let rej_any = Any {
-        type_url: full_type_url::<RejectionNotification>(),
-        value: rej.encode_to_vec(),
-    };
-    let notif = Notification {
-        payload: Some(rej_any),
-        ..Default::default()
-    };
-    let any = Any {
-        type_url: full_type_url::<Notification>(),
-        value: notif.encode_to_vec(),
-    };
-    ContextualCommand {
-        command: Some(CommandBook {
-            pages: vec![CommandPage {
-                payload: Some(command_page::Payload::Command(any)),
-                ..Default::default()
-            }],
-            ..Default::default()
-        }),
-        events: Some(EventBook::default()),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Given steps.
 // ---------------------------------------------------------------------------
@@ -293,13 +222,7 @@ async fn given_built(_world: &mut RejectedCompensationWorld) {}
 #[given(expr = "a prior EventBook with a FundsDeposited event of bankroll {int}")]
 async fn given_prior_bankroll(world: &mut RejectedCompensationWorld, _amount: u32) {
     world.prior_book = EventBook {
-        pages: vec![EventPage {
-            payload: Some(event_page::Payload::Event(Any {
-                type_url: full_type_url::<FundsDeposited>(),
-                value: FundsDeposited {}.encode_to_vec(),
-            })),
-            ..Default::default()
-        }],
+        pages: vec![pack_event_page(&FundsDeposited::default(), 0)],
         ..Default::default()
     };
 }
@@ -319,28 +242,29 @@ async fn given_prior_next_seq(world: &mut RejectedCompensationWorld, n: u32) {
 #[when(expr = "a Notification wrapping a rejected ReserveStock in domain {string} is dispatched")]
 async fn when_dispatch_reserve(world: &mut RejectedCompensationWorld, domain: String) {
     let ch = build(world);
-    let mut ctx = notification_for(&domain, ReserveStock {});
-    if let Some(ev) = ctx.events.as_mut() {
-        *ev = world.prior_book.clone();
-    }
+    let notif = notification_for(&ReserveStock::default(), &domain);
+    let mut ctx = contextual_notification(notif, "payment");
+    ctx.events = Some(world.prior_book.clone());
     world.response = Some(ch.dispatch(ctx).expect("dispatch"));
 }
 
 #[when(expr = "a Notification wrapping a rejected ProcessPayment in domain {string} is dispatched")]
 async fn when_dispatch_pp(world: &mut RejectedCompensationWorld, domain: String) {
     let ch = build(world);
-    let mut ctx = notification_for(&domain, ProcessPayment {});
-    if let Some(ev) = ctx.events.as_mut() {
-        *ev = world.prior_book.clone();
-    }
+    let notif = notification_for(&ProcessPayment::default(), &domain);
+    let mut ctx = contextual_notification(notif, "payment");
+    ctx.events = Some(world.prior_book.clone());
     world.response = Some(ch.dispatch(ctx).expect("dispatch"));
 }
 
 #[when(expr = "a Notification wrapping a rejected CreateShipment in domain {string} is dispatched")]
 async fn when_dispatch_cs(world: &mut RejectedCompensationWorld, domain: String) {
     let ch = build(world);
-    let ctx = notification_for(&domain, CreateShipment {});
-    world.response = Some(ch.dispatch(ctx).expect("dispatch"));
+    let notif = notification_for(&CreateShipment::default(), &domain);
+    world.response = Some(
+        ch.dispatch(contextual_notification(notif, "payment"))
+            .expect("dispatch"),
+    );
 }
 
 // ---------------------------------------------------------------------------

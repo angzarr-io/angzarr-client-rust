@@ -2,31 +2,13 @@
 
 use std::collections::HashMap;
 
-use angzarr_client::proto::{
-    event_page, CommandBook, Cover, EventBook, EventPage, SagaHandleRequest, SagaResponse,
-};
+use angzarr_client::proto::{CommandBook, Cover, SagaHandleRequest, SagaResponse};
 use angzarr_client::router::{Built, Router};
-use angzarr_client::{full_type_url, saga, CommandResult};
+use angzarr_client::{saga, CommandResult};
 use cucumber::{given, then, when, World};
-use prost_types::Any;
 
-// ---------------------------------------------------------------------------
-// Protos.
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct OrderCreated {}
-impl ::prost::Name for OrderCreated {
-    const NAME: &'static str = "OrderCreated";
-    const PACKAGE: &'static str = "order";
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct StockReserved {}
-impl ::prost::Name for StockReserved {
-    const NAME: &'static str = "StockReserved";
-    const PACKAGE: &'static str = "inventory";
-}
+use crate::common::fixtures::{OrderCreated, StockReserved};
+use crate::common::helpers::saga_request;
 
 // ---------------------------------------------------------------------------
 // Sagas.
@@ -122,16 +104,6 @@ fn build_saga(world: &SagaWorld) -> angzarr_client::router::runtime::SagaRouter 
     r
 }
 
-fn page_of<T: prost::Message + prost::Name>(evt: T) -> EventPage {
-    EventPage {
-        payload: Some(event_page::Payload::Event(Any {
-            type_url: full_type_url::<T>(),
-            value: evt.encode_to_vec(),
-        })),
-        ..Default::default()
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Given steps.
 // ---------------------------------------------------------------------------
@@ -180,40 +152,27 @@ async fn given_saga_two_cmds(_world: &mut SagaWorld, _d1: String, _d2: String) {
 #[when("an OrderCreated event is dispatched to the saga router")]
 async fn when_dispatch_order(world: &mut SagaWorld) {
     let r = build_saga(world);
-    let req = SagaHandleRequest {
-        source: Some(EventBook {
-            // Audit #46: saga dispatch filters by handler-declared source.
-            cover: Some(Cover {
-                domain: "order".to_string(),
-                ..Default::default()
-            }),
-            pages: vec![page_of(OrderCreated {})],
-            ..Default::default()
-        }),
-        destination_sequences: world.destination_sequences.clone(),
-        ..Default::default()
-    };
+    let req = saga_request(
+        &[OrderCreated::default()],
+        "order",
+        Some(world.destination_sequences.clone()),
+    );
     world.response = Some(r.dispatch(req).expect("dispatch"));
 }
 
 #[when("a StockReserved event is dispatched to the saga router")]
 async fn when_dispatch_stock(world: &mut SagaWorld) {
     let r = build_saga(world);
-    let req = SagaHandleRequest {
-        source: Some(EventBook {
-            // Use the saga's declared source domain so the dispatch
-            // reaches the per-handler match step (which then fails to
-            // find an OrderCreated handler for StockReserved).
-            cover: Some(Cover {
-                domain: "order".to_string(),
-                ..Default::default()
-            }),
-            pages: vec![page_of(StockReserved {})],
-            ..Default::default()
-        }),
-        destination_sequences: world.destination_sequences.clone(),
-        ..Default::default()
-    };
+    // Send through the saga's declared source domain ("order") so the dispatch
+    // reaches per-handler matching (which then fails to find an OrderCreated
+    // handler for StockReserved).
+    let mut req = saga_request(
+        &[StockReserved::default()],
+        "order",
+        Some(world.destination_sequences.clone()),
+    );
+    // Saga's declared source is "order", so source domain stays "order".
+    let _ = &mut req;
     // No matching handler surfaces as an empty SagaResponse post-#36.
     world.response = Some(r.dispatch(req).unwrap_or_default());
 }

@@ -1,15 +1,15 @@
 //! Command builder step definitions.
 
 use angzarr_client::error_codes::{codes, messages};
-use angzarr_client::proto::{CommandBook, CommandResponse, MergeStrategy};
+use angzarr_client::proto::{CommandResponse, MergeStrategy};
 use angzarr_client::proto_ext::CommandPageExt;
-use angzarr_client::traits::GatewayClient;
-use angzarr_client::{ClientError, CommandBuilderExt, Result};
-use async_trait::async_trait;
+use angzarr_client::{ClientError, CommandBuilderExt};
 use cucumber::{given, then, when, World};
 use prost::Message;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use uuid::Uuid;
+
+use crate::common::fakes::RecordingGatewayClient;
 
 /// Mock command for testing.
 #[derive(Clone, Message)]
@@ -18,26 +18,12 @@ pub struct TestCommand {
     pub data: String,
 }
 
-/// Mock gateway client that records executed commands.
-#[derive(Clone, Default, Debug)]
-pub struct MockGateway {
-    pub last_command: Arc<Mutex<Option<CommandBook>>>,
-}
-
-#[async_trait]
-impl GatewayClient for MockGateway {
-    async fn execute(&self, command: CommandBook) -> Result<CommandResponse> {
-        *self.last_command.lock().unwrap() = Some(command);
-        Ok(CommandResponse::default())
-    }
-}
-
 /// Test context for CommandBuilder scenarios.
 #[derive(Debug, World)]
 #[world(init = Self::new)]
 pub struct CommandBuilderWorld {
-    mock_client: MockGateway,
-    built_command: Option<CommandBook>,
+    mock_client: Arc<RecordingGatewayClient>,
+    built_command: Option<angzarr_client::proto::CommandBook>,
     build_error: Option<ClientError>,
     domain: String,
     root: Option<Uuid>,
@@ -52,7 +38,7 @@ pub struct CommandBuilderWorld {
 impl CommandBuilderWorld {
     fn new() -> Self {
         Self {
-            mock_client: MockGateway::default(),
+            mock_client: Arc::new(RecordingGatewayClient::new()),
             built_command: None,
             build_error: None,
             domain: String::new(),
@@ -131,7 +117,7 @@ impl CommandBuilderWorld {
 
 #[given("a mock GatewayClient for testing")]
 async fn given_mock_gateway(world: &mut CommandBuilderWorld) {
-    world.mock_client = MockGateway::default();
+    world.mock_client = Arc::new(RecordingGatewayClient::new());
 }
 
 // --- Basic Command Construction ---
@@ -313,7 +299,7 @@ async fn when_create_two_commands(world: &mut CommandBuilderWorld) {
 
 #[given("a GatewayClient implementation")]
 async fn given_gateway_impl(world: &mut CommandBuilderWorld) {
-    world.mock_client = MockGateway::default();
+    world.mock_client = Arc::new(RecordingGatewayClient::new());
 }
 
 #[when(expr = "I call client.command\\({string}, root\\)")]
@@ -457,7 +443,7 @@ async fn then_chained_values_preserved(world: &mut CommandBuilderWorld) {
 
 #[then("the command should be sent to the gateway")]
 async fn then_command_sent_to_gateway(world: &mut CommandBuilderWorld) {
-    let recorded = world.mock_client.last_command.lock().unwrap();
+    let recorded = world.mock_client.last_call("execute");
     assert!(recorded.is_some());
 }
 
@@ -469,7 +455,7 @@ async fn then_response_returned(world: &mut CommandBuilderWorld) {
 #[then("the command should be built and executed in one call")]
 async fn then_built_and_executed(world: &mut CommandBuilderWorld) {
     assert!(world.execute_response.is_some());
-    let recorded = world.mock_client.last_command.lock().unwrap();
+    let recorded = world.mock_client.last_call("execute");
     assert!(recorded.is_some());
 }
 

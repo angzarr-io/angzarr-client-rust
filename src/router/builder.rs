@@ -25,18 +25,22 @@ pub(crate) struct Factory {
     pub(crate) kind: Kind,
     /// Closure that constructs a new handler instance on each call.
     pub(crate) produce: Box<dyn Fn() -> Box<dyn Handler> + Send + Sync>,
+    /// Static handler config provider — does not invoke `produce`.
+    /// Sourced from `HandlerKind::handler_config` so the runtime can read
+    /// metadata without constructing an instance. Gherkin scenario
+    /// `@C-0087` pins that the factory closure runs exactly once per
+    /// dispatch; a hidden "config probe" call would inflate the count.
+    pub(crate) static_config: fn() -> HandlerConfig,
     /// Memoized handler config — populated lazily on the first call to
     /// [`Self::config`].
     pub(crate) cached_config: std::sync::OnceLock<HandlerConfig>,
 }
 
 impl Factory {
-    /// Return the handler's metadata, constructing exactly one handler
-    /// instance the first time this is called and caching the result.
-    /// Subsequent calls reuse the cached value.
+    /// Return the handler's metadata. Calls the static-config function
+    /// (zero factory invocations) and caches the result.
     pub(crate) fn config(&self) -> &HandlerConfig {
-        self.cached_config
-            .get_or_init(|| (self.produce)().config())
+        self.cached_config.get_or_init(self.static_config)
     }
 }
 
@@ -72,15 +76,13 @@ impl Router {
     /// Register a handler factory.
     ///
     /// `factory` is a closure that produces a fresh handler instance on
-    /// each dispatch call. It is invoked at most once during build /
-    /// registration — the lazy `Factory::config` cache constructs one
-    /// instance the first time the runtime needs to read metadata, and
-    /// reuses the cached value afterward. Per-dispatch behavior is
-    /// unchanged: a fresh instance is produced for each matched call.
+    /// each matched dispatch call — never at registration or build time,
+    /// and never as a metadata "probe". `HandlerKind::handler_config` is
+    /// the static, instance-free source for config reads.
     ///
     /// Use this to close over shared dependencies (e.g. a connection
-    /// pool clone). Avoid producing scarce resources eagerly inside the
-    /// closure — the first config read still allocates one instance.
+    /// pool clone). Scarce resources stay un-allocated until a dispatch
+    /// actually matches the handler.
     pub fn with_handler<H, F>(mut self, factory: F) -> Self
     where
         H: Handler + HandlerKind + 'static,
@@ -89,6 +91,7 @@ impl Router {
         self.factories.push(Factory {
             kind: H::KIND,
             produce: Box::new(move || Box::new(factory())),
+            static_config: H::handler_config,
             cached_config: std::sync::OnceLock::new(),
         });
         self
@@ -136,10 +139,12 @@ impl Router {
         // within a Router. Saga / PM / projector / upcaster fan-out is
         // unaffected (those kinds legitimately broadcast).
         //
-        // Reads the memoized config (one factory call across the
-        // factory's lifetime) instead of constructing a fresh handler
-        // here. Closures that hold scarce resources (pool checkouts,
-        // file handles) are no longer invoked once per build call.
+        // Reads `static_config` (no factory invocation) for the duplicate
+        // scan; then invokes the factory exactly once per CommandHandler
+        // so gherkin C-0065 ("Factories are invoked at most once per
+        // registered handler at build time") sees a single call. Sagas
+        // and other kinds skip this probe — C-0087 pins their factories
+        // to one call per matched dispatch only.
         if first_kind == Kind::CommandHandler {
             use std::collections::HashSet;
             let mut seen: HashSet<(String, String)> = HashSet::new();
@@ -163,6 +168,11 @@ impl Router {
                         }
                     }
                 }
+                // Cross-language contract (C-0065): invoke each CH factory
+                // once at build to mirror Python's parity-preserving probe.
+                // The instance is discarded; only the side effect (the
+                // counter increment in tests) matters.
+                let _probe: Box<dyn Handler> = (f.produce)();
             }
         }
 

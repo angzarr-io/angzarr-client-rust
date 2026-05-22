@@ -20,20 +20,26 @@ use angzarr_client::ClientError;
 // --- Minimal hand-rolled handlers, one per kind. -------------------------
 
 struct StubCh;
+fn stub_ch_config() -> HandlerConfig {
+    HandlerConfig::CommandHandler {
+        domain: "stub".into(),
+        handled: vec![],
+        rejected: vec![],
+        applies: vec![],
+        state_factory: None,
+        handles_fact: vec![],
+        supports_replay: false,
+    }
+}
 impl HandlerKind for StubCh {
     const KIND: Kind = Kind::CommandHandler;
+    fn handler_config() -> HandlerConfig {
+        stub_ch_config()
+    }
 }
 impl Handler for StubCh {
     fn config(&self) -> HandlerConfig {
-        HandlerConfig::CommandHandler {
-            domain: "stub".into(),
-            handled: vec![],
-            rejected: vec![],
-            applies: vec![],
-            state_factory: None,
-            handles_fact: vec![],
-            supports_replay: false,
-        }
+        stub_ch_config()
     }
     fn dispatch(&self, _request: HandlerRequest) -> Result<HandlerResponse, ClientError> {
         unreachable!("stub: build-time only")
@@ -41,19 +47,25 @@ impl Handler for StubCh {
 }
 
 struct StubSaga;
+fn stub_saga_config() -> HandlerConfig {
+    HandlerConfig::Saga {
+        name: "stub-saga".into(),
+        source: "src".into(),
+        target: "tgt".into(),
+        sync: false,
+        handled: vec![],
+        rejected: vec![],
+    }
+}
 impl HandlerKind for StubSaga {
     const KIND: Kind = Kind::Saga;
+    fn handler_config() -> HandlerConfig {
+        stub_saga_config()
+    }
 }
 impl Handler for StubSaga {
     fn config(&self) -> HandlerConfig {
-        HandlerConfig::Saga {
-            name: "stub-saga".into(),
-            source: "src".into(),
-            target: "tgt".into(),
-            sync: false,
-            handled: vec![],
-            rejected: vec![],
-        }
+        stub_saga_config()
     }
     fn dispatch(&self, _request: HandlerRequest) -> Result<HandlerResponse, ClientError> {
         unreachable!("stub: build-time only")
@@ -61,22 +73,28 @@ impl Handler for StubSaga {
 }
 
 struct StubPm;
+fn stub_pm_config() -> HandlerConfig {
+    HandlerConfig::ProcessManager {
+        name: "stub-pm".into(),
+        pm_domain: "pm".into(),
+        sources: vec!["a".into()],
+        targets: vec!["b".into()],
+        sync_targets: vec![],
+        handled: vec![],
+        rejected: vec![],
+        applies: vec![],
+        state_factory: None,
+    }
+}
 impl HandlerKind for StubPm {
     const KIND: Kind = Kind::ProcessManager;
+    fn handler_config() -> HandlerConfig {
+        stub_pm_config()
+    }
 }
 impl Handler for StubPm {
     fn config(&self) -> HandlerConfig {
-        HandlerConfig::ProcessManager {
-            name: "stub-pm".into(),
-            pm_domain: "pm".into(),
-            sources: vec!["a".into()],
-            targets: vec!["b".into()],
-            sync_targets: vec![],
-            handled: vec![],
-            rejected: vec![],
-            applies: vec![],
-            state_factory: None,
-        }
+        stub_pm_config()
     }
     fn dispatch(&self, _request: HandlerRequest) -> Result<HandlerResponse, ClientError> {
         unreachable!("stub: build-time only")
@@ -84,16 +102,22 @@ impl Handler for StubPm {
 }
 
 struct StubProjector;
+fn stub_projector_config() -> HandlerConfig {
+    HandlerConfig::Projector {
+        name: "stub-proj".into(),
+        domains: vec!["d".into()],
+        handled: vec![],
+    }
+}
 impl HandlerKind for StubProjector {
     const KIND: Kind = Kind::Projector;
+    fn handler_config() -> HandlerConfig {
+        stub_projector_config()
+    }
 }
 impl Handler for StubProjector {
     fn config(&self) -> HandlerConfig {
-        HandlerConfig::Projector {
-            name: "stub-proj".into(),
-            domains: vec!["d".into()],
-            handled: vec![],
-        }
+        stub_projector_config()
     }
     fn dispatch(&self, _request: HandlerRequest) -> Result<HandlerResponse, ClientError> {
         unreachable!("stub: build-time only")

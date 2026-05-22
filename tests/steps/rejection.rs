@@ -1,39 +1,19 @@
 //! Rejection-compensation step definitions.
 
 use angzarr_client::proto::{
-    business_response, command_page, BusinessResponse, CommandBook, CommandPage, ContextualCommand,
-    Cover, EventBook, EventPage, Notification, RejectionNotification,
+    business_response, event_page, BusinessResponse, EventBook, EventPage, Notification,
 };
 use angzarr_client::router::{Built, Router};
 use angzarr_client::{command_handler, full_type_url, CommandResult};
 use cucumber::{given, then, when, World};
-use prost::Message;
 use prost_types::Any;
 
+use crate::common::fixtures::{CreateShipment, FundsReleased, ProcessPayment, ReserveStock};
+use crate::common::helpers::{contextual_notification, notification_for};
+
 // ---------------------------------------------------------------------------
-// Protos.
+// Handlers.
 // ---------------------------------------------------------------------------
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct ReserveStock {}
-impl ::prost::Name for ReserveStock {
-    const NAME: &'static str = "ReserveStock";
-    const PACKAGE: &'static str = "inventory";
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct ProcessPayment {}
-impl ::prost::Name for ProcessPayment {
-    const NAME: &'static str = "ProcessPayment";
-    const PACKAGE: &'static str = "payment";
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct CreateShipment {}
-impl ::prost::Name for CreateShipment {
-    const NAME: &'static str = "CreateShipment";
-    const PACKAGE: &'static str = "fulfillment";
-}
 
 #[derive(Default)]
 struct PaymentState;
@@ -52,8 +32,8 @@ impl Payment {
         Ok(BusinessResponse {
             result: Some(business_response::Result::Events(EventBook {
                 pages: vec![EventPage {
-                    payload: Some(angzarr_client::proto::event_page::Payload::Event(Any {
-                        type_url: "FundsReleased".to_string(),
+                    payload: Some(event_page::Payload::Event(Any {
+                        type_url: full_type_url::<FundsReleased>(),
                         value: vec![],
                     })),
                     ..Default::default()
@@ -78,8 +58,8 @@ impl Payment2 {
         Ok(BusinessResponse {
             result: Some(business_response::Result::Events(EventBook {
                 pages: vec![EventPage {
-                    payload: Some(angzarr_client::proto::event_page::Payload::Event(Any {
-                        type_url: "FundsReleased".to_string(),
+                    payload: Some(event_page::Payload::Event(Any {
+                        type_url: full_type_url::<FundsReleased>(),
                         value: vec![],
                     })),
                     ..Default::default()
@@ -132,49 +112,6 @@ fn build(world: &RejectionWorld) -> angzarr_client::router::runtime::CommandHand
     ch
 }
 
-fn notification_for<T: prost::Message + prost::Name>(domain: &str, cmd: T) -> ContextualCommand {
-    let rejected_cmd_any = Any {
-        type_url: full_type_url::<T>(),
-        value: cmd.encode_to_vec(),
-    };
-    let rejected_command = CommandBook {
-        cover: Some(Cover {
-            domain: domain.to_string(),
-            ..Default::default()
-        }),
-        pages: vec![CommandPage {
-            payload: Some(command_page::Payload::Command(rejected_cmd_any)),
-            ..Default::default()
-        }],
-    };
-    let rejection = RejectionNotification {
-        rejected_command: Some(rejected_command),
-        rejection_reason: "test".to_string(),
-    };
-    let rejection_any = Any {
-        type_url: full_type_url::<RejectionNotification>(),
-        value: rejection.encode_to_vec(),
-    };
-    let notif = Notification {
-        payload: Some(rejection_any),
-        ..Default::default()
-    };
-    let any = Any {
-        type_url: full_type_url::<Notification>(),
-        value: notif.encode_to_vec(),
-    };
-    ContextualCommand {
-        command: Some(CommandBook {
-            pages: vec![CommandPage {
-                payload: Some(command_page::Payload::Command(any)),
-                ..Default::default()
-            }],
-            ..Default::default()
-        }),
-        events: Some(EventBook::default()),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Given steps.
 // ---------------------------------------------------------------------------
@@ -207,22 +144,31 @@ async fn given_built_double(world: &mut RejectionWorld) {
 #[when(expr = "a Notification wrapping a rejected ReserveStock in domain {string} is dispatched")]
 async fn when_dispatch_reserve_stock(world: &mut RejectionWorld, domain: String) {
     let ch = build(world);
-    let ctx = notification_for(&domain, ReserveStock {});
-    world.response = Some(ch.dispatch(ctx).expect("dispatch"));
+    let notif = notification_for(&ReserveStock::default(), &domain);
+    world.response = Some(
+        ch.dispatch(contextual_notification(notif, "payment"))
+            .expect("dispatch"),
+    );
 }
 
 #[when(expr = "a Notification wrapping a rejected ProcessPayment in domain {string} is dispatched")]
 async fn when_dispatch_process_payment(world: &mut RejectionWorld, domain: String) {
     let ch = build(world);
-    let ctx = notification_for(&domain, ProcessPayment {});
-    world.response = Some(ch.dispatch(ctx).expect("dispatch"));
+    let notif = notification_for(&ProcessPayment::default(), &domain);
+    world.response = Some(
+        ch.dispatch(contextual_notification(notif, "payment"))
+            .expect("dispatch"),
+    );
 }
 
 #[when(expr = "a Notification wrapping a rejected CreateShipment in domain {string} is dispatched")]
 async fn when_dispatch_create_shipment(world: &mut RejectionWorld, domain: String) {
     let ch = build(world);
-    let ctx = notification_for(&domain, CreateShipment {});
-    world.response = Some(ch.dispatch(ctx).expect("dispatch"));
+    let notif = notification_for(&CreateShipment::default(), &domain);
+    world.response = Some(
+        ch.dispatch(contextual_notification(notif, "payment"))
+            .expect("dispatch"),
+    );
 }
 
 // ---------------------------------------------------------------------------

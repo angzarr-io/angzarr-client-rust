@@ -7,56 +7,19 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use angzarr_client::proto::{
-    business_response, command_page, event_page, CommandBook, CommandPage, ContextualCommand,
-    Cover, EventBook, EventPage, ProcessManagerHandleRequest, ProcessManagerHandleResponse,
-    SagaHandleRequest, SagaResponse,
+    business_response, CommandBook, Cover, EventBook, ProcessManagerHandleResponse, SagaResponse,
 };
 use angzarr_client::router::{Built, Router};
 use angzarr_client::{
     command_handler, full_type_url, process_manager, projector, saga, CommandResult,
 };
 use cucumber::{given, then, when, World};
-use prost::Message;
-use prost_types::Any;
 
-// ---------------------------------------------------------------------------
-// Protos.
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct CreateOrder {}
-impl ::prost::Name for CreateOrder {
-    const NAME: &'static str = "CreateOrder";
-    const PACKAGE: &'static str = "order";
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct OrderCreated {}
-impl ::prost::Name for OrderCreated {
-    const NAME: &'static str = "OrderCreated";
-    const PACKAGE: &'static str = "order";
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct OrderCompleted {}
-impl ::prost::Name for OrderCompleted {
-    const NAME: &'static str = "OrderCompleted";
-    const PACKAGE: &'static str = "order";
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct ReserveStock {}
-impl ::prost::Name for ReserveStock {
-    const NAME: &'static str = "ReserveStock";
-    const PACKAGE: &'static str = "inventory";
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct CreateShipment {}
-impl ::prost::Name for CreateShipment {
-    const NAME: &'static str = "CreateShipment";
-    const PACKAGE: &'static str = "fulfillment";
-}
+use crate::common::fixtures::{
+    CreateOrder, CreateShipment, DepositFunds, OrderCompleted, OrderCreated, RegisterPlayer,
+    ReserveStock,
+};
+use crate::common::helpers::{contextual_command, event_book, pm_request_no_state, saga_request};
 
 #[derive(Default)]
 struct S;
@@ -71,17 +34,9 @@ impl Alpha {
     #[handles(CreateOrder)]
     #[allow(unused_variables, dead_code)]
     fn on(&self, cmd: CreateOrder, state: &S, seq: u32) -> CommandResult<EventBook> {
-        Ok(EventBook {
-            next_sequence: seq + 1,
-            pages: vec![EventPage {
-                payload: Some(event_page::Payload::Event(Any {
-                    type_url: full_type_url::<OrderCreated>(),
-                    value: OrderCreated {}.encode_to_vec(),
-                })),
-                ..Default::default()
-            }],
-            ..Default::default()
-        })
+        let mut book = event_book(&[OrderCreated::default()], "order");
+        book.next_sequence = seq + 1;
+        Ok(book)
     }
 }
 
@@ -91,17 +46,9 @@ impl Beta {
     #[handles(CreateOrder)]
     #[allow(unused_variables, dead_code)]
     fn on(&self, cmd: CreateOrder, state: &S, seq: u32) -> CommandResult<EventBook> {
-        Ok(EventBook {
-            next_sequence: seq + 1,
-            pages: vec![EventPage {
-                payload: Some(event_page::Payload::Event(Any {
-                    type_url: full_type_url::<OrderCompleted>(),
-                    value: OrderCompleted {}.encode_to_vec(),
-                })),
-                ..Default::default()
-            }],
-            ..Default::default()
-        })
+        let mut book = event_book(&[OrderCompleted::default()], "order");
+        book.next_sequence = seq + 1;
+        Ok(book)
     }
 }
 
@@ -419,27 +366,11 @@ fn dispatch_commands(world: &mut MultiHandlerWorld) {
     let Built::CommandHandler(ch) = built else {
         panic!("expected CommandHandler");
     };
-    let ctx = ContextualCommand {
-        command: Some(CommandBook {
-            // Audit #46: dispatch filters by handler-declared domain.
-            cover: Some(Cover {
-                domain: "order".to_string(),
-                ..Default::default()
-            }),
-            pages: vec![CommandPage {
-                payload: Some(command_page::Payload::Command(Any {
-                    type_url: full_type_url::<CreateOrder>(),
-                    value: CreateOrder {}.encode_to_vec(),
-                })),
-                ..Default::default()
-            }],
-            ..Default::default()
-        }),
-        events: Some(EventBook {
-            next_sequence: world.next_sequence,
-            ..Default::default()
-        }),
+    let prior = EventBook {
+        next_sequence: world.next_sequence,
+        ..Default::default()
     };
+    let ctx = contextual_command(&CreateOrder::default(), "order", Some(prior));
     world.response = Some(ch.dispatch(ctx).expect("dispatch"));
 }
 
@@ -464,24 +395,7 @@ async fn when_dispatch_saga(world: &mut MultiHandlerWorld) {
     let Built::Saga(router) = built else {
         panic!("expected Saga");
     };
-    let req = SagaHandleRequest {
-        source: Some(EventBook {
-            // Audit #46: saga dispatch filters by handler-declared source.
-            cover: Some(Cover {
-                domain: "order".to_string(),
-                ..Default::default()
-            }),
-            pages: vec![EventPage {
-                payload: Some(event_page::Payload::Event(Any {
-                    type_url: full_type_url::<OrderCreated>(),
-                    value: OrderCreated {}.encode_to_vec(),
-                })),
-                ..Default::default()
-            }],
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
+    let req = saga_request(&[OrderCreated::default()], "order", None);
     world.saga_response = Some(router.dispatch(req).expect("saga dispatch"));
 }
 
@@ -495,25 +409,7 @@ async fn when_dispatch_pm(world: &mut MultiHandlerWorld) {
     let Built::ProcessManager(router) = built else {
         panic!("expected PM");
     };
-    let req = ProcessManagerHandleRequest {
-        trigger: Some(EventBook {
-            // Audit #46: PM dispatch filters by handler-declared sources.
-            cover: Some(Cover {
-                domain: "order".to_string(),
-                ..Default::default()
-            }),
-            pages: vec![EventPage {
-                payload: Some(event_page::Payload::Event(Any {
-                    type_url: full_type_url::<OrderCreated>(),
-                    value: OrderCreated {}.encode_to_vec(),
-                })),
-                ..Default::default()
-            }],
-            ..Default::default()
-        }),
-        process_state: Some(EventBook::default()),
-        destination_sequences: std::collections::HashMap::new(),
-    };
+    let req = pm_request_no_state(&[OrderCreated::default()], "order", "pma", None);
     world.pm_response = Some(router.dispatch(req).expect("pm dispatch"));
 }
 
@@ -533,16 +429,7 @@ async fn when_dispatch_projector(world: &mut MultiHandlerWorld) {
     let Built::Projector(router) = built else {
         panic!("expected Projector");
     };
-    let book = EventBook {
-        pages: vec![EventPage {
-            payload: Some(event_page::Payload::Event(Any {
-                type_url: full_type_url::<OrderCreated>(),
-                value: OrderCreated {}.encode_to_vec(),
-            })),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
+    let book = event_book(&[OrderCreated::default()], "order");
     let _ = router.dispatch(book).expect("projector dispatch");
 }
 
@@ -638,20 +525,6 @@ fn _linker() {
 // ---------------------------------------------------------------------------
 // Audit #18: forbid multi-handler CH dispatch (C-0010..C-0012 reframed).
 // ---------------------------------------------------------------------------
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct RegisterPlayer {}
-impl ::prost::Name for RegisterPlayer {
-    const NAME: &'static str = "RegisterPlayer";
-    const PACKAGE: &'static str = "player";
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct DepositFunds {}
-impl ::prost::Name for DepositFunds {
-    const NAME: &'static str = "DepositFunds";
-    const PACKAGE: &'static str = "player";
-}
 
 // Cross-domain CH pair for C-0011: same command type in two different domains.
 struct AlphaA;

@@ -7,6 +7,7 @@
 //! cargo test --test features
 //! ```
 
+mod common;
 mod steps;
 
 use cucumber::World;

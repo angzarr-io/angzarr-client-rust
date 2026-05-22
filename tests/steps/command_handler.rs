@@ -7,40 +7,13 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use angzarr_client::proto::{
-    business_response, command_page, event_page, CommandBook, CommandPage, ContextualCommand,
-    Cover, EventBook, EventPage,
-};
+use angzarr_client::proto::{business_response, EventBook};
 use angzarr_client::router::{Built, Router};
-use angzarr_client::{command_handler, full_type_url, CommandResult};
+use angzarr_client::{command_handler, CommandResult};
 use cucumber::{given, then, when, World};
-use prost::Message;
-use prost_types::Any;
 
-// ---------------------------------------------------------------------------
-// Test protos.
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct CreateOrder {}
-impl ::prost::Name for CreateOrder {
-    const NAME: &'static str = "CreateOrder";
-    const PACKAGE: &'static str = "order";
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct CompleteOrder {}
-impl ::prost::Name for CompleteOrder {
-    const NAME: &'static str = "CompleteOrder";
-    const PACKAGE: &'static str = "order";
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct OrderCreated {}
-impl ::prost::Name for OrderCreated {
-    const NAME: &'static str = "OrderCreated";
-    const PACKAGE: &'static str = "order";
-}
+use crate::common::fixtures::{CompleteOrder, CreateOrder, OrderCreated};
+use crate::common::helpers::{contextual_command, event_book, pack_event_page};
 
 // ---------------------------------------------------------------------------
 // Aggregates: three variants that satisfy different scenarios.
@@ -79,16 +52,7 @@ impl OrderDefault {
         seq: u32,
     ) -> CommandResult<EventBook> {
         observed().store(state.created, Ordering::SeqCst);
-        Ok(EventBook {
-            pages: vec![EventPage {
-                payload: Some(event_page::Payload::Event(Any {
-                    type_url: full_type_url::<OrderCreated>(),
-                    value: OrderCreated {}.encode_to_vec(),
-                })),
-                ..Default::default()
-            }],
-            ..Default::default()
-        })
+        Ok(event_book(&[OrderCreated::default()], "order"))
     }
 }
 
@@ -130,16 +94,7 @@ impl OrderWithFactory {
     ) -> CommandResult<EventBook> {
         observed().store(state.created, Ordering::SeqCst);
         if state.created {
-            Ok(EventBook {
-                pages: vec![EventPage {
-                    payload: Some(event_page::Payload::Event(Any {
-                        type_url: full_type_url::<OrderCreated>(),
-                        value: OrderCreated {}.encode_to_vec(),
-                    })),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            })
+            Ok(event_book(&[OrderCreated::default()], "order"))
         } else {
             Ok(EventBook::default())
         }
@@ -196,30 +151,6 @@ fn build_router(
     ch
 }
 
-fn make_ctx<T: prost::Message + prost::Name>(cmd: T, prior: EventBook) -> ContextualCommand {
-    let any = Any {
-        type_url: full_type_url::<T>(),
-        value: cmd.encode_to_vec(),
-    };
-    ContextualCommand {
-        command: Some(CommandBook {
-            // Audit #46: dispatch filters factories by handler-declared
-            // domain. The handlers in this test register domain="order",
-            // so the cover must carry the matching value.
-            cover: Some(Cover {
-                domain: "order".to_string(),
-                ..Default::default()
-            }),
-            pages: vec![CommandPage {
-                payload: Some(command_page::Payload::Command(any)),
-                ..Default::default()
-            }],
-            ..Default::default()
-        }),
-        events: Some(prior),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Given steps.
 // ---------------------------------------------------------------------------
@@ -246,13 +177,7 @@ async fn given_router_built(_world: &mut CommandHandlerWorld) {}
 #[given("a prior EventBook with an OrderCreated event at seq 0")]
 async fn given_prior_order_created(world: &mut CommandHandlerWorld) {
     world.prior_book = EventBook {
-        pages: vec![EventPage {
-            payload: Some(event_page::Payload::Event(Any {
-                type_url: full_type_url::<OrderCreated>(),
-                value: OrderCreated {}.encode_to_vec(),
-            })),
-            ..Default::default()
-        }],
+        pages: vec![pack_event_page(&OrderCreated::default(), 0)],
         ..Default::default()
     };
 }
@@ -293,7 +218,11 @@ async fn given_no_prior(world: &mut CommandHandlerWorld) {
 #[when(expr = "CreateOrder\\(order_id={string}\\) is dispatched")]
 async fn when_dispatch_create(world: &mut CommandHandlerWorld, _oid: String) {
     let ch = build_router(world);
-    let ctx = make_ctx(CreateOrder {}, world.prior_book.clone());
+    let ctx = contextual_command(
+        &CreateOrder::default(),
+        "order",
+        Some(world.prior_book.clone()),
+    );
     match ch.dispatch(ctx) {
         Ok(resp) => world.response = Some(resp),
         Err(e) => world.error = Some(e),
@@ -303,7 +232,11 @@ async fn when_dispatch_create(world: &mut CommandHandlerWorld, _oid: String) {
 #[when(expr = "CompleteOrder\\(order_id={string}\\) is dispatched")]
 async fn when_dispatch_complete(world: &mut CommandHandlerWorld, _oid: String) {
     let ch = build_router(world);
-    let ctx = make_ctx(CompleteOrder {}, world.prior_book.clone());
+    let ctx = contextual_command(
+        &CompleteOrder::default(),
+        "order",
+        Some(world.prior_book.clone()),
+    );
     match ch.dispatch(ctx) {
         Ok(resp) => world.response = Some(resp),
         Err(e) => world.error = Some(e),
@@ -313,7 +246,11 @@ async fn when_dispatch_complete(world: &mut CommandHandlerWorld, _oid: String) {
 #[when("a command is dispatched against the aggregate")]
 async fn when_a_command_dispatched(world: &mut CommandHandlerWorld) {
     let ch = build_router(world);
-    let ctx = make_ctx(CreateOrder {}, world.prior_book.clone());
+    let ctx = contextual_command(
+        &CreateOrder::default(),
+        "order",
+        Some(world.prior_book.clone()),
+    );
     match ch.dispatch(ctx) {
         Ok(resp) => world.response = Some(resp),
         Err(e) => world.error = Some(e),
