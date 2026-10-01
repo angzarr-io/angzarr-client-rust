@@ -17,8 +17,8 @@ use prost::Message;
 use uuid::Uuid;
 
 use crate::common::backend::{root_for, Hidden};
-use crate::common::fakes::RecordingGatewayClient;
 use crate::common::fixtures::CreateOrder;
+use angzarr_client::testing::RecordingGatewayClient;
 
 /// Generic payload for "the command type and payload".
 #[derive(Clone, PartialEq, Message)]

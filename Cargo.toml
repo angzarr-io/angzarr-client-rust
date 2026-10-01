@@ -75,6 +75,8 @@ tonic-prost-build = "0.14"
 prost-build = "0.14"
 
 [dev-dependencies]
+# The crate's own tests use the `testing` module (builders, recording fakes).
+angzarr-client = { path = ".", features = ["testing"] }
 cucumber = "0.21"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "test-util"] }
 trybuild = "1"
@@ -90,3 +92,7 @@ harness = false
 
 [features]
 default = []
+# `angzarr_client::testing`: proto builders, deterministic test UUIDs,
+# ScenarioContext and recording fakes of the client traits. Enable it from
+# a consumer's [dev-dependencies].
+testing = []

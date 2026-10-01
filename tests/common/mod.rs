@@ -1,12 +1,10 @@
 //! Shared test-spec harness for the client-rust gherkin step defs.
 //!
-//! Port of `client-python/main/tests/{fixtures.py, client/conftest.py,
-//! client/steps/_helpers.py, client/steps/_fakes.py}`. See
-//! `client-rust/main/.../plans/...` for the design.
+//! The in-process coordinator backend and the fixture messages the feature
+//! files name. Proto builders and recording client fakes come from
+//! `angzarr_client::testing`.
 
 #![allow(dead_code)]
 
 pub mod backend;
-pub mod fakes;
 pub mod fixtures;
-pub mod helpers;

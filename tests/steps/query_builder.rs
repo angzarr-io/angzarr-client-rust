@@ -6,7 +6,7 @@ use cucumber::{given, then, when, World};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::common::fakes::RecordingQueryClient;
+use angzarr_client::testing::RecordingQueryClient;
 
 /// Test context for QueryBuilder scenarios.
 #[derive(Debug, World)]

@@ -2,7 +2,8 @@
 //!
 //! Asserts each canonical public name is reachable in the compiled crate.
 //! Presence is checked against a hardcoded set mirroring the current
-//! `lib.rs` re-exports. Names not in the set fail the scenario with a
+//! `lib.rs` re-exports; testing helpers live in `angzarr_client::testing`
+//! (the `testing` feature, which this crate's dev-dependency enables). Names not in the set fail the scenario with a
 //! clear message pointing to the missing re-export.
 //!
 //! The `compile_probe` module at the bottom references each exported name
@@ -58,7 +59,6 @@ const EXPORTED: &[&str] = &[
     "ClientError",
     "CommandRejectedError",
     // Constants
-    "INVENTORY_PRODUCT_NAMESPACE",
     "TYPE_URL_PREFIX",
     "UNKNOWN_DOMAIN",
     "WILDCARD_DOMAIN",
@@ -68,15 +68,8 @@ const EXPORTED: &[&str] = &[
     "PROJECTION_TYPE_URL",
     // Identity helpers
     "compute_root",
-    "customer_root",
-    "product_root",
-    "order_root",
-    "inventory_root",
-    "inventory_product_root",
-    "cart_root",
-    "fulfillment_root",
     "to_proto_bytes",
-    // Testing helpers
+    // Testing helpers (`angzarr_client::testing`, `testing` feature)
     "make_timestamp",
     "make_cover",
     "make_event_page",
@@ -194,24 +187,25 @@ async fn then_error_predicate_exposed(_world: &mut ParityWorld, name: String) {
 // keep them reachable. Drop a re-export => this module stops compiling.
 mod compile_probe {
     #![allow(unused_imports, dead_code)]
+    use angzarr_client::testing::{
+        make_command_book, make_command_page, make_cover, make_event_book, make_event_page,
+        make_timestamp, uuid_for, uuid_obj_for, uuid_str_for, ScenarioContext,
+        DEFAULT_TEST_NAMESPACE,
+    };
     use angzarr_client::{
-        applies, cart_root, cleanup_socket, command_handler, compute_root, configure_logging,
-        create_server, customer_root, default_retry_policy, delegate_to_framework,
-        emit_compensation_events, fulfillment_root, get_transport_config, handles,
-        inventory_product_root, inventory_root, make_command_book, make_command_page, make_cover,
-        make_event_book, make_event_page, make_timestamp, order_root, pm_delegate_to_framework,
-        pm_emit_compensation_events, process_manager, product_root, projector, rejected,
-        require_exists, require_non_negative, require_not_empty, require_not_empty_str,
-        require_not_exists, require_positive, require_status, require_status_not, run_server, saga,
-        state_factory, to_proto_bytes, upcaster, upcasts, uuid_for, uuid_obj_for, uuid_str_for,
-        BuildError, ClientError, CommandBuilder, CommandHandlerClient, CommandHandlerGrpc,
-        CommandHandlerRouter, CommandRejectedError, CompensationContext, Destinations,
-        DispatchError, DomainClient, ExponentialBackoffRetry, ProcessManagerGrpc,
+        applies, cleanup_socket, command_handler, compute_root, configure_logging, create_server,
+        default_retry_policy, delegate_to_framework, emit_compensation_events,
+        get_transport_config, handles, pm_delegate_to_framework, pm_emit_compensation_events,
+        process_manager, projector, rejected, require_exists, require_non_negative,
+        require_not_empty, require_not_empty_str, require_not_exists, require_positive,
+        require_status, require_status_not, run_server, saga, state_factory, to_proto_bytes,
+        upcaster, upcasts, BuildError, ClientError, CommandBuilder, CommandHandlerClient,
+        CommandHandlerGrpc, CommandHandlerRouter, CommandRejectedError, CompensationContext,
+        Destinations, DispatchError, DomainClient, ExponentialBackoffRetry, ProcessManagerGrpc,
         ProcessManagerResponse, ProcessManagerRouter, ProjectorGrpc, ProjectorRouter, QueryBuilder,
         QueryClient, RejectionHandlerResponse, RetryPolicy, Router, SagaGrpc, SagaHandlerResponse,
-        SagaRouter, ScenarioContext, SpeculativeClient, UpcasterGrpc, UpcasterRouter,
-        DEFAULT_EDITION, DEFAULT_TEST_NAMESPACE, INVENTORY_PRODUCT_NAMESPACE, META_ANGZARR_DOMAIN,
-        PROJECTION_DOMAIN_PREFIX, PROJECTION_TYPE_URL, TYPE_URL_PREFIX, UNKNOWN_DOMAIN,
-        WILDCARD_DOMAIN,
+        SagaRouter, SpeculativeClient, UpcasterGrpc, UpcasterRouter, DEFAULT_EDITION,
+        META_ANGZARR_DOMAIN, PROJECTION_DOMAIN_PREFIX, PROJECTION_TYPE_URL, TYPE_URL_PREFIX,
+        UNKNOWN_DOMAIN, WILDCARD_DOMAIN,
     };
 }

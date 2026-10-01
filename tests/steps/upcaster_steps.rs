@@ -173,7 +173,7 @@ enum ChainFactory {
 }
 
 fn chain_event_page<T: prost::Message + prost::Name>(evt: &T) -> EventPage {
-    crate::common::helpers::pack_event_page(evt, 0)
+    angzarr_client::testing::make_event_page(0, angzarr_client::testing::pack_event(evt))
 }
 
 #[given("an upcaster registered for V1 → V2")]

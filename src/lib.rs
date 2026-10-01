@@ -33,7 +33,10 @@
 //!
 //! # Mocking for Tests
 //!
-//! Implement the `GatewayClient` and `QueryClient` traits to create mock clients:
+//! The `testing` cargo feature provides recording fakes of the client traits
+//! in `angzarr_client::testing::fakes`, along with proto builders and
+//! deterministic test UUIDs. Any type implementing `GatewayClient` or
+//! `QueryClient` can stand in for the coordinator:
 //!
 //! ```rust,ignore
 //! use angzarr_client::traits::{GatewayClient, QueryClient};
@@ -75,6 +78,7 @@ pub mod readiness;
 pub mod retry;
 pub mod router;
 pub mod server;
+#[cfg(feature = "testing")]
 pub mod testing;
 pub mod traits;
 pub mod transport;
@@ -83,17 +87,8 @@ pub mod validation;
 // Re-export main types at crate root
 pub use client::{CommandHandlerClient, DomainClient, QueryClient, SpeculativeClient};
 pub use error::{ClientError, CommandRejectedError, CommandResult, Result};
-pub use identity::{
-    cart_root, compute_root, customer_root, fulfillment_root, inventory_product_root,
-    inventory_root, order_root, product_root, to_proto_bytes, INVENTORY_PRODUCT_NAMESPACE,
-};
+pub use identity::{compute_root, to_proto_bytes};
 pub use retry::{default_retry_policy, ExponentialBackoffRetry, RetryPolicy};
-pub use testing::{
-    make_command_book, make_command_page, make_cover, make_event_book, make_event_page,
-    make_timestamp, pack_event as testing_pack_event, uuid_for, uuid_for_default, uuid_obj_for,
-    uuid_obj_for_default, uuid_str_for, uuid_str_for_default, ScenarioContext,
-    DEFAULT_TEST_NAMESPACE,
-};
 pub use transport::{resolve_ch_endpoint, TransportMode};
 
 // Re-export builder extension traits for fluent API
