@@ -25,12 +25,9 @@ pub mod io {
         }
     }
 }
-pub mod sererr {
-    pub mod v1 {
-        include!("proto/sererr.v1.rs");
-    }
-}
+pub use angzarr_router::proto::sererr;
 
 // Flat re-export so the public surface (`angzarr_client::proto::Foo`)
 // is unchanged from the pre-v1 layout.
+pub use angzarr_router::pb::*;
 pub use io::angzarr::v1::*;

@@ -1,6 +1,6 @@
 //! gRPC service adapters wrapping the unified runtime routers.
 //!
-//! Each wrapper takes the matching `router::runtime::*Router` produced by
+//! Each wrapper takes the matching `router::routers::*Router` produced by
 //! `Router::build()` (one `Built` variant per kind) and exposes it as a
 //! `tonic` service. Handler dispatch is synchronous user code, so every
 //! adapter runs it on tokio's blocking pool: a handler doing blocking I/O
@@ -20,7 +20,7 @@ use crate::proto::{
     ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, SagaHandleRequest,
     SagaResponse, UpcastRequest, UpcastResponse,
 };
-use crate::router::runtime::{
+use crate::router::routers::{
     CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter,
 };
 use crate::ClientError;
@@ -235,9 +235,12 @@ fn client_error_to_status(err: ClientError) -> Status {
     // identical wire output.
     let code = err.code();
     match err {
-        ClientError::InvalidArgument(d) => {
-            with_canonical_details(Code::InvalidArgument, d.message, code, Some(&d.details))
-        }
+        ClientError::InvalidArgument(d) => with_canonical_details(
+            crate::router::component::grpc_code_for(d.code),
+            d.message,
+            code,
+            Some(&d.details),
+        ),
         ClientError::Connection(d) => {
             with_canonical_details(Code::Unavailable, d.message, code, Some(&d.details))
         }
@@ -281,11 +284,11 @@ fn unimplemented_with_code(code: &'static str, message: &'static str) -> Status 
 
 /// gRPC upcaster service wrapping an [`crate::router::UpcasterRouter`].
 pub struct UpcasterGrpc {
-    router: Arc<crate::router::upcaster::UpcasterRouter>,
+    router: Arc<crate::router::routers::UpcasterRouter>,
 }
 
 impl UpcasterGrpc {
-    pub fn new(router: crate::router::upcaster::UpcasterRouter) -> Self {
+    pub fn new(router: crate::router::routers::UpcasterRouter) -> Self {
         Self {
             router: Arc::new(router),
         }

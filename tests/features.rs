@@ -59,36 +59,12 @@ const PARITY_DIR: &str = "angzarr-project/parity/client";
 /// finding that tracks each.
 const PENDING: &[(&str, &str)] = &[
     (
-        "C-0001",
-        "X-116 framework sequence stamping of emitted events",
+        "C-0042",
+        "angzarr-router: a Notification goes to the first claiming aggregate of a domain, not to every claimant",
     ),
-    (
-        "C-0083",
-        "X-116 framework sequence stamping of compensation events",
-    ),
-    ("C-0146", "X-116 Cover.ext propagation onto emitted events"),
-    (
-        "C-0248",
-        "X-116 framework sequence stamping of emitted events",
-    ),
-    ("C-0053", "X-017 router stamps angzarr_deferred provenance"),
-    ("C-0177", "X-017 router stamps angzarr_deferred provenance"),
-    (
-        "C-0179",
-        "X-017 router stamps angzarr_deferred command_index",
-    ),
-    (
-        "C-0181",
-        "X-017 router stamps angzarr_deferred provenance on PM commands",
-    ),
-    ("C-0224", "X-167 process-manager #[rejected] dispatch"),
     (
         "C-0477",
-        "router: PM process events addressed to the PM domain",
-    ),
-    (
-        "C-0481",
-        "router: unqualified compensates entry (fq.Type, any domain)",
+        "angzarr-router: PM process events are not addressed to the PM domain",
     ),
     ("C-0336", "no configurable connect timeout"),
     ("C-0337", "no configurable HTTP/2 keep-alive"),

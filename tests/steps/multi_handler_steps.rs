@@ -236,9 +236,9 @@ pub struct MultiHandlerWorld {
     log: Log,
     projector_logs: Arc<Mutex<HashMap<&'static str, Vec<String>>>>,
     build_result: Option<Result<(), BuildError>>,
-    saga_router: Option<angzarr_client::router::runtime::SagaRouter>,
-    pm_router: Option<angzarr_client::router::runtime::ProcessManagerRouter>,
-    projector_router: Option<angzarr_client::router::runtime::ProjectorRouter>,
+    saga_router: Option<angzarr_client::router::SagaRouter>,
+    pm_router: Option<angzarr_client::router::ProcessManagerRouter>,
+    projector_router: Option<angzarr_client::router::ProjectorRouter>,
     saga_response: Option<SagaResponse>,
     pm_response: Option<ProcessManagerHandleResponse>,
 }

@@ -26,6 +26,7 @@ macro_rules! test_proto {
 
 test_proto!(RegisterPlayer);
 test_proto!(DepositFunds);
+test_proto!(ProcessPayment);
 test_proto!(PlayerRegistered);
 test_proto!(FundsDeposited);
 
@@ -80,7 +81,7 @@ impl Player {
         Ok(EventBook::default())
     }
 
-    #[rejected(domain = "payment", command = "ProcessPayment")]
+    #[rejected(domain = "payment", command = ProcessPayment)]
     #[allow(unused_variables, dead_code)]
     fn on_payment_rejected(
         &self,
@@ -150,10 +151,13 @@ fn applies_stashes_event_type_urls_in_declaration_order() {
 #[test]
 fn rejected_stashes_domain_and_command_pairs() {
     match Player.config() {
-        HandlerConfig::CommandHandler { rejected, .. } => {
+        HandlerConfig::CommandHandler { compensates, .. } => {
             assert_eq!(
-                rejected,
-                vec![("payment".to_string(), "ProcessPayment".to_string())]
+                compensates,
+                vec![format!(
+                    "payment:{}",
+                    <ProcessPayment as prost::Name>::full_name()
+                )]
             );
         }
         other => panic!("expected CommandHandler, got {:?}", other),

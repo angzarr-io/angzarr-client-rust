@@ -1,0 +1,247 @@
+//! Components: each registered handler type becomes an angzarr-router
+//! dispatch table, and the helpers the kind macros' generated thunks use.
+//!
+//! Dispatch semantics (rebuild, fill-only stamping, deferred commands,
+//! compensation routing, fan-out and merging) live in the `angzarr-router`
+//! crate. This module only adapts typed Rust handlers to its tables and
+//! translates its coded errors into [`ClientError`].
+
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::marker::PhantomData;
+use std::sync::{Arc, Mutex, OnceLock};
+
+use angzarr_router::error::{CodedError, GrpcCode, HandlerError};
+use angzarr_router::rebuild::Rebuilder;
+use prost::{Message, Name};
+use prost_types::Any;
+
+use crate::error::{ClientError, CommandRejectedError, ErrorDetail};
+use crate::error_codes::{codes, keys, messages};
+use crate::proto::{ReplayRequest, ReplayResponse};
+
+/// Produces a fresh handler instance; called once per dispatch.
+pub type Factory<H> = Arc<dyn Fn() -> H + Send + Sync>;
+
+/// Computes the state a `Replay` request describes, packed into an `Any`.
+pub type ReplayFn = Box<dyn Fn(&ReplayRequest) -> Result<ReplayResponse, CodedError> + Send + Sync>;
+
+/// One registered handler as an angzarr-router dispatch table.
+pub enum Component {
+    CommandHandler {
+        table: Box<dyn angzarr_router::router::CommandHandler>,
+        /// Present when the aggregate opted into `Replay`.
+        replay: Option<ReplayFn>,
+    },
+    Saga(angzarr_router::saga::SagaDispatch),
+    ProcessManager(Box<dyn angzarr_router::router::ProcessManagerHandler>),
+    Projector(Box<dyn angzarr_router::router::ProjectorHandler>),
+    Upcaster(angzarr_router::upcaster::UpcasterDispatch),
+}
+
+// ---------------------------------------------------------------------------
+// Errors crossing the router boundary.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// The business rejection a handler raised during the current dispatch.
+    /// Dispatch is synchronous on one thread, so the router's coded error
+    /// can be turned back into the handler's own `CommandRejectedError`.
+    static REJECTION: RefCell<Option<CommandRejectedError>> = const { RefCell::new(None) };
+}
+
+/// Forget any rejection recorded by an earlier dispatch on this thread.
+pub(crate) fn begin_dispatch() {
+    REJECTION.with(|r| r.borrow_mut().take());
+}
+
+/// A handler's business rejection, as the router's handler error.
+pub fn rejected(rej: CommandRejectedError) -> HandlerError {
+    let extras: Vec<(String, String)> = rej.details.clone().into_iter().collect();
+    let coded = match rej.status_code {
+        "NOT_FOUND" => CodedError::rejection_not_found(rej.code, rej.message, extras),
+        "INVALID_ARGUMENT" => CodedError::rejection_invalid_argument(rej.code, rej.message, extras),
+        _ => CodedError::rejection_precondition_failed(rej.code, rej.message, extras),
+    };
+    REJECTION.with(|r| *r.borrow_mut() = Some(rej));
+    HandlerError::Coded(coded)
+}
+
+/// Decode a payload `Any` as `T`; a malformed payload is ANY_DECODE_FAILED.
+pub fn decode<T: Message + Default>(any: &Any) -> Result<T, HandlerError> {
+    T::decode(any.value.as_slice()).map_err(|e| {
+        HandlerError::Coded(CodedError::invalid_argument(
+            codes::ANY_DECODE_FAILED,
+            messages::ANY_DECODE_FAILED,
+            [
+                (keys::TYPE_URL.to_string(), any.type_url.clone()),
+                (keys::CAUSE.to_string(), e.to_string()),
+            ],
+        ))
+    })
+}
+
+/// Decode an event `Any` as `T` for an applier; failures surface from the
+/// rebuild as PERSISTED_EVENT_CORRUPT.
+pub fn decode_applied<T: Message + Default>(
+    any: &Any,
+) -> Result<T, Box<dyn std::error::Error + Send + Sync>> {
+    T::decode(any.value.as_slice()).map_err(|e| Box::new(e) as _)
+}
+
+/// Pack `msg` into an `Any` under its `/`-prefixed type URL.
+pub fn pack<T: Message + Name>(msg: &T) -> Any {
+    Any {
+        type_url: crate::full_type_url::<T>(),
+        value: msg.encode_to_vec(),
+    }
+}
+
+/// Intern a dynamic string so it can ride in the `&'static str` fields of
+/// [`ErrorDetail`]. Router codes and messages come from a small fixed set;
+/// past a bound, the generic text is used instead of growing the set.
+fn intern(s: &str, fallback: &'static str) -> &'static str {
+    static SET: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let mut set = SET
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(found) = set.get(s) {
+        return found;
+    }
+    if set.len() >= 1024 {
+        return fallback;
+    }
+    let leaked: &'static str = Box::leak(s.to_string().into_boxed_str());
+    set.insert(leaked);
+    leaked
+}
+
+/// The router's coded error as a [`ClientError`]: the handler's own
+/// rejection when it raised one, otherwise an `InvalidArgument` detail
+/// carrying the router's code, message and extras.
+pub(crate) fn from_coded(err: CodedError) -> ClientError {
+    let rejection = REJECTION.with(|r| r.borrow_mut().take());
+    if let Some(rej) = rejection.filter(|r| r.code == err.code) {
+        return ClientError::Rejected(rej);
+    }
+    ClientError::InvalidArgument(ErrorDetail {
+        code: intern(&err.code, codes::UNHANDLED_HANDLER_ERROR),
+        message: intern(&err.message, messages::UNHANDLED_HANDLER_ERROR),
+        details: err.extras,
+    })
+}
+
+/// The gRPC status code the router's error table assigns to a code; codes
+/// it does not classify are `INVALID_ARGUMENT`.
+pub(crate) fn grpc_code_for(code: &str) -> tonic::Code {
+    let probe = CodedError::invalid_argument(code, "", []);
+    match (code, probe.grpc) {
+        (codes::UNHANDLED_HANDLER_ERROR, _) => tonic::Code::Internal,
+        (_, GrpcCode::Unimplemented) => tonic::Code::Unimplemented,
+        (_, GrpcCode::DataLoss) => tonic::Code::DataLoss,
+        _ => tonic::Code::InvalidArgument,
+    }
+}
+
+/// A router build error as a [`crate::router::BuildError`].
+pub(crate) fn build_error(err: CodedError) -> crate::router::BuildError {
+    crate::router::BuildError::InvalidComponent(ErrorDetail {
+        code: intern(&err.code, codes::UNHANDLED_HANDLER_ERROR),
+        message: intern(&err.message, messages::UNHANDLED_HANDLER_ERROR),
+        details: err.extras,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Snapshots and replay.
+// ---------------------------------------------------------------------------
+
+/// Snapshot loading for a state type, chosen at macro expansion:
+/// `(&SnapshotState::<S>::new()).snapshot_loader()` yields a loader when
+/// `S` is a protobuf message (the snapshot's state decodes into it) and
+/// `None` otherwise (the aggregate never snapshots).
+pub struct SnapshotState<S>(PhantomData<S>);
+
+impl<S> SnapshotState<S> {
+    pub fn new() -> Self {
+        SnapshotState(PhantomData)
+    }
+}
+
+impl<S> Default for SnapshotState<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A snapshot loader: replaces the fresh state with the snapshot's state.
+pub type SnapshotLoader<S> =
+    Box<dyn Fn(&mut S, &Any) -> Result<(), Box<dyn std::error::Error + Send + Sync>> + Send + Sync>;
+
+/// Selected when `S` is a protobuf message.
+pub trait LoadsSnapshot<S> {
+    fn snapshot_loader(&self) -> Option<SnapshotLoader<S>>;
+}
+
+impl<S: Message + Default + Name + 'static> LoadsSnapshot<S> for SnapshotState<S> {
+    fn snapshot_loader(&self) -> Option<SnapshotLoader<S>> {
+        Some(Box::new(snapshot_into::<S>))
+    }
+}
+
+/// Selected (by autoref) when `S` is not a protobuf message.
+pub trait IgnoresSnapshot<S> {
+    fn snapshot_loader(&self) -> Option<SnapshotLoader<S>>;
+}
+
+impl<S> IgnoresSnapshot<S> for &SnapshotState<S> {
+    fn snapshot_loader(&self) -> Option<SnapshotLoader<S>> {
+        None
+    }
+}
+
+/// Decode a snapshot state of type `S` into `state`. An empty value keeps
+/// the fresh state; a snapshot of another type is an error.
+fn snapshot_into<S: Message + Default + Name>(
+    state: &mut S,
+    any: &Any,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if any.value.is_empty() {
+        return Ok(());
+    }
+    if !crate::type_url_is::<S>(&any.type_url) {
+        return Err(format!("snapshot state {} is not {}", any.type_url, S::full_name()).into());
+    }
+    *state = S::decode(any.value.as_slice())?;
+    Ok(())
+}
+
+/// Attach the snapshot loader (if `S` has one) to a rebuilder.
+pub fn with_snapshot<S: 'static>(
+    rebuilder: Rebuilder<S>,
+    loader: Option<SnapshotLoader<S>>,
+) -> Rebuilder<S> {
+    match loader {
+        Some(loader) => rebuilder.with_snapshot(loader),
+        None => rebuilder,
+    }
+}
+
+/// `Replay` over a rebuilder whose state is a protobuf message: fold the
+/// base snapshot (when it carries state) and the events, then pack the
+/// state.
+pub fn replay_fn<S: Message + Default + Name + 'static>(rebuilder: Rebuilder<S>) -> ReplayFn {
+    let rebuilder = rebuilder.with_snapshot(snapshot_into::<S>);
+    Box::new(move |req: &ReplayRequest| {
+        let book = crate::proto::EventBook {
+            snapshot: req.base_snapshot.clone(),
+            pages: req.events.clone(),
+            ..Default::default()
+        };
+        let (state, _) = rebuilder.rebuild(Some(&book))?;
+        Ok(ReplayResponse {
+            state: Some(pack(&state)),
+        })
+    })
+}

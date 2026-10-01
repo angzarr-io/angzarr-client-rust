@@ -3,8 +3,8 @@
 //! Covers:
 //! - `CommandHandlerRouter::supports_handle_fact()` and `supports_replay()`
 //!   correctly read metadata from the `#[command_handler]`-emitted config.
-//! - `dispatch_fact` routes facts to the matching `#[handles_fact]` method
-//!   and concatenates emitted events.
+//! - `dispatch_fact` routes facts by their cover domain to the matching
+//!   `#[handles_fact]` method, which records (possibly annotated) facts.
 //! - `dispatch_replay` round-trips state through `Any` using the
 //!   `#[applies]` machinery.
 //! - Aggregates that don't opt in get `false` from `supports_*` —
@@ -140,20 +140,11 @@ impl FactOrder {
         &self,
         evt: StockReserved,
         state: &OrderState,
-    ) -> CommandResult<EventBook> {
-        // Emit a derived event (semantically: "we acknowledge the stock fact").
-        let mut book = EventBook::default();
-        let mut page = EventPage::default();
-        let any = Any {
-            type_url: full_type_url::<OrderCreated>(),
-            value: ::prost::Message::encode_to_vec(&OrderCreated {
-                order_id: format!("{}-derived", evt.order_id),
-            }),
-        };
-        page.payload = Some(angzarr_client::proto::event_page::Payload::Event(any));
-        page.header = Some(PageHeader::default());
-        book.pages.push(page);
-        Ok(book)
+    ) -> CommandResult<StockReserved> {
+        // Facts cannot be refused; the handler records them, here annotated.
+        Ok(StockReserved {
+            order_id: format!("{}-seen", evt.order_id),
+        })
     }
 }
 
@@ -182,7 +173,13 @@ fn dispatch_fact_routes_to_matching_handler() {
     };
 
     let mut req = FactRequest::default();
-    let mut facts = EventBook::default();
+    let mut facts = EventBook {
+        cover: Some(angzarr_client::proto::Cover {
+            domain: "order".into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
     let mut page = EventPage::default();
     let any = Any {
         type_url: full_type_url::<StockReserved>(),
@@ -197,6 +194,13 @@ fn dispatch_fact_routes_to_matching_handler() {
 
     let book = r.dispatch_fact(req).expect("dispatch_fact");
     assert_eq!(book.pages.len(), 1);
+    let Some(angzarr_client::proto::event_page::Payload::Event(recorded)) = &book.pages[0].payload
+    else {
+        panic!("expected an event page");
+    };
+    assert_eq!(recorded.type_url, full_type_url::<StockReserved>());
+    let recorded: StockReserved = ::prost::Message::decode(recorded.value.as_slice()).unwrap();
+    assert_eq!(recorded.order_id, "o-1-seen");
 }
 
 // --------------------------------------------------------------------------

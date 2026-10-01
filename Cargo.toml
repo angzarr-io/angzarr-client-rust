@@ -22,6 +22,10 @@ targets = ["x86_64-unknown-linux-gnu"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
+# The shared dispatch/rebuild engine. Its framework message types are this
+# crate's proto types (build.rs extern_path).
+angzarr-router = { path = "../../angzarr-router/rem-integration/crates/router" }
+
 # Macros (re-exported for convenience)
 angzarr-macros = { version = "0.1.0", path = "angzarr-macros" }
 

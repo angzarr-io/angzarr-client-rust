@@ -12,7 +12,7 @@ use angzarr_client::proto::{
     business_response, command_page, event_page, BusinessResponse, CommandBook, CommandPage,
     ContextualCommand, Cover, EventBook, EventPage, PageHeader,
 };
-use angzarr_client::router::runtime::CommandHandlerRouter;
+use angzarr_client::router::CommandHandlerRouter;
 use angzarr_client::router::{Built, Router};
 use angzarr_client::{command_handler, ClientError, CommandResult};
 use cucumber::{given, then, when, World};

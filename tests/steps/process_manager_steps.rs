@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use angzarr_client::proto::{EventBook, ProcessManagerHandleRequest, ProcessManagerHandleResponse};
-use angzarr_client::router::runtime::ProcessManagerRouter;
+use angzarr_client::router::ProcessManagerRouter;
 use angzarr_client::router::{Built, Router};
 use angzarr_client::{process_manager, CommandResult};
 use cucumber::{given, then, when, World};

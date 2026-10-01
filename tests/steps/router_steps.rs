@@ -15,10 +15,10 @@ use angzarr_client::proto::{
     ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, ReplayRequest,
     SagaHandleRequest, SagaResponse,
 };
-use angzarr_client::router::runtime::{
+use angzarr_client::router::{Built, Router};
+use angzarr_client::router::{
     CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter,
 };
-use angzarr_client::router::{Built, Router};
 use angzarr_client::{
     command_handler, error_codes, full_type_url, process_manager, projector, saga, ClientError,
     CommandRejectedError, CommandResult,

@@ -95,7 +95,7 @@ struct OrdersAggregate {
 
 #[command_handler(domain = "orders", state = NoState)]
 impl OrdersAggregate {
-    #[rejected(domain = "inventory", command = "ReserveStock")]
+    #[rejected(domain = "inventory", command = ReserveStock)]
     fn on_reserve_rejected(
         &self,
         notification: &Notification,
@@ -114,7 +114,7 @@ struct FulfillmentAggregate {
 
 #[command_handler(domain = "fulfillment", state = NoState)]
 impl FulfillmentAggregate {
-    #[rejected(domain = "shipping", command = "CreateShipment")]
+    #[rejected(domain = "shipping", command = CreateShipment)]
     fn on_shipment_rejected(
         &self,
         notification: &Notification,
@@ -186,7 +186,7 @@ struct OrderAggregate;
 
 #[command_handler(domain = "order", state = NoState)]
 impl OrderAggregate {
-    #[rejected(domain = "inventory", command = "ReserveStock")]
+    #[rejected(domain = "inventory", command = ReserveStock)]
     fn on_reserve_rejected(
         &self,
         _notification: &Notification,
@@ -225,7 +225,7 @@ impl WorkflowPm {
         Ok(ProcessManagerHandleResponse::default())
     }
 
-    #[rejected(domain = "inventory", command = "ReserveStock")]
+    #[rejected(domain = "inventory", command = ReserveStock)]
     #[allow(dead_code)]
     fn on_reserve_rejected(
         &self,
@@ -946,15 +946,20 @@ fn given_fulfillment_saga(
 fn given_order_compensates(_world: &mut CompensationWorld) {
     let config = <OrderAggregate as angzarr_client::router::HandlerKind>::handler_config();
     let angzarr_client::router::HandlerConfig::CommandHandler {
-        domain, rejected, ..
+        domain,
+        compensates,
+        ..
     } = config
     else {
         panic!("OrderAggregate is not a command handler");
     };
     assert_eq!(domain, "order");
     assert_eq!(
-        rejected,
-        vec![("inventory".to_string(), "ReserveStock".to_string())]
+        compensates,
+        vec![format!(
+            "inventory:{}",
+            <ReserveStock as prost::Name>::full_name()
+        )]
     );
 }
 

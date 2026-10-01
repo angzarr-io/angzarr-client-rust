@@ -53,6 +53,10 @@
 //! }
 //! ```
 
+/// The dispatch engine the kind macros register handlers with.
+#[doc(hidden)]
+pub use angzarr_router as __router;
+
 /// Version of the angzarr-client crate, injected at build time from VERSION file.
 pub const VERSION: &str = env!("ANGZARR_CLIENT_VERSION");
 
@@ -60,6 +64,7 @@ pub mod builder;
 pub mod client;
 pub mod compensation;
 pub mod convert;
+pub mod destinations;
 pub mod error;
 pub mod error_codes;
 pub mod handler;
@@ -130,8 +135,6 @@ pub use router::{
     Handler,
     HandlerConfig,
     HandlerKind,
-    HandlerRequest,
-    HandlerResponse,
     Kind,
     ProcessManagerResponse,
     ProcessManagerRouter,

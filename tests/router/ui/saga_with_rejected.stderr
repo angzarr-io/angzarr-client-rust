@@ -1,8 +1,8 @@
 error: #[rejected] is not allowed on a #[saga]: a saga never receives rejections; declare the compensation on the component whose event triggered the saga
   --> tests/router/ui/saga_with_rejected.rs:23:5
    |
-23 |     #[rejected(domain = "inventory", command = "ReserveStock")]
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+23 |     #[rejected(domain = "inventory", command = ReserveStock)]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 warning: unused imports: `Notification` and `SagaResponse`
  --> tests/router/ui/saga_with_rejected.rs:4:29

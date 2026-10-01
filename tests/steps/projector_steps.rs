@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use angzarr_client::proto::{event_page, Cover, EventBook, EventPage, PageHeader};
-use angzarr_client::router::runtime::ProjectorRouter;
+use angzarr_client::router::ProjectorRouter;
 use angzarr_client::router::{Built, Router};
 use angzarr_client::{projector, CommandResult};
 use cucumber::{given, then, when, World};

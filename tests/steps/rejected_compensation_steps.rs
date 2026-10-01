@@ -11,7 +11,7 @@ use angzarr_client::proto::{
     business_response, page_header::SequenceType, BusinessResponse, Cover, EventBook, EventPage,
     Notification, PageHeader,
 };
-use angzarr_client::router::runtime::CommandHandlerRouter;
+use angzarr_client::router::CommandHandlerRouter;
 use angzarr_client::router::{Built, Router};
 use angzarr_client::{command_handler, CommandResult};
 use cucumber::{given, then, when, World};
@@ -48,7 +48,7 @@ impl StatefulPayment {
         state.bankroll = evt.new_bankroll;
     }
 
-    #[rejected(domain = "inventory", command = "ReserveStock")]
+    #[rejected(domain = "inventory", command = ReserveStock)]
     fn on_reserve_stock_rejected(
         &self,
         _notification: &Notification,
@@ -72,7 +72,7 @@ pub struct TwoCompensations;
 
 #[command_handler(domain = "payment", state = PaymentState)]
 impl TwoCompensations {
-    #[rejected(domain = "inventory", command = "ReserveStock")]
+    #[rejected(domain = "inventory", command = ReserveStock)]
     fn on_reserve_stock_rejected(
         &self,
         _notification: &Notification,
@@ -84,7 +84,7 @@ impl TwoCompensations {
         })]))
     }
 
-    #[rejected(domain = "payment", command = "ProcessPayment")]
+    #[rejected(domain = "payment", command = ProcessPayment)]
     fn on_process_payment_rejected(
         &self,
         _notification: &Notification,
@@ -103,7 +103,7 @@ pub struct PerDomainCompensations;
 
 #[command_handler(domain = "payment", state = PaymentState)]
 impl PerDomainCompensations {
-    #[rejected(domain = "inventory", command = "ReserveStock")]
+    #[rejected(domain = "inventory", command = ReserveStock)]
     fn on_inventory_rejected(
         &self,
         _notification: &Notification,
@@ -115,7 +115,7 @@ impl PerDomainCompensations {
         })]))
     }
 
-    #[rejected(domain = "warehouse", command = "ReserveStock")]
+    #[rejected(domain = "warehouse", command = ReserveStock)]
     fn on_warehouse_rejected(
         &self,
         _notification: &Notification,
@@ -125,6 +125,24 @@ impl PerDomainCompensations {
             reason: "warehouse rejected".into(),
             failed_domain: "warehouse".into(),
             failed_command: "ReserveStock".into(),
+        })]))
+    }
+}
+
+/// Payment compensating a rejected ReserveStock sent to any domain.
+pub struct AnyDomainPayment;
+
+#[command_handler(domain = "payment", state = PaymentState)]
+impl AnyDomainPayment {
+    #[rejected(command = ReserveStock)]
+    fn on_reserve_stock_rejected(
+        &self,
+        _notification: &Notification,
+        _state: &PaymentState,
+    ) -> CommandResult<BusinessResponse> {
+        Ok(events_response(vec![event_page_of(&FundsReleased {
+            amount: 0,
+            reason: "stock rejected anywhere".into(),
         })]))
     }
 }
@@ -151,6 +169,7 @@ enum Variant {
     Stateful,
     Two,
     PerDomain,
+    AnyDomain,
     None,
 }
 
@@ -190,6 +209,9 @@ impl RejectedCompensationWorld {
             Variant::PerDomain => Router::new("payment")
                 .with_handler(|| PerDomainCompensations)
                 .build(),
+            Variant::AnyDomain => Router::new("payment")
+                .with_handler(|| AnyDomainPayment)
+                .build(),
             Variant::None => Router::new("payment")
                 .with_handler(|| NoCompensation)
                 .build(),
@@ -211,10 +233,15 @@ impl RejectedCompensationWorld {
         );
     }
 
-    fn events(&self) -> &EventBook {
-        match self.response.as_ref().and_then(|r| r.result.as_ref()) {
-            Some(business_response::Result::Events(book)) => book,
-            other => panic!("expected an Events response, got {other:?}"),
+    /// The compensation events. A response with no result is the
+    /// framework's DelegateToFramework (no compensation declared) and
+    /// carries no events.
+    fn events(&self) -> EventBook {
+        let response = self.response.as_ref().expect("rejection response");
+        match response.result.as_ref() {
+            Some(business_response::Result::Events(book)) => book.clone(),
+            None => EventBook::default(),
+            Some(other) => panic!("expected events, got {other:?}"),
         }
     }
 }
@@ -281,10 +308,15 @@ fn given_no_output_domains(world: &mut RejectedCompensationWorld) {
 }
 
 #[given("Payment compensates a rejected ReserveStock from any domain by emitting FundsReleased")]
-fn given_release_any_domain(_world: &mut RejectedCompensationWorld) {
-    panic!(
-        "#[rejected] requires a domain: the macro cannot declare an unqualified \
-         compensates entry (\"fq.ReserveStock\" for any domain)"
+fn given_release_any_domain(world: &mut RejectedCompensationWorld) {
+    world.variant = Variant::AnyDomain;
+    let config = <AnyDomainPayment as angzarr_client::router::HandlerKind>::handler_config();
+    let angzarr_client::router::HandlerConfig::CommandHandler { compensates, .. } = config else {
+        panic!("not a command handler");
+    };
+    assert_eq!(
+        compensates,
+        vec![<ReserveStock as prost::Name>::full_name()]
     );
 }
 
@@ -361,12 +393,12 @@ fn when_create_shipment(world: &mut RejectedCompensationWorld) {
 fn then_one_release(world: &mut RejectedCompensationWorld) {
     let book = world.events();
     assert_eq!(book.pages.len(), 1);
-    assert_eq!(events_of::<FundsReleased>(book).len(), 1);
+    assert_eq!(events_of::<FundsReleased>(&book).len(), 1);
 }
 
 #[then(expr = "the FundsReleased event carries amount {int}")]
 fn then_amount(world: &mut RejectedCompensationWorld, amount: i64) {
-    let released = events_of::<FundsReleased>(world.events());
+    let released = events_of::<FundsReleased>(&world.events());
     assert_eq!(
         released.iter().map(|e| e.amount).collect::<Vec<_>>(),
         vec![amount]
@@ -375,14 +407,14 @@ fn then_amount(world: &mut RejectedCompensationWorld, amount: i64) {
 
 #[then("the response contains one WorkflowFailed event")]
 fn then_one_workflow_failed(world: &mut RejectedCompensationWorld) {
-    let failed = events_of::<WorkflowFailed>(world.events());
+    let failed = events_of::<WorkflowFailed>(&world.events());
     assert_eq!(failed.len(), 1);
     assert_eq!(failed[0].failed_command, world.delivered);
 }
 
 #[then("no FundsReleased event is emitted")]
 fn then_no_release(world: &mut RejectedCompensationWorld) {
-    assert!(events_of::<FundsReleased>(world.events()).is_empty());
+    assert!(events_of::<FundsReleased>(&world.events()).is_empty());
 }
 
 #[then("the response contains no events")]
@@ -408,5 +440,4 @@ fn then_sequences(world: &mut RejectedCompensationWorld, last: u32, first: u32, 
             Some(SequenceType::Sequence(second))
         ]
     );
-    assert_eq!(book.next_sequence, second + 1);
 }

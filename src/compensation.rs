@@ -8,7 +8,7 @@
 //! # Example in aggregate
 //!
 //! ```rust,ignore
-//! #[rejected(domain = "inventory", command = "ReserveStock")]
+//! #[rejected(domain = "inventory", command = ReserveStock)]
 //! fn on_reserve_rejected(&self, notification: &Notification, state: &OrderState)
 //!     -> CommandResult<BusinessResponse>
 //! {

@@ -3,7 +3,7 @@
 //! Sagas are real `#[saga]` types dispatched through a `SagaRouter`.
 
 use angzarr_client::proto::{SagaHandleRequest, SagaResponse};
-use angzarr_client::router::runtime::SagaRouter;
+use angzarr_client::router::SagaRouter;
 use angzarr_client::router::{Built, Router};
 use angzarr_client::{saga, CommandResult};
 use cucumber::{given, then, when, World};

@@ -44,7 +44,7 @@ use crate::readiness::{
     probe_config_from_env, run_supervisor_with_wake, BusProbe, OutputDomainProbe, Probe,
     TransportProbe,
 };
-use crate::router::runtime::{CommandHandlerRouter, ProcessManagerRouter, SagaRouter};
+use crate::router::routers::{CommandHandlerRouter, ProcessManagerRouter, SagaRouter};
 
 /// Fully-qualified gRPC service names (`io.angzarr.v1.<Service>`) — the
 /// health-reporter keys a `Health.Check` for a specific service matches.
@@ -385,7 +385,7 @@ pub async fn run_process_manager_server(
 /// Run an upcaster service. Upcaster name is read from
 /// `#[upcaster(name = ...)]` metadata. Upcasters have no output-domain probes.
 pub async fn run_upcaster_server(
-    router: crate::router::upcaster::UpcasterRouter,
+    router: crate::router::routers::UpcasterRouter,
     default_port: u16,
 ) -> Result<()> {
     let name = router.name();

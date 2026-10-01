@@ -9,13 +9,13 @@ help: the trait `Handler` is not implemented for `Plain`
   |
 5 | struct Plain;
   | ^^^^^^^^^^^^
-note: required by a bound in `Router::with_handler`
+note: required by a bound in `angzarr_client::Router::with_handler`
  --> src/router/builder.rs
   |
   |     pub fn with_handler<H, F>(mut self, factory: F) -> Self
   |            ------------ required by a bound in this associated function
   |     where
-  |         H: Handler + HandlerKind + 'static,
+  |         H: Handler + HandlerKind,
   |            ^^^^^^^ required by this bound in `Router::with_handler`
 
 error[E0277]: the trait bound `Plain: HandlerKind` is not satisfied
@@ -29,11 +29,11 @@ help: the trait `HandlerKind` is not implemented for `Plain`
   |
 5 | struct Plain;
   | ^^^^^^^^^^^^
-note: required by a bound in `Router::with_handler`
+note: required by a bound in `angzarr_client::Router::with_handler`
  --> src/router/builder.rs
   |
   |     pub fn with_handler<H, F>(mut self, factory: F) -> Self
   |            ------------ required by a bound in this associated function
   |     where
-  |         H: Handler + HandlerKind + 'static,
+  |         H: Handler + HandlerKind,
   |                      ^^^^^^^^^^^ required by this bound in `Router::with_handler`

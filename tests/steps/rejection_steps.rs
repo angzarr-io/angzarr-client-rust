@@ -6,7 +6,7 @@
 //! observable.
 
 use angzarr_client::proto::{business_response, BusinessResponse, EventBook, Notification};
-use angzarr_client::router::runtime::CommandHandlerRouter;
+use angzarr_client::router::CommandHandlerRouter;
 use angzarr_client::router::{Built, Router};
 use angzarr_client::{command_handler, CommandResult};
 use cucumber::{given, then, when, World};
@@ -33,7 +33,7 @@ pub struct Payment;
 
 #[command_handler(domain = "payment", state = PaymentState)]
 impl Payment {
-    #[rejected(domain = "inventory", command = "ReserveStock")]
+    #[rejected(domain = "inventory", command = ReserveStock)]
     fn on_reserve_stock_rejected(
         &self,
         _notification: &Notification,
@@ -47,7 +47,7 @@ pub struct Payment2;
 
 #[command_handler(domain = "payment", state = PaymentState)]
 impl Payment2 {
-    #[rejected(domain = "inventory", command = "ReserveStock")]
+    #[rejected(domain = "inventory", command = ReserveStock)]
     fn on_reserve_stock_rejected(
         &self,
         _notification: &Notification,
@@ -99,6 +99,8 @@ impl RejectionWorld {
                     .map(|e| e.reason)
                     .collect()
             }
+            // No result: no compensation declared (DelegateToFramework).
+            None => Vec::new(),
             other => panic!("expected an Events response, got {other:?}"),
         }
     }
@@ -118,12 +120,15 @@ fn given_payment(_world: &mut RejectionWorld, domain: String) {
 #[given("Payment compensates a rejected ReserveStock from inventory by releasing funds")]
 fn given_compensates(_world: &mut RejectionWorld) {
     let config = <Payment as angzarr_client::router::HandlerKind>::handler_config();
-    let angzarr_client::router::HandlerConfig::CommandHandler { rejected, .. } = config else {
+    let angzarr_client::router::HandlerConfig::CommandHandler { compensates, .. } = config else {
         panic!("Payment is not a command handler");
     };
     assert_eq!(
-        rejected,
-        vec![("inventory".to_string(), "ReserveStock".to_string())]
+        compensates,
+        vec![format!(
+            "inventory:{}",
+            <ReserveStock as prost::Name>::full_name()
+        )]
     );
 }
 
@@ -136,12 +141,15 @@ fn given_active(world: &mut RejectionWorld) {
 #[given("a second compensation handler for the same rejection also releases funds")]
 fn given_second(_world: &mut RejectionWorld) {
     let config = <Payment2 as angzarr_client::router::HandlerKind>::handler_config();
-    let angzarr_client::router::HandlerConfig::CommandHandler { rejected, .. } = config else {
+    let angzarr_client::router::HandlerConfig::CommandHandler { compensates, .. } = config else {
         panic!("Payment2 is not a command handler");
     };
     assert_eq!(
-        rejected,
-        vec![("inventory".to_string(), "ReserveStock".to_string())]
+        compensates,
+        vec![format!(
+            "inventory:{}",
+            <ReserveStock as prost::Name>::full_name()
+        )]
     );
 }
 

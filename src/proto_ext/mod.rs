@@ -30,7 +30,7 @@ pub use constants::{
     PROJECTION_TYPE_URL, UNKNOWN_DOMAIN, WILDCARD_DOMAIN,
 };
 pub use cover::CoverExt;
-pub use edition::EditionExt;
+pub use edition::{EditionExt, EditionNew};
 pub use grpc::correlated_request;
 pub use pages::{AngzarrDeferredSequenceExt, CommandPageExt, EventPageExt, PageHeaderExt};
 pub use uuid::{ProtoUuidExt, UuidExt};

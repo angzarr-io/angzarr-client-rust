@@ -1,12 +1,12 @@
 // tonic::Status is 176 bytes - acceptable for gRPC error handling
 #![allow(clippy::result_large_err)]
 
-//! Tier 5 unified router.
+//! Unified router over the angzarr-router dispatch engine.
 //!
 //! Users compose handlers via [`Router::new`]`.with_handler(factory).build()`
 //! and match on the returned [`Built`] for the kind-specific runtime router
-//! ([`runtime::CommandHandlerRouter`], [`runtime::SagaRouter`],
-//! [`runtime::ProcessManagerRouter`], [`runtime::ProjectorRouter`]).
+//! ([`CommandHandlerRouter`], [`SagaRouter`], [`ProcessManagerRouter`],
+//! [`ProjectorRouter`], [`UpcasterRouter`]).
 //!
 //! # Example
 //!
@@ -21,21 +21,19 @@
 //! ```
 
 pub(crate) mod builder;
+#[doc(hidden)]
+pub mod component;
 mod handler;
 pub mod responses;
-pub mod runtime;
-mod state;
-pub mod upcaster;
+pub mod routers;
 
 // Public types
+pub use crate::destinations::Destinations;
 pub use builder::Router;
-pub use handler::{
-    BuildError, Built, DispatchError, Handler, HandlerConfig, HandlerKind, HandlerRequest,
-    HandlerResponse, Kind,
-};
+pub use handler::{BuildError, Built, DispatchError, Handler, HandlerConfig, HandlerKind, Kind};
 pub use responses::{ProcessManagerResponse, RejectionHandlerResponse, SagaHandlerResponse};
-pub use runtime::{CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter};
-pub use state::Destinations;
-pub use upcaster::UpcasterRouter;
+pub use routers::{
+    CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter, UpcasterRouter,
+};
 
 pub use crate::error::{CommandRejectedError, CommandResult};

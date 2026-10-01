@@ -8,118 +8,58 @@
 //! * single-kind register → returns the matching `Built::*` variant
 //! * `handler_count()` reports the registered factory count
 //!
-//! Uses minimal hand-rolled `Handler` impls so we can probe the builder
-//! without dragging in proc-macro scaffolding.
+//! Uses minimal macro-declared handlers, one per kind.
 
-use angzarr_client::router::{
-    BuildError, Built, Handler, HandlerConfig, HandlerKind, HandlerRequest, HandlerResponse, Kind,
-    Router,
-};
-use angzarr_client::ClientError;
+use angzarr_client::proto::{EventBook, ProcessManagerHandleResponse, SagaResponse};
+use angzarr_client::router::{BuildError, Built, Router};
+#[allow(unused_imports)]
+use angzarr_client::{command_handler, handles, process_manager, projector, saga, CommandResult};
 
-// --- Minimal hand-rolled handlers, one per kind. -------------------------
+// --- Minimal handlers, one per kind. -------------------------------------
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct Ping {}
+impl ::prost::Name for Ping {
+    const NAME: &'static str = "Ping";
+    const PACKAGE: &'static str = "mode";
+}
+
+#[derive(Default)]
+struct NoState;
 
 struct StubCh;
-fn stub_ch_config() -> HandlerConfig {
-    HandlerConfig::CommandHandler {
-        domain: "stub".into(),
-        handled: vec![],
-        rejected: vec![],
-        applies: vec![],
-        state_factory: None,
-        handles_fact: vec![],
-        supports_replay: false,
-    }
-}
-impl HandlerKind for StubCh {
-    const KIND: Kind = Kind::CommandHandler;
-    fn handler_config() -> HandlerConfig {
-        stub_ch_config()
-    }
-}
-impl Handler for StubCh {
-    fn config(&self) -> HandlerConfig {
-        stub_ch_config()
-    }
-    fn dispatch(&self, _request: HandlerRequest) -> Result<HandlerResponse, ClientError> {
-        unreachable!("stub: build-time only")
+#[command_handler(domain = "stub", state = NoState)]
+impl StubCh {
+    #[handles(Ping)]
+    fn on_ping(&self, _cmd: Ping, _state: &NoState, _seq: u32) -> CommandResult<EventBook> {
+        Ok(EventBook::default())
     }
 }
 
 struct StubSaga;
-fn stub_saga_config() -> HandlerConfig {
-    HandlerConfig::Saga {
-        name: "stub-saga".into(),
-        source: "src".into(),
-        target: "tgt".into(),
-        sync: false,
-        handled: vec![],
-    }
-}
-impl HandlerKind for StubSaga {
-    const KIND: Kind = Kind::Saga;
-    fn handler_config() -> HandlerConfig {
-        stub_saga_config()
-    }
-}
-impl Handler for StubSaga {
-    fn config(&self) -> HandlerConfig {
-        stub_saga_config()
-    }
-    fn dispatch(&self, _request: HandlerRequest) -> Result<HandlerResponse, ClientError> {
-        unreachable!("stub: build-time only")
+#[saga(name = "stub-saga", source = "src", target = "tgt")]
+impl StubSaga {
+    #[handles(Ping)]
+    fn on_ping(&self, _evt: Ping) -> CommandResult<SagaResponse> {
+        Ok(SagaResponse::default())
     }
 }
 
 struct StubPm;
-fn stub_pm_config() -> HandlerConfig {
-    HandlerConfig::ProcessManager {
-        name: "stub-pm".into(),
-        pm_domain: "pm".into(),
-        sources: vec!["a".into()],
-        targets: vec!["b".into()],
-        sync_targets: vec![],
-        handled: vec![],
-        rejected: vec![],
-        applies: vec![],
-        state_factory: None,
-    }
-}
-impl HandlerKind for StubPm {
-    const KIND: Kind = Kind::ProcessManager;
-    fn handler_config() -> HandlerConfig {
-        stub_pm_config()
-    }
-}
-impl Handler for StubPm {
-    fn config(&self) -> HandlerConfig {
-        stub_pm_config()
-    }
-    fn dispatch(&self, _request: HandlerRequest) -> Result<HandlerResponse, ClientError> {
-        unreachable!("stub: build-time only")
+#[process_manager(name = "stub-pm", pm_domain = "pm", state = NoState, sources = ["a"], targets = ["b"])]
+impl StubPm {
+    #[handles(Ping)]
+    fn on_ping(&self, _evt: Ping, _state: &NoState) -> CommandResult<ProcessManagerHandleResponse> {
+        Ok(ProcessManagerHandleResponse::default())
     }
 }
 
 struct StubProjector;
-fn stub_projector_config() -> HandlerConfig {
-    HandlerConfig::Projector {
-        name: "stub-proj".into(),
-        domains: vec!["d".into()],
-        handled: vec![],
-    }
-}
-impl HandlerKind for StubProjector {
-    const KIND: Kind = Kind::Projector;
-    fn handler_config() -> HandlerConfig {
-        stub_projector_config()
-    }
-}
-impl Handler for StubProjector {
-    fn config(&self) -> HandlerConfig {
-        stub_projector_config()
-    }
-    fn dispatch(&self, _request: HandlerRequest) -> Result<HandlerResponse, ClientError> {
-        unreachable!("stub: build-time only")
+#[projector(name = "stub-proj", domains = ["d"])]
+impl StubProjector {
+    #[handles(Ping)]
+    fn on_ping(&self, _evt: Ping) -> CommandResult<()> {
+        Ok(())
     }
 }
 

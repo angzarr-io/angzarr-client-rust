@@ -67,47 +67,35 @@ impl EditionExt for Edition {
     }
 }
 
-/// Constructors for Edition (cannot be in trait).
-impl Edition {
-    /// Create an Edition for the main timeline (empty name).
-    #[must_use]
-    pub fn main_timeline() -> Self {
+/// Constructors for [`Edition`].
+pub trait EditionNew: Sized {
+    /// The main timeline (empty name).
+    fn main_timeline() -> Self;
+    /// An edition with implicit divergence (name only).
+    fn implicit(name: impl Into<String>) -> Self;
+    /// An edition with explicit divergence points.
+    fn explicit(name: impl Into<String>, divergences: Vec<crate::proto::DomainDivergence>) -> Self;
+}
+
+impl EditionNew for Edition {
+    fn main_timeline() -> Self {
         Self {
             name: String::new(),
             divergences: vec![],
         }
     }
 
-    /// Create an Edition with implicit divergence (name only, no explicit divergences).
-    #[must_use]
-    pub fn implicit(name: impl Into<String>) -> Self {
+    fn implicit(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             divergences: vec![],
         }
     }
 
-    /// Create an Edition with explicit divergence points.
-    #[must_use]
-    pub fn explicit(
-        name: impl Into<String>,
-        divergences: Vec<crate::proto::DomainDivergence>,
-    ) -> Self {
+    fn explicit(name: impl Into<String>, divergences: Vec<crate::proto::DomainDivergence>) -> Self {
         Self {
             name: name.into(),
             divergences,
         }
-    }
-}
-
-impl From<&str> for Edition {
-    fn from(name: &str) -> Self {
-        Edition::implicit(name)
-    }
-}
-
-impl From<String> for Edition {
-    fn from(name: String) -> Self {
-        Edition::implicit(name)
     }
 }

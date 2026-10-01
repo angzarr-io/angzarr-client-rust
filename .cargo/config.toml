@@ -1,0 +1,4 @@
+# The angzarr-router dependency generates the framework protos from this
+# repo's angzarr-project pin, so both crates share one spec.
+[env]
+ANGZARR_PROJECT_PROTO = { value = "angzarr-project/proto", relative = true }

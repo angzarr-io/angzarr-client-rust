@@ -20,7 +20,7 @@ impl S {
         Ok(SagaResponse::default())
     }
 
-    #[rejected(domain = "inventory", command = "ReserveStock")]
+    #[rejected(domain = "inventory", command = ReserveStock)]
     fn on_rejected(&self, _n: &Notification) -> CommandResult<SagaResponse> {
         Ok(SagaResponse::default())
     }

@@ -281,7 +281,9 @@ impl<'a, C: traits::QueryClient> QueryBuilder<'a, C> {
                 correlation_id: self
                     .correlation_id
                     .unwrap_or_else(|| Uuid::new_v4().to_string()),
-                edition: self.edition.map(Edition::from),
+                edition: self
+                    .edition
+                    .map(<Edition as crate::proto_ext::edition::EditionNew>::implicit),
                 ..Default::default()
             }),
             selection: self.selection,
