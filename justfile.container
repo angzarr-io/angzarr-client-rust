@@ -130,6 +130,26 @@ mutation-test: generate-proto
     fi
     echo "PASS: Kill rate meets 70% threshold"
 
+# Mutation-test only the given source files. Unviable mutants are excluded
+# from the kill rate; survivors are listed for triage.
+mutants +FILES: generate-proto
+    #!/usr/bin/env bash
+    set -uo pipefail
+    args=()
+    for f in {{FILES}}; do args+=(--file "$f"); done
+    cargo mutants --jobs 4 "${args[@]}"
+    status=$?
+    out=mutants.out
+    caught=$(wc -l < "$out/caught.txt" 2>/dev/null || echo 0)
+    missed=$(wc -l < "$out/missed.txt" 2>/dev/null || echo 0)
+    timeout=$(wc -l < "$out/timeout.txt" 2>/dev/null || echo 0)
+    total=$((caught + missed + timeout))
+    if [ "$total" -gt 0 ]; then
+        echo "Kill rate: $(( (caught + timeout) * 100 / total ))% (caught=$caught timeout=$timeout missed=$missed)"
+    fi
+    if [ -s "$out/missed.txt" ]; then echo "Missed:"; cat "$out/missed.txt"; fi
+    exit $status
+
 # Dry-run mutation testing (show what would be mutated)
 mutation-test-dry: generate-proto
     cargo mutants --list

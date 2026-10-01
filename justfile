@@ -267,6 +267,11 @@ clean:
 mutation-test: generate-proto
     just _container-ephemeral mutation-test
 
+# Mutation-test only the given source files (e.g. `just mutants src/server.rs`).
+# Ephemeral like mutation-test; prints the per-file kill rate.
+mutants +FILES: generate-proto
+    just _container-ephemeral mutants {{FILES}}
+
 # Dry-run mutation testing (show what would be mutated). Also ephemeral.
 mutation-test-dry: generate-proto
     just _container-ephemeral mutation-test-dry
