@@ -79,7 +79,13 @@ impl BlockingAggregate {
     #[handles(Ping)]
     fn on_ping(&self, _cmd: Ping, _state: &S, _seq: u32) -> CommandResult<EventBook> {
         wait_for(&self.0)?;
-        Ok(EventBook::default())
+        Ok(EventBook {
+            pages: vec![EventPage {
+                payload: Some(event_page::Payload::Event(ping_any())),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
     }
 }
 
@@ -90,7 +96,10 @@ impl BlockingSaga {
     #[handles(Ping)]
     fn on_ping(&self, _evt: Ping) -> CommandResult<SagaResponse> {
         wait_for(&self.0)?;
-        Ok(SagaResponse::default())
+        Ok(SagaResponse {
+            commands: vec![other_command()],
+            ..Default::default()
+        })
     }
 }
 
@@ -107,7 +116,10 @@ impl BlockingPm {
     #[handles(Ping)]
     fn on_ping(&self, _evt: Ping, _state: &S) -> CommandResult<ProcessManagerHandleResponse> {
         wait_for(&self.0)?;
-        Ok(ProcessManagerHandleResponse::default())
+        Ok(ProcessManagerHandleResponse {
+            commands: vec![other_command()],
+            ..Default::default()
+        })
     }
 }
 
@@ -132,6 +144,20 @@ impl BlockingUpcaster {
             Err(_) => "blocked".to_string(),
         };
         Pong { id }
+    }
+}
+
+/// The command the saga and PM send to "other".
+fn other_command() -> CommandBook {
+    CommandBook {
+        cover: Some(Cover {
+            domain: "other".into(),
+            ..Default::default()
+        }),
+        pages: vec![CommandPage {
+            payload: Some(command_page::Payload::Command(ping_any())),
+            ..Default::default()
+        }],
     }
 }
 
@@ -191,7 +217,23 @@ async fn command_handler_dispatch_does_not_block_the_runtime() {
         }),
         events: None,
     };
-    svc.handle(tonic::Request::new(cmd)).await.expect("handled");
+    let response = svc
+        .handle(tonic::Request::new(cmd))
+        .await
+        .expect("handled")
+        .into_inner();
+    match response.result {
+        Some(angzarr_client::proto::business_response::Result::Events(book)) => {
+            assert_eq!(book.pages.len(), 1)
+        }
+        other => panic!("expected events, got {other:?}"),
+    }
+
+    let status = svc
+        .replay(tonic::Request::new(Default::default()))
+        .await
+        .expect_err("replay is not supported");
+    assert_eq!(status.code(), tonic::Code::Unimplemented);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -211,7 +253,19 @@ async fn saga_dispatch_does_not_block_the_runtime() {
         source: Some(ping_book()),
         ..Default::default()
     };
-    svc.handle(tonic::Request::new(req)).await.expect("handled");
+    let response = svc
+        .handle(tonic::Request::new(req))
+        .await
+        .expect("handled")
+        .into_inner();
+    assert_eq!(response.commands.len(), 1);
+    assert_eq!(
+        response.commands[0]
+            .cover
+            .as_ref()
+            .map(|c| c.domain.as_str()),
+        Some("other")
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -231,7 +285,19 @@ async fn process_manager_dispatch_does_not_block_the_runtime() {
         trigger: Some(ping_book()),
         ..Default::default()
     };
-    svc.handle(tonic::Request::new(req)).await.expect("handled");
+    let response = svc
+        .handle(tonic::Request::new(req))
+        .await
+        .expect("handled")
+        .into_inner();
+    assert_eq!(response.commands.len(), 1);
+    assert_eq!(
+        response.commands[0]
+            .cover
+            .as_ref()
+            .map(|c| c.domain.as_str()),
+        Some("other")
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -247,14 +313,23 @@ async fn projector_dispatch_does_not_block_the_runtime() {
     };
     let svc = ProjectorGrpc::new(router);
     release_later(Arc::clone(&flag));
-    svc.handle(tonic::Request::new(ping_book()))
+    let projection = svc
+        .handle(tonic::Request::new(ping_book()))
         .await
-        .expect("handled");
+        .expect("handled")
+        .into_inner();
+    assert_eq!(
+        projection.cover.as_ref().map(|c| c.domain.as_str()),
+        Some("blocking")
+    );
     flag.store(false, Ordering::SeqCst);
     release_later(Arc::clone(&flag));
-    svc.handle_speculative(tonic::Request::new(ping_book()))
+    let speculative = svc
+        .handle_speculative(tonic::Request::new(ping_book()))
         .await
-        .expect("handled speculatively");
+        .expect("handled speculatively")
+        .into_inner();
+    assert_eq!(speculative, projection);
 }
 
 #[tokio::test(flavor = "current_thread")]
