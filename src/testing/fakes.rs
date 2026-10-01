@@ -549,10 +549,11 @@ mod tests {
             book("carts")
         );
 
+        fake.get_events(query("q5")).await.unwrap();
         assert_eq!(fake.call_count("get_event_book"), 2);
-        assert_eq!(fake.call_count("get_events"), 2);
-        assert_eq!(fake.calls().len(), 4);
-        assert_eq!(fake.last_call("get_events").unwrap().query, query("q3"));
+        assert_eq!(fake.call_count("get_events"), 3);
+        assert_eq!(fake.calls().len(), 5);
+        assert_eq!(fake.last_call("get_events").unwrap().query, query("q5"));
         assert_eq!(fake.last_call("get_event_book").unwrap().query, query("q4"));
         assert!(fake.last_call("other").is_none());
     }
@@ -606,9 +607,12 @@ mod tests {
         assert_eq!(fake.saga(Default::default()).await.unwrap(), sg);
         assert_eq!(fake.process_manager(Default::default()).await.unwrap(), pm);
 
-        for method in ["command_handler", "projector", "saga", "process_manager"] {
+        fake.saga(Default::default()).await.unwrap();
+        for method in ["command_handler", "projector", "process_manager"] {
             assert_eq!(fake.call_count(method), 1, "{method}");
         }
+        assert_eq!(fake.call_count("saga"), 2);
+        assert_eq!(fake.call_count("other"), 0);
         assert!(matches!(
             fake.last_call("command_handler"),
             Some(SpeculativeCall::CommandHandler(_))
