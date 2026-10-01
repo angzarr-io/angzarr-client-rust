@@ -26,7 +26,7 @@ use tonic_health::server::HealthReporter;
 use tonic_health::ServingStatus;
 use tracing::warn;
 
-use crate::error::{ClientError, Result};
+use crate::error::Result;
 
 /// Parse a bare endpoint string (e.g. `host:port`, `/abs/path`,
 /// `unix:/abs/path`, `unix:///abs/path`, `unix:relative/path`) into the
@@ -157,8 +157,7 @@ impl OutputDomainProbe {
     /// runtime mid-spawn.
     pub fn for_domain(domain: impl Into<String>) -> Result<Self> {
         let domain = domain.into();
-        let raw = crate::transport::resolve_ch_endpoint(&domain, None, None, None, None)
-            .map_err(ClientError::from)?;
+        let raw = crate::transport::resolve_ch_endpoint(&domain, None, None, None, None)?;
         Ok(Self {
             domain,
             endpoint: parse_probe_endpoint(raw),

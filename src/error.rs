@@ -368,7 +368,7 @@ pub struct CommandRejectedError {
     pub message: &'static str,
     pub status_code: &'static str,
     pub details: BTreeMap<String, String>,
-    pub cover: Option<crate::proto::Cover>,
+    pub cover: Option<Box<crate::proto::Cover>>,
 }
 
 impl CommandRejectedError {
@@ -438,7 +438,7 @@ impl CommandRejectedError {
     /// Stamp the addressing envelope. Builder-style for the dispatch
     /// boundary to attach the request's cover to a propagating rejection.
     pub fn with_cover(mut self, cover: crate::proto::Cover) -> Self {
-        self.cover = Some(cover);
+        self.cover = Some(Box::new(cover));
         self
     }
 
@@ -484,7 +484,7 @@ impl From<CommandRejectedError> for Status {
             err.message,
             err.code,
             Some(&err.details),
-            err.cover.as_ref(),
+            err.cover.as_deref(),
         );
         Status::with_details(grpc_code, err.message, bytes::Bytes::from(payload))
     }
