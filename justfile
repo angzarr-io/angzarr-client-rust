@@ -28,11 +28,6 @@ IMAGE := "ghcr.io/angzarr-io/angzarr-rust:latest"
 # makes bind-mounted writes (target/, .cargo-container/, src/proto/) land as
 # the host user. The image's default `angzarr` user maps to a subuid there and
 # cannot write the workspace. Rootful docker keeps the image default (fixuid).
-# angzarr-router checkout the `angzarr-router` path dependency points at
-# (../../angzarr-router relative to this repo); mounted at /angzarr-router so
-# the same relative path resolves inside the container.
-ROUTER_DIR := env_var_or_default("ANGZARR_ROUTER_DIR", ROOT + "/../../angzarr-router")
-ROUTER_MOUNT := "-v \"" + ROUTER_DIR + ":/angzarr-router:ro,Z\""
 
 DOCKER_USER := if `docker info 2>/dev/null | grep -q rootless && echo yes || echo no` == "yes" { "-u 0:0" } else { "" }
 
@@ -43,7 +38,7 @@ _container +ARGS:
     if [ "${DEVCONTAINER:-}" = "true" ]; then
         just {{ARGS}}
     else
-        docker run --rm --network=host {{DOCKER_USER}} {{ROUTER_MOUNT}} \
+        docker run --rm --network=host {{DOCKER_USER}} \
             -v "{{ROOT}}:/workspace:Z" \
             -v "{{ROOT}}/justfile.container:/workspace/justfile:ro" \
             -w /workspace \
@@ -85,7 +80,7 @@ _container-ephemeral +ARGS:
     mkdir -p "{{ROOT}}/mutants.out" \
              "{{ROOT}}/.mutants-cache/cargo-home" \
              "{{ROOT}}/.mutants-cache/cargo-target"
-    docker run --rm --network=host {{DOCKER_USER}} {{ROUTER_MOUNT}} \
+    docker run --rm --network=host {{DOCKER_USER}} \
         -v "{{ROOT}}:/src:ro,Z" \
         -v "{{ROOT}}/mutants.out:/out:Z" \
         -v "{{ROOT}}/.mutants-cache/cargo-home:/cargo-home:Z" \
@@ -209,7 +204,7 @@ generate-proto-force:
         USER_FLAG="-u $(id -u):$(id -g)"
     fi
     docker run --rm --network=host \
-        $USER_FLAG {{ROUTER_MOUNT}} \
+        $USER_FLAG \
         -v "{{ROOT}}:/workspace:Z" \
         -v "{{ROOT}}/justfile.container:/workspace/justfile:ro" \
         -w /workspace \

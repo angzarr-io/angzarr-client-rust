@@ -24,7 +24,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 # The shared dispatch/rebuild engine. Its framework message types are this
 # crate's proto types (build.rs extern_path).
-angzarr-router = { path = "../../angzarr-router/rem-integration/crates/router" }
+angzarr-router = { git = "https://github.com/angzarr-io/angzarr-router.git", rev = "c5f22cb213e00b0d170fb17d504f75cde5581b42" }
 
 # Macros (re-exported for convenience)
 angzarr-macros = { version = "0.1.0", path = "angzarr-macros" }
