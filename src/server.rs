@@ -82,46 +82,57 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
-    /// Resolve from env. UDS mode is selected when all three of `UDS_BASE_PATH`,
-    /// `SERVICE_NAME`, and `DOMAIN` are set; otherwise TCP, with port read from
-    /// `PORT` or `GRPC_PORT`, falling back to `default_port`.
+    /// Resolve from env, matching the variables the coordinator sets when
+    /// it spawns a component (`TRANSPORT_TYPE`, `UDS_BASE_PATH`,
+    /// `SERVICE_NAME`, `DOMAIN`) and Python's runner:
     ///
-    /// **Naming note**: server-side reads `UDS_BASE_PATH` (no
-    /// `ANGZARR_` prefix) while client-side
-    /// [`crate::transport::resolve_ch_endpoint`] reads `ANGZARR_UDS_BASE`
-    /// — this asymmetry is the **established cross-language convention**:
-    /// Python (`server.py` reads `UDS_BASE_PATH`, `client.py` reads
-    /// `ANGZARR_UDS_BASE`), Go (`server.go` reads `UDS_BASE_PATH`,
-    /// `client.go` reads `ANGZARR_UDS_BASE`), and so on. Aligning the
-    /// names would require coordinating all six clients in lockstep
-    /// with deployment manifests in the field. Do not "fix" this in
-    /// isolation.
+    /// - `TRANSPORT_TYPE=uds` (case-insensitive): UDS at
+    ///   `{UDS_BASE_PATH:-/tmp/angzarr}/{SERVICE_NAME:-business}-{qualifier}.sock`,
+    ///   where the qualifier is the first set of `DOMAIN`, `SAGA_NAME`,
+    ///   `PROJECTOR_NAME`; with no qualifier the file is `{service}.sock`.
+    /// - `TRANSPORT_TYPE` set to anything else: TCP.
+    /// - `TRANSPORT_TYPE` unset: UDS when `UDS_BASE_PATH`, `SERVICE_NAME` and
+    ///   `DOMAIN` are all set, otherwise TCP.
+    ///
+    /// TCP reads the port from `PORT` or `GRPC_PORT`, falling back to
+    /// `default_port`.
+    ///
+    /// Server-side reads `UDS_BASE_PATH` while the client-side
+    /// [`crate::transport::resolve_ch_endpoint`] reads `ANGZARR_UDS_BASE`;
+    /// every language client uses that same split.
     ///
     /// This function is **pure** — no filesystem side effects. The runner is
     /// responsible for creating the parent directory and removing any stale
     /// socket file at the chosen path.
     pub fn from_env(default_port: u16) -> Self {
-        if let (Ok(base_path), Ok(service_name), Ok(domain)) = (
-            env::var("UDS_BASE_PATH"),
-            env::var("SERVICE_NAME"),
-            env::var("DOMAIN"),
-        ) {
-            let socket_name = format!("{}-{}.sock", service_name, domain);
-            let uds_path = PathBuf::from(base_path).join(socket_name);
-            return Self {
-                port: default_port,
-                uds_path: Some(uds_path),
-            };
-        }
+        let set = |k: &str| env::var(k).ok().filter(|v| !v.is_empty());
+        let uds_path = match set("TRANSPORT_TYPE") {
+            Some(t) if t.eq_ignore_ascii_case("uds") => {
+                let base = set("UDS_BASE_PATH").unwrap_or_else(|| "/tmp/angzarr".into());
+                let service = set("SERVICE_NAME").unwrap_or_else(|| "business".into());
+                let qualifier = set("DOMAIN")
+                    .or_else(|| set("SAGA_NAME"))
+                    .or_else(|| set("PROJECTOR_NAME"));
+                let file = match qualifier {
+                    Some(q) => format!("{service}-{q}.sock"),
+                    None => format!("{service}.sock"),
+                };
+                Some(PathBuf::from(base).join(file))
+            }
+            Some(_) => None,
+            None => match (set("UDS_BASE_PATH"), set("SERVICE_NAME"), set("DOMAIN")) {
+                (Some(base), Some(service), Some(domain)) => {
+                    Some(PathBuf::from(base).join(format!("{service}-{domain}.sock")))
+                }
+                _ => None,
+            },
+        };
         let port = env::var("PORT")
             .or_else(|_| env::var("GRPC_PORT"))
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(default_port);
-        Self {
-            port,
-            uds_path: None,
-        }
+        Self { port, uds_path }
     }
 }
 
@@ -636,6 +647,130 @@ mod tests {
         let err = result.expect_err("bind on an occupied port fails");
         assert_eq!(err.code(), codes::TCP_BIND_FAILED);
         drop(occupied);
+    }
+
+    const TRANSPORT_VARS: &[&str] = &[
+        "TRANSPORT_TYPE",
+        "UDS_BASE_PATH",
+        "SERVICE_NAME",
+        "DOMAIN",
+        "SAGA_NAME",
+        "PROJECTOR_NAME",
+        "PORT",
+        "GRPC_PORT",
+    ];
+
+    fn with_transport_env(vars: &[(&str, &str)], f: impl FnOnce()) {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for v in TRANSPORT_VARS {
+            env::remove_var(v);
+        }
+        for (k, v) in vars {
+            env::set_var(k, v);
+        }
+        f();
+        for v in TRANSPORT_VARS {
+            env::remove_var(v);
+        }
+    }
+
+    #[test]
+    fn transport_type_uds_uses_python_runner_defaults() {
+        with_transport_env(&[("TRANSPORT_TYPE", "uds")], || {
+            let cfg = ServerConfig::from_env(50052);
+            assert_eq!(
+                cfg.uds_path,
+                Some(PathBuf::from("/tmp/angzarr/business.sock"))
+            );
+        });
+    }
+
+    #[test]
+    fn transport_type_uds_qualifies_by_domain_then_saga_then_projector() {
+        with_transport_env(
+            &[
+                ("TRANSPORT_TYPE", "UDS"),
+                ("UDS_BASE_PATH", "/run/az"),
+                ("SERVICE_NAME", "saga"),
+                ("SAGA_NAME", "fulfillment"),
+                ("PROJECTOR_NAME", "ignored"),
+            ],
+            || {
+                let cfg = ServerConfig::from_env(50052);
+                assert_eq!(
+                    cfg.uds_path,
+                    Some(PathBuf::from("/run/az/saga-fulfillment.sock"))
+                );
+            },
+        );
+        with_transport_env(
+            &[
+                ("TRANSPORT_TYPE", "uds"),
+                ("DOMAIN", "orders"),
+                ("SAGA_NAME", "ignored"),
+            ],
+            || {
+                let cfg = ServerConfig::from_env(50052);
+                assert_eq!(
+                    cfg.uds_path,
+                    Some(PathBuf::from("/tmp/angzarr/business-orders.sock"))
+                );
+            },
+        );
+        with_transport_env(
+            &[("TRANSPORT_TYPE", "uds"), ("PROJECTOR_NAME", "ledger")],
+            || {
+                let cfg = ServerConfig::from_env(50052);
+                assert_eq!(
+                    cfg.uds_path,
+                    Some(PathBuf::from("/tmp/angzarr/business-ledger.sock"))
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn transport_type_tcp_wins_over_uds_variables() {
+        with_transport_env(
+            &[
+                ("TRANSPORT_TYPE", "tcp"),
+                ("UDS_BASE_PATH", "/run/az"),
+                ("SERVICE_NAME", "business"),
+                ("DOMAIN", "orders"),
+                ("PORT", "6000"),
+            ],
+            || {
+                let cfg = ServerConfig::from_env(50052);
+                assert_eq!(cfg.uds_path, None);
+                assert_eq!(cfg.port, 6000);
+            },
+        );
+    }
+
+    #[test]
+    fn without_transport_type_all_three_uds_variables_select_uds() {
+        with_transport_env(
+            &[
+                ("UDS_BASE_PATH", "/run/az"),
+                ("SERVICE_NAME", "business"),
+                ("DOMAIN", "orders"),
+            ],
+            || {
+                let cfg = ServerConfig::from_env(50052);
+                assert_eq!(
+                    cfg.uds_path,
+                    Some(PathBuf::from("/run/az/business-orders.sock"))
+                );
+            },
+        );
+        with_transport_env(
+            &[("UDS_BASE_PATH", "/run/az"), ("DOMAIN", "orders")],
+            || {
+                let cfg = ServerConfig::from_env(50052);
+                assert_eq!(cfg.uds_path, None);
+                assert_eq!(cfg.port, 50052);
+            },
+        );
     }
 
     /// Health keys are the fully-qualified gRPC service names of the
