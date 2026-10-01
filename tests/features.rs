@@ -95,18 +95,6 @@ const PENDING: &[(&str, &str)] = &[
     ("C-0223", "X-167 saga #[rejected] dispatch"),
     ("C-0224", "X-167 process-manager #[rejected] dispatch"),
     ("C-0252", "X-167 saga #[rejected] dispatch"),
-    (
-        "C-0323",
-        "connection errors drop the transport error's source chain",
-    ),
-    (
-        "C-0326",
-        "connection errors drop the transport error's source chain",
-    ),
-    (
-        "C-0329",
-        "from_env treats an empty endpoint variable as set",
-    ),
     ("C-0336", "no configurable connect timeout"),
     ("C-0337", "no configurable HTTP/2 keep-alive"),
 ];

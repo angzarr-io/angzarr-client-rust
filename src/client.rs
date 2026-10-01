@@ -116,6 +116,32 @@ fn detect_uds_path(endpoint: &str) -> Option<String> {
     }
 }
 
+/// The endpoint named by `env_var`, or `default` when the variable is
+/// unset or empty.
+fn endpoint_from_env(env_var: &str, default: &str) -> String {
+    std::env::var(env_var)
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
+/// `err` and every error in its `source()` chain, joined by `": "`, so
+/// the root cause (e.g. "Connection refused", "No such file or
+/// directory") survives into structured error details.
+fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
+    while let Some(e) = source {
+        let text = e.to_string();
+        if !out.ends_with(&text) {
+            out.push_str(": ");
+            out.push_str(&text);
+        }
+        source = e.source();
+    }
+    out
+}
+
 /// Retries connection with the provided `RetryPolicy` on failure.
 ///
 /// Audit finding #44: backoff math comes from
@@ -144,7 +170,7 @@ async fn create_channel(endpoint: &str, retry: &RetryPolicy) -> Result<Channel> 
                     messages::ENDPOINT_INVALID_URI,
                     [
                         (keys::ENDPOINT, endpoint.to_string()),
-                        (keys::CAUSE, e.to_string()),
+                        (keys::CAUSE, error_chain(&e)),
                     ],
                 ));
             }
@@ -218,7 +244,7 @@ async fn create_channel(endpoint: &str, retry: &RetryPolicy) -> Result<Channel> 
                     messages::CONNECTION_FAILED,
                     [
                         (keys::ENDPOINT, endpoint.to_string()),
-                        (keys::CAUSE, e.to_string()),
+                        (keys::CAUSE, error_chain(&e)),
                     ],
                 ));
             }
@@ -256,7 +282,7 @@ impl QueryClient {
 
     /// Connect using an endpoint from environment variable with fallback.
     pub async fn from_env(env_var: &str, default: &str) -> Result<Self> {
-        let endpoint = std::env::var(env_var).unwrap_or_else(|_| default.to_string());
+        let endpoint = endpoint_from_env(env_var, default);
         Self::connect(&endpoint).await
     }
 
@@ -388,7 +414,7 @@ impl CommandHandlerClient {
 
     /// Connect using an endpoint from environment variable with fallback.
     pub async fn from_env(env_var: &str, default: &str) -> Result<Self> {
-        let endpoint = std::env::var(env_var).unwrap_or_else(|_| default.to_string());
+        let endpoint = endpoint_from_env(env_var, default);
         Self::connect(&endpoint).await
     }
 
@@ -515,7 +541,7 @@ impl DomainClient {
 
     /// Connect using an endpoint from environment variable with fallback.
     pub async fn from_env(env_var: &str, default: &str) -> Result<Self> {
-        let endpoint = std::env::var(env_var).unwrap_or_else(|_| default.to_string());
+        let endpoint = endpoint_from_env(env_var, default);
         Self::connect(&endpoint).await
     }
 
@@ -650,7 +676,7 @@ impl SpeculativeClient {
 
     /// Connect using an endpoint from environment variable with fallback.
     pub async fn from_env(env_var: &str, default: &str) -> Result<Self> {
-        let endpoint = std::env::var(env_var).unwrap_or_else(|_| default.to_string());
+        let endpoint = endpoint_from_env(env_var, default);
         Self::connect(&endpoint).await
     }
 
@@ -749,6 +775,48 @@ impl traits::SpeculativeClient for SpeculativeClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn endpoint_from_env_treats_unset_and_empty_as_default() {
+        let var = "ANGZARR_CLIENT_TEST_ENDPOINT_FROM_ENV";
+        std::env::remove_var(var);
+        assert_eq!(
+            super::endpoint_from_env(var, "localhost:1310"),
+            "localhost:1310"
+        );
+        std::env::set_var(var, "");
+        assert_eq!(
+            super::endpoint_from_env(var, "localhost:1310"),
+            "localhost:1310"
+        );
+        std::env::set_var(var, "host:9");
+        assert_eq!(super::endpoint_from_env(var, "localhost:1310"), "host:9");
+        std::env::remove_var(var);
+    }
+
+    #[test]
+    fn error_chain_includes_every_source() {
+        #[derive(Debug)]
+        struct Outer(std::io::Error);
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("transport error")
+            }
+        }
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        let err = Outer(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "Connection refused (os error 111)",
+        ));
+        assert_eq!(
+            super::error_chain(&err),
+            "transport error: Connection refused (os error 111)"
+        );
+    }
+
     use super::{detect_uds_path, normalize_tcp_endpoint, validate_uds_path};
     use crate::error_codes::codes;
 
