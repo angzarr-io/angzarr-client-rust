@@ -224,3 +224,43 @@ fn upcaster_router_metadata_and_dispatch() {
     };
     assert_eq!(any.type_url, full_type_url::<PingV2>());
 }
+
+struct AnyDomain(Arc<Mutex<u32>>);
+#[projector(name = "any", domains = ["*"])]
+impl AnyDomain {
+    #[handles(Ping)]
+    fn on(&self, _e: Ping) -> CommandResult<()> {
+        *self.0.lock().unwrap() += 1;
+        Ok(())
+    }
+}
+
+#[test]
+fn a_wildcard_projector_consumes_every_domain() {
+    let count = Arc::new(Mutex::new(0));
+    let c = Arc::clone(&count);
+    let Ok(Built::Projector(r)) = Router::new("projectors")
+        .with_handler(move || AnyDomain(Arc::clone(&c)))
+        .build()
+    else {
+        panic!("projector router");
+    };
+    for domain in ["a", "z"] {
+        r.dispatch(EventBook {
+            cover: Some(Cover {
+                domain: domain.into(),
+                ..Default::default()
+            }),
+            pages: vec![EventPage {
+                payload: Some(event_page::Payload::Event(Any {
+                    type_url: full_type_url::<Ping>(),
+                    value: vec![],
+                })),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .expect("projector dispatch");
+    }
+    assert_eq!(*count.lock().unwrap(), 2);
+}

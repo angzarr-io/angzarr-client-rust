@@ -11,7 +11,7 @@ use crate::proto::{
     ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, ReplayRequest,
     ReplayResponse, SagaHandleRequest, SagaResponse, UpcastRequest, UpcastResponse,
 };
-use crate::router::component::{begin_dispatch, from_coded, ReplayFn};
+use crate::router::component::{begin_dispatch, from_coded};
 use crate::router::HandlerConfig;
 use crate::ClientError;
 
@@ -44,7 +44,6 @@ fn union<'a>(lists: impl IntoIterator<Item = &'a [String]>) -> Vec<String> {
 pub struct CommandHandlerRouter {
     pub(crate) inner: angzarr_router::router::Router,
     pub(crate) configs: Vec<HandlerConfig>,
-    pub(crate) replay: Option<ReplayFn>,
 }
 
 impl CommandHandlerRouter {
@@ -70,8 +69,8 @@ impl CommandHandlerRouter {
     /// [`Self::supports_replay`]).
     pub fn dispatch_replay(&self, request: ReplayRequest) -> Result<ReplayResponse, ClientError> {
         begin_dispatch();
-        match &self.replay {
-            Some(replay) => replay(&request).map_err(from_coded),
+        match self.replay_domain() {
+            Some(domain) => self.inner.replay(domain, &request).map_err(from_coded),
             None => Ok(ReplayResponse::default()),
         }
     }
@@ -85,7 +84,19 @@ impl CommandHandlerRouter {
 
     /// True if a registered aggregate opted into `Replay`.
     pub fn supports_replay(&self) -> bool {
-        self.replay.is_some()
+        self.replay_domain().is_some()
+    }
+
+    /// The domain of the first aggregate that opted into `Replay`.
+    fn replay_domain(&self) -> Option<&str> {
+        self.configs.iter().find_map(|c| match c {
+            HandlerConfig::CommandHandler {
+                domain,
+                supports_replay: true,
+                ..
+            } => Some(domain.as_str()),
+            _ => None,
+        })
     }
 
     /// The first registered aggregate's domain.

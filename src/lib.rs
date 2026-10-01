@@ -64,7 +64,6 @@ pub mod builder;
 pub mod client;
 pub mod compensation;
 pub mod convert;
-pub mod destinations;
 pub mod error;
 pub mod error_codes;
 pub mod handler;

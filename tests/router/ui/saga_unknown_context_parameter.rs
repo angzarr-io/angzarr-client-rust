@@ -16,8 +16,8 @@ struct S;
 #[saga(name = "x", source = "order", target = "inventory")]
 impl S {
     #[handles(OrderCreated)]
-    fn on_created(&self, _evt: OrderCreated, source_seq: u32) -> CommandResult<SagaResponse> {
-        let _ = source_seq;
+    fn on_created(&self, _evt: OrderCreated, trigger_seq: u32) -> CommandResult<SagaResponse> {
+        let _ = trigger_seq;
         Ok(SagaResponse::default())
     }
 }

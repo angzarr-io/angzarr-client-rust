@@ -284,10 +284,9 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
             }
         });
     let replay_expr = if supports_replay {
-        let replay_rebuilder = rebuilder_expr(self_ty, state_ty, &meta);
-        quote! { ::std::option::Option::Some(__p::replay_fn::<#state_ty>(#replay_rebuilder)) }
+        quote! { let table = table.with_message_state(); }
     } else {
-        quote! { ::std::option::Option::None }
+        quote! {}
     };
 
     let config_expr: TokenStream2 = quote! {
@@ -324,10 +323,8 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
                 #(#rejection_regs)*
                 #(#fact_regs)*
                 let _ = &factory;
-                __p::Component::CommandHandler {
-                    table: ::std::boxed::Box::new(table),
-                    replay: #replay_expr,
-                }
+                #replay_expr
+                __p::Component::CommandHandler(::std::boxed::Box::new(table))
             }
         }
 
@@ -371,10 +368,24 @@ fn rebuilder_expr(self_ty: &syn::Type, state_ty: &Ident, meta: &MethodMetadata) 
     }}
 }
 
+/// Which component a handler's optional context parameters come from.
+#[derive(Clone, Copy, PartialEq)]
+enum ContextKind {
+    /// `dests` and the triggering `page` context are in scope.
+    Saga,
+    /// `dests` and `source_cover` are in scope.
+    ProcessManager,
+}
+
 /// The optional context parameters a saga / process-manager handler may
 /// declare after its required ones, by name: `destinations` (the declared
-/// output domains) and `source_cover` (the triggering book's cover).
-fn context_args(method: &syn::ImplItemFn, required: usize) -> syn::Result<Vec<TokenStream2>> {
+/// output domains), `source_cover` (the triggering book's cover) and, for a
+/// saga, `source_seq` (the triggering event's sequence).
+fn context_args(
+    method: &syn::ImplItemFn,
+    required: usize,
+    kind: ContextKind,
+) -> syn::Result<Vec<TokenStream2>> {
     let mut out = Vec::new();
     for arg in method.sig.inputs.iter().skip(1 + required) {
         let syn::FnArg::Typed(pat) = arg else {
@@ -386,12 +397,23 @@ fn context_args(method: &syn::ImplItemFn, required: usize) -> syn::Result<Vec<To
                 "context parameters are matched by name; use a plain identifier",
             ));
         };
-        match ident.ident.to_string().as_str() {
-            "destinations" => out.push(quote! {
-                &::angzarr_client::Destinations::new(dests.domains().iter().cloned())
-            }),
-            "source_cover" => out.push(quote! { source_cover.cloned() }),
-            other => {
+        match (ident.ident.to_string().as_str(), kind) {
+            ("destinations", _) => out.push(quote! { dests }),
+            ("source_cover", ContextKind::Saga) => out.push(quote! { page.cover.cloned() }),
+            ("source_cover", ContextKind::ProcessManager) => {
+                out.push(quote! { source_cover.cloned() })
+            }
+            ("source_seq", ContextKind::Saga) => out.push(quote! { page.sequence }),
+            (other, ContextKind::Saga) => {
+                return Err(syn::Error::new_spanned(
+                    &ident.ident,
+                    format!(
+                        "unsupported handler parameter `{other}`: optional parameters are \
+                         `destinations`, `source_cover` and `source_seq`"
+                    ),
+                ))
+            }
+            (other, ContextKind::ProcessManager) => {
                 return Err(syn::Error::new_spanned(
                     &ident.ident,
                     format!(
@@ -738,9 +760,10 @@ pub fn applies(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// `angzarr_deferred` provenance and the destination assigns the sequence.
 ///
 /// A handler takes the event and may also declare, by name, `destinations:
-/// &Destinations` (the declared output domains) and `source_cover:
-/// Option<Cover>` (the triggering book's cover). Process-manager handlers
-/// take the same optional parameters after their state.
+/// &Destinations` (the declared output domains), `source_cover:
+/// Option<Cover>` (the triggering book's cover) and `source_seq: u32` (the
+/// triggering event's sequence). Process-manager handlers take
+/// `destinations` and `source_cover` after their state.
 ///
 /// # Attributes
 /// - `name = "saga-name"` - The saga's name (required)
@@ -867,16 +890,16 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
     };
     let mut regs = Vec::new();
     for (method, evt_ty) in &meta.handled_with_methods {
-        let extra = match context_args(find_method(&input, method), 1) {
+        let extra = match context_args(find_method(&input, method), 1, ContextKind::Saga) {
             Ok(extra) => extra,
             Err(e) => return e.to_compile_error(),
         };
         regs.push(quote! {
             let f = ::std::sync::Arc::clone(&factory);
-            table = table.on_event(
+            table = table.on_event_with_context(
                 &<#evt_ty as ::prost::Name>::full_name(),
-                move |any, dests, source_cover| {
-                    let _ = (&dests, &source_cover);
+                move |any, dests, page| {
+                    let _ = (&dests, &page);
                     let event: #evt_ty = __p::decode(any)?;
                     let handler = f();
                     let response = handler.#method(event #(, #extra)*).map_err(__p::rejected)?;
@@ -1086,7 +1109,8 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
     };
     let mut regs = Vec::new();
     for (method, evt_ty) in &meta.handled_with_methods {
-        let extra = match context_args(find_method(&input, method), 2) {
+        let extra = match context_args(find_method(&input, method), 2, ContextKind::ProcessManager)
+        {
             Ok(extra) => extra,
             Err(e) => return e.to_compile_error(),
         };
@@ -1274,11 +1298,7 @@ fn expand_projector(args: ProjectorArgs, mut input: ItemImpl) -> TokenStream2 {
         .iter()
         .map(|ty| quote! { ::angzarr_client::full_type_url::<#ty>() });
     let domains_vec = domains.iter().map(|d| quote! { #d.to_string() });
-    let domain_filter = if domains.iter().any(|d| d == "*") {
-        quote! {}
-    } else {
-        quote! { let table = table.for_domains([#(#domains),*]); }
-    };
+    let domain_filter = quote! { let table = table.for_domains([#(#domains),*]); };
     let regs = meta.handled_with_methods.iter().map(|(method, evt_ty)| {
         quote! {
             let table = table.on_event(

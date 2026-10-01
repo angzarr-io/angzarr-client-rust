@@ -41,10 +41,9 @@ impl ::prost::Name for Count {
 type Seen = Arc<Mutex<Vec<(Vec<String>, Option<Cover>)>>>;
 
 fn record(seen: &Seen, destinations: &Destinations, source_cover: Option<Cover>) {
-    seen.lock().unwrap().push((
-        destinations.domains().map(str::to_string).collect(),
-        source_cover,
-    ));
+    seen.lock()
+        .unwrap()
+        .push((destinations.domains().to_vec(), source_cover));
 }
 
 struct ContextSaga(Seen);
@@ -54,10 +53,15 @@ impl ContextSaga {
     #[handles(Tick)]
     fn on_tick(
         &self,
-        _tick: Tick,
+        tick: Tick,
         destinations: &Destinations,
         source_cover: Option<Cover>,
+        source_seq: u32,
     ) -> CommandResult<SagaResponse> {
+        assert_eq!(
+            source_seq, tick.n,
+            "source_seq is the triggering page's sequence"
+        );
         record(&self.0, destinations, source_cover);
         Ok(SagaResponse::default())
     }
@@ -125,8 +129,8 @@ fn saga_handler_receives_destinations_and_source_cover() {
         .dispatch(SagaHandleRequest {
             source: Some(EventBook {
                 cover: Some(clock_cover()),
-                pages: vec![tick_page(0)],
-                next_sequence: 1,
+                pages: vec![tick_page(3)],
+                next_sequence: 4,
                 ..Default::default()
             }),
             ..Default::default()

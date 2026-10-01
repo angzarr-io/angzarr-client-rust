@@ -147,100 +147,23 @@ impl Router {
             .map(|r| r.config.clone())
             .collect();
         let mut builder = angzarr_router::router::RouterBuilder::new();
-        let mut replay = None;
         for r in self.registrations {
             builder = match (r.component)() {
-                Component::CommandHandler { table, replay: r } => {
-                    if replay.is_none() {
-                        replay = r;
-                    }
-                    builder.aggregate(BoxedCommandHandler(table))
-                }
+                Component::CommandHandler(table) => builder.aggregate(table),
                 Component::Saga(saga) => builder.saga(saga),
-                Component::ProcessManager(pm) => builder.process_manager(BoxedPm(pm)),
-                Component::Projector(p) => builder.projector(BoxedProjector(p)),
+                Component::ProcessManager(pm) => builder.process_manager(pm),
+                Component::Projector(p) => builder.projector(p),
                 Component::Upcaster(u) => builder.upcaster(u),
             };
         }
         let inner = builder.build().map_err(build_error)?;
 
         Ok(match first_kind {
-            Kind::CommandHandler => Built::CommandHandler(CommandHandlerRouter {
-                inner,
-                configs,
-                replay,
-            }),
+            Kind::CommandHandler => Built::CommandHandler(CommandHandlerRouter { inner, configs }),
             Kind::Saga => Built::Saga(SagaRouter { inner, configs }),
             Kind::ProcessManager => Built::ProcessManager(ProcessManagerRouter { inner, configs }),
             Kind::Projector => Built::Projector(ProjectorRouter { inner, configs }),
             Kind::Upcaster => Built::Upcaster(UpcasterRouter { inner, configs }),
         })
-    }
-}
-
-/// Adapters from the boxed tables back to the router's component traits.
-struct BoxedCommandHandler(Box<dyn angzarr_router::router::CommandHandler>);
-struct BoxedPm(Box<dyn angzarr_router::router::ProcessManagerHandler>);
-struct BoxedProjector(Box<dyn angzarr_router::router::ProjectorHandler>);
-
-mod adapters {
-    use super::{BoxedCommandHandler, BoxedPm, BoxedProjector};
-    use angzarr_router::error::CodedError;
-    use angzarr_router::pb;
-    use angzarr_router::process_manager::ProcessManagerRoute;
-    use angzarr_router::router::{CommandHandler, ProcessManagerHandler, ProjectorHandler};
-
-    impl CommandHandler for BoxedCommandHandler {
-        fn domain(&self) -> &str {
-            self.0.domain()
-        }
-        fn command_types(&self) -> Vec<String> {
-            self.0.command_types()
-        }
-        fn claims_notification(&self, notification_any: &prost_types::Any) -> bool {
-            self.0.claims_notification(notification_any)
-        }
-        fn validate(&self) -> Result<(), CodedError> {
-            self.0.validate()
-        }
-        fn dispatch(
-            &self,
-            req: &pb::ContextualCommand,
-        ) -> Result<pb::BusinessResponse, CodedError> {
-            self.0.dispatch(req)
-        }
-        fn handle_fact(&self, req: &pb::FactRequest) -> Result<pb::EventBook, CodedError> {
-            self.0.handle_fact(req)
-        }
-    }
-
-    impl ProcessManagerRoute for BoxedPm {
-        fn name(&self) -> &str {
-            self.0.name()
-        }
-        fn pm_domain(&self) -> &str {
-            self.0.pm_domain()
-        }
-        fn consumes(&self, domain: &str) -> bool {
-            self.0.consumes(domain)
-        }
-    }
-
-    impl ProcessManagerHandler for BoxedPm {
-        fn validate(&self) -> Result<(), CodedError> {
-            self.0.validate()
-        }
-        fn dispatch(
-            &self,
-            req: &pb::ProcessManagerHandleRequest,
-        ) -> Result<pb::ProcessManagerHandleResponse, CodedError> {
-            self.0.dispatch(req)
-        }
-    }
-
-    impl ProjectorHandler for BoxedProjector {
-        fn dispatch(&self, events: &pb::EventBook) -> Result<pb::Projection, CodedError> {
-            self.0.dispatch(events)
-        }
     }
 }

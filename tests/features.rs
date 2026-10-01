@@ -58,14 +58,6 @@ const PARITY_DIR: &str = "angzarr-project/parity/client";
 /// Scenarios (by `@C-NNNN` tag) the library does not satisfy yet, with the
 /// finding that tracks each.
 const PENDING: &[(&str, &str)] = &[
-    (
-        "C-0042",
-        "angzarr-router: a Notification goes to the first claiming aggregate of a domain, not to every claimant",
-    ),
-    (
-        "C-0477",
-        "angzarr-router: PM process events are not addressed to the PM domain",
-    ),
     ("C-0336", "no configurable connect timeout"),
     ("C-0337", "no configurable HTTP/2 keep-alive"),
 ];

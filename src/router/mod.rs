@@ -28,7 +28,7 @@ pub mod responses;
 pub mod routers;
 
 // Public types
-pub use crate::destinations::Destinations;
+pub use angzarr_router::destinations::Destinations;
 pub use builder::Router;
 pub use handler::{BuildError, Built, DispatchError, Handler, HandlerConfig, HandlerKind, Kind};
 pub use responses::{ProcessManagerResponse, RejectionHandlerResponse, SagaHandlerResponse};

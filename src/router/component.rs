@@ -18,21 +18,13 @@ use prost_types::Any;
 
 use crate::error::{ClientError, CommandRejectedError, ErrorDetail};
 use crate::error_codes::{codes, keys, messages};
-use crate::proto::{ReplayRequest, ReplayResponse};
 
 /// Produces a fresh handler instance; called once per dispatch.
 pub type Factory<H> = Arc<dyn Fn() -> H + Send + Sync>;
 
-/// Computes the state a `Replay` request describes, packed into an `Any`.
-pub type ReplayFn = Box<dyn Fn(&ReplayRequest) -> Result<ReplayResponse, CodedError> + Send + Sync>;
-
 /// One registered handler as an angzarr-router dispatch table.
 pub enum Component {
-    CommandHandler {
-        table: Box<dyn angzarr_router::router::CommandHandler>,
-        /// Present when the aggregate opted into `Replay`.
-        replay: Option<ReplayFn>,
-    },
+    CommandHandler(Box<dyn angzarr_router::router::CommandHandler>),
     Saga(angzarr_router::saga::SagaDispatch),
     ProcessManager(Box<dyn angzarr_router::router::ProcessManagerHandler>),
     Projector(Box<dyn angzarr_router::router::ProjectorHandler>),
@@ -57,7 +49,7 @@ pub(crate) fn begin_dispatch() {
 
 /// A handler's business rejection, as the router's handler error.
 ///
-/// The rejection itself is kept for [`from_coded`], which returns it
+/// The rejection itself is kept for `from_coded`, which returns it
 /// (status code and all) once the router has unwound; the coded error only
 /// carries its code through the router.
 pub fn rejected(rej: CommandRejectedError) -> HandlerError {
@@ -226,24 +218,6 @@ pub fn with_snapshot<S: 'static>(
         Some(loader) => rebuilder.with_snapshot(loader),
         None => rebuilder,
     }
-}
-
-/// `Replay` over a rebuilder whose state is a protobuf message: fold the
-/// base snapshot (when it carries state) and the events, then pack the
-/// state.
-pub fn replay_fn<S: Message + Default + Name + 'static>(rebuilder: Rebuilder<S>) -> ReplayFn {
-    let rebuilder = rebuilder.with_snapshot(snapshot_into::<S>);
-    Box::new(move |req: &ReplayRequest| {
-        let book = crate::proto::EventBook {
-            snapshot: req.base_snapshot.clone(),
-            pages: req.events.clone(),
-            ..Default::default()
-        };
-        let (state, _) = rebuilder.rebuild(Some(&book))?;
-        Ok(ReplayResponse {
-            state: Some(pack(&state)),
-        })
-    })
 }
 
 #[cfg(test)]

@@ -51,7 +51,7 @@ async fn then_domains_contains(world: &mut DestinationsWorld, domain: String) {
         .destinations
         .as_ref()
         .expect("Destinations must be set");
-    let found: Vec<&str> = dest.domains().collect();
+    let found: Vec<&str> = dest.domains().iter().map(String::as_str).collect();
     assert!(
         found.iter().any(|d| *d == domain.as_str()),
         "domain {:?} not in {:?}",
@@ -66,7 +66,7 @@ async fn then_domains_count(world: &mut DestinationsWorld, count: usize) {
         .destinations
         .as_ref()
         .expect("Destinations must be set");
-    let n = dest.domains().count();
+    let n = dest.domains().len();
     assert_eq!(n, count, "domains count = {}, expected {}", n, count);
 }
 
@@ -80,7 +80,7 @@ async fn then_domains_in_order(world: &mut DestinationsWorld, spec: String) {
         .split(',')
         .map(|s| s.trim().trim_matches('"').to_string())
         .collect();
-    let actual: Vec<String> = dest.domains().map(|s| s.to_string()).collect();
+    let actual: Vec<String> = dest.domains().to_vec();
     assert_eq!(
         actual, expected,
         "insertion order drift: got {:?}, expected {:?}",
