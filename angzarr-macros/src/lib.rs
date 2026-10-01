@@ -2015,8 +2015,6 @@ fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
                         header: page.header.clone(),
                         created_at: page.created_at,
                         payload: ::std::option::Option::Some(::angzarr_client::proto::event_page::Payload::Event(new_any)),
-                        no_commit: page.no_commit,
-                        cascade_id: page.cascade_id.clone(),
                     });
                     continue;
                 }

@@ -443,6 +443,45 @@ impl FulfillmentPm {
 }
 
 // ---------------------------------------------------------------------------
+// `orders.CreateOrder`: a command whose full name differs from
+// `router.CreateOrder` and `orders.v2.CreateOrder` but shares the short name.
+// ---------------------------------------------------------------------------
+
+pub mod orders {
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct CreateOrder {
+        #[prost(string, tag = "1")]
+        pub order_id: String,
+    }
+    impl ::prost::Name for CreateOrder {
+        const PACKAGE: &'static str = "orders";
+        const NAME: &'static str = "CreateOrder";
+    }
+}
+
+#[derive(Default)]
+pub struct NoState;
+
+/// Command handler for `orders.CreateOrder`; records the full type name.
+pub struct OrdersAggregate {
+    log: Log,
+}
+
+#[command_handler(domain = "order", state = NoState)]
+impl OrdersAggregate {
+    #[handles(orders::CreateOrder)]
+    fn on_create(
+        &self,
+        _cmd: orders::CreateOrder,
+        _state: &NoState,
+        _seq: u32,
+    ) -> CommandResult<EventBook> {
+        record(&self.log, "orders.CreateOrder");
+        Ok(EventBook::default())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // World.
 // ---------------------------------------------------------------------------
 
@@ -455,7 +494,6 @@ pub struct RouterWorld {
     projector: Option<ProjectorRouter>,
     pm: Option<ProcessManagerRouter>,
     prior: EventBook,
-    destination_sequences: std::collections::HashMap<String, u32>,
     response: Option<BusinessResponse>,
     saga_responses: Vec<SagaResponse>,
     projection: Option<Projection>,
@@ -464,6 +502,8 @@ pub struct RouterWorld {
     sent: Option<CreateOrder>,
     sent_event: Option<OrderCreated>,
     rejected_command: Option<CommandBook>,
+    /// Type URL of the last command sent with an explicit type URL.
+    sent_type_url: Option<String>,
 }
 
 impl RouterWorld {
@@ -475,7 +515,6 @@ impl RouterWorld {
             projector: None,
             pm: None,
             prior: EventBook::default(),
-            destination_sequences: Default::default(),
             response: None,
             saga_responses: vec![],
             projection: None,
@@ -484,6 +523,7 @@ impl RouterWorld {
             sent: None,
             sent_event: None,
             rejected_command: None,
+            sent_type_url: None,
         }
     }
 
@@ -496,6 +536,10 @@ impl RouterWorld {
     }
 
     fn dispatch_command<C: Message + Name>(&mut self, cmd: &C, domain: &str) {
+        self.dispatch_any(pack(cmd), domain);
+    }
+
+    fn dispatch_any(&mut self, payload: Any, domain: &str) {
         let request = ContextualCommand {
             events: Some(self.prior.clone()),
             command: Some(CommandBook {
@@ -507,7 +551,7 @@ impl RouterWorld {
                         )),
                         sync_mode: None,
                     }),
-                    payload: Some(command_page::Payload::Command(pack(cmd))),
+                    payload: Some(command_page::Payload::Command(payload)),
                     ..Default::default()
                 }],
             }),
@@ -532,7 +576,6 @@ impl RouterWorld {
                 next_sequence: 1,
                 ..Default::default()
             }),
-            destination_sequences: self.destination_sequences.clone(),
             ..Default::default()
         };
         match self
@@ -658,6 +701,23 @@ fn given_ch_one(world: &mut RouterWorld, a: String) {
     world.ch = Some(build_ch(move || CreateOnly { log: log.clone() }));
 }
 
+#[given(expr = "an aggregate router with a handler for {string}")]
+fn given_ch_full_name(world: &mut RouterWorld, full_name: String) {
+    assert_eq!(full_name, <orders::CreateOrder as Name>::full_name());
+    let log = world.log.clone();
+    world.ch = Some(build_ch(move || OrdersAggregate { log: log.clone() }));
+}
+
+#[when(expr = "I receive a command with type_url {string}")]
+fn when_receive_type_url(world: &mut RouterWorld, type_url: String) {
+    world.sent_type_url = Some(type_url.clone());
+    let value = orders::CreateOrder {
+        order_id: "o-1".into(),
+    }
+    .encode_to_vec();
+    world.dispatch_any(Any { type_url, value }, "order");
+}
+
 #[given("an aggregate router")]
 fn given_aggregate_router(world: &mut RouterWorld) {
     world.ch = Some(order_router(&world.log));
@@ -770,7 +830,12 @@ fn then_unknown_command(world: &mut RouterWorld) {
     match err {
         ClientError::InvalidArgument(d) => assert_eq!(
             d.details.get(error_codes::keys::TYPE_URL),
-            Some(&full_type_url::<UnknownCommand>())
+            Some(
+                &world
+                    .sent_type_url
+                    .clone()
+                    .unwrap_or_else(full_type_url::<UnknownCommand>)
+            )
         ),
         other => panic!("expected InvalidArgument, got {other:?}"),
     }
@@ -823,7 +888,6 @@ fn when_receive_event(world: &mut RouterWorld, name: String) {
 #[when(expr = "I receive an event that triggers command to {string}")]
 fn when_event_triggers_command(world: &mut RouterWorld, domain: String) {
     assert_eq!(domain, "inventory");
-    world.destination_sequences.insert("inventory".into(), 7);
     world.dispatch_saga_event(event_page(
         &OrderCreated {
             order_id: "o-1".into(),
@@ -842,11 +906,16 @@ fn then_command_sequenced(world: &mut RouterWorld, domain: String) {
         .iter()
         .find(|c| c.cover.as_ref().map(|c| c.domain.as_str()) == Some(domain.as_str()))
         .expect("command for domain");
-    let head = world.destination_sequences[&domain];
+    // Deferred: the destination appends it at its head; the header records
+    // the triggering event (sequence 3) instead of an expected version.
+    assert!(!cmd.pages.is_empty());
     for page in &cmd.pages {
         match page.header.as_ref().and_then(|h| h.sequence_type.as_ref()) {
             Some(page_header::SequenceType::AngzarrDeferred(d)) => {
-                assert_eq!(d.basis_seq, head, "basis_seq should be the observed head");
+                assert_eq!(
+                    d.source_seq, 3,
+                    "source_seq should be the trigger's sequence"
+                );
             }
             other => panic!("expected an angzarr_deferred header, got {other:?}"),
         }

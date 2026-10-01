@@ -80,8 +80,6 @@ pub fn make_event_page_at(sequence: u32, event: Any, created_at: Timestamp) -> E
         }),
         created_at: Some(created_at),
         payload: Some(event_page::Payload::Event(event)),
-        cascade_id: None,
-        no_commit: false,
     }
 }
 

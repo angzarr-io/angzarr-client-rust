@@ -168,7 +168,8 @@ pub trait CommandPageExt {
 
     /// Get the merge strategy for this command.
     ///
-    /// Returns the MergeStrategy enum value. Defaults to Commutative (0) if unset.
+    /// Returns the MergeStrategy enum value; `MERGE_UNSPECIFIED` (unset) and
+    /// unknown values read as the documented default, Commutative.
     fn merge_strategy(&self) -> MergeStrategy;
 }
 
@@ -217,7 +218,10 @@ impl CommandPageExt for CommandPage {
     }
 
     fn merge_strategy(&self) -> MergeStrategy {
-        MergeStrategy::try_from(self.merge_strategy).unwrap_or(MergeStrategy::MergeCommutative)
+        match MergeStrategy::try_from(self.merge_strategy) {
+            Ok(MergeStrategy::MergeUnspecified) | Err(_) => MergeStrategy::MergeCommutative,
+            Ok(s) => s,
+        }
     }
 }
 
@@ -248,5 +252,32 @@ impl AngzarrDeferredSequenceExt for AngzarrDeferredSequence {
             source.root_id_hex().unwrap_or_default(),
             self.source_seq
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::CommandPage;
+
+    /// MERGE_UNSPECIFIED (unset) and unknown values read as the documented
+    /// default, Commutative; set values read by name.
+    #[test]
+    fn merge_strategy_reads_unset_as_commutative() {
+        let page = |v: i32| CommandPage {
+            merge_strategy: v,
+            ..Default::default()
+        };
+        let read = |p: CommandPage| CommandPageExt::merge_strategy(&p);
+        assert_eq!(read(page(0)), MergeStrategy::MergeCommutative);
+        assert_eq!(read(page(99)), MergeStrategy::MergeCommutative);
+        for s in [
+            MergeStrategy::MergeCommutative,
+            MergeStrategy::MergeStrict,
+            MergeStrategy::MergeAggregateHandles,
+            MergeStrategy::MergeManual,
+        ] {
+            assert_eq!(read(page(s as i32)), s);
+        }
     }
 }

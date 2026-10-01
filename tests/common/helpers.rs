@@ -4,8 +4,6 @@
 //! mirrors a single Python helper one-for-one. Generic over `prost::Message +
 //! prost::Name` so type URLs derive via `angzarr_client::full_type_url`.
 
-use std::collections::HashMap;
-
 use angzarr_client::full_type_url;
 use angzarr_client::proto::{
     command_page, event_page, page_header, CommandBook, CommandPage, ContextualCommand, Cover,
@@ -119,14 +117,9 @@ pub fn contextual_command<C: Message + Name>(
 // Saga / PM requests
 // ---------------------------------------------------------------------------
 
-pub fn saga_request<E: Message + Name>(
-    events: &[E],
-    source_domain: &str,
-    dest_seqs: Option<HashMap<String, u32>>,
-) -> SagaHandleRequest {
+pub fn saga_request<E: Message + Name>(events: &[E], source_domain: &str) -> SagaHandleRequest {
     SagaHandleRequest {
         source: Some(event_book(events, source_domain)),
-        destination_sequences: dest_seqs.unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -139,12 +132,10 @@ pub fn pm_request<T: Message + Name, S: Message + Name>(
     source_domain: &str,
     process_state: &[S],
     pm_domain: &str,
-    dest_seqs: Option<HashMap<String, u32>>,
 ) -> ProcessManagerHandleRequest {
     ProcessManagerHandleRequest {
         trigger: Some(event_book(triggers, source_domain)),
         process_state: Some(event_book(process_state, pm_domain)),
-        destination_sequences: dest_seqs.unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -155,7 +146,6 @@ pub fn pm_request_no_state<T: Message + Name>(
     triggers: &[T],
     source_domain: &str,
     pm_domain: &str,
-    dest_seqs: Option<HashMap<String, u32>>,
 ) -> ProcessManagerHandleRequest {
     ProcessManagerHandleRequest {
         trigger: Some(event_book(triggers, source_domain)),
@@ -166,7 +156,6 @@ pub fn pm_request_no_state<T: Message + Name>(
             }),
             ..Default::default()
         }),
-        destination_sequences: dest_seqs.unwrap_or_default(),
         ..Default::default()
     }
 }

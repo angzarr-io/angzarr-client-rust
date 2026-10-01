@@ -1,12 +1,10 @@
-//! Destination-sequence bookkeeping for sagas and process managers.
+//! Output-domain bookkeeping for sagas and process managers.
 //!
-//! Sagas and process managers that emit commands for other domains must stamp
-//! each outbound command with the target domain's next sequence number. The
-//! framework supplies this map as `destination_sequences` on the request; user
-//! code wraps it with [`Destinations`] and calls [`Destinations::stamp_command`]
-//! when building the outbound `CommandBook`.
-
-use indexmap::IndexMap;
+//! A saga or process manager declares the domains it issues commands to.
+//! [`Destinations`] holds that declaration and turns an emitted command into
+//! a deferred one: every page header becomes `angzarr_deferred` carrying the
+//! triggering event's provenance. Deferred commands have no expected version;
+//! the destination appends them at its head.
 
 use crate::error::{ClientError, Result};
 use crate::error_codes::{codes, keys, messages};
@@ -14,329 +12,206 @@ use crate::proto::{
     page_header::SequenceType, AngzarrDeferredSequence, CommandBook, Cover, PageHeader,
 };
 
-/// Wraps the `destination_sequences` map from a saga/PM request and exposes
-/// helpers for stamping outbound commands with the correct sequence.
+/// The output domains a saga / process manager declares, in declaration
+/// order.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// fn handle_order_completed(
-///     &self,
-///     event: OrderCompleted,
-///     destinations: &Destinations,
-/// ) -> CommandResult<SagaResponse> {
-///     let mut cmd = create_some_command();
-///     destinations.stamp_command(&mut cmd, "inventory")?;
-///     Ok(SagaResponse { commands: vec![cmd], events: vec![] })
-/// }
+/// let destinations = Destinations::new(["inventory", "shipping"]);
+/// destinations.stamp_command(&mut cmd, "inventory", &source_cover, source_seq, 0)?;
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Default, Clone)]
 pub struct Destinations {
-    sequences: IndexMap<String, u32>,
-}
-
-impl Default for Destinations {
-    fn default() -> Self {
-        Self::new()
-    }
+    domains: Vec<String>,
 }
 
 impl Destinations {
-    /// Create empty Destinations.
-    pub fn new() -> Self {
-        Self {
-            sequences: IndexMap::new(),
-        }
-    }
-
-    /// Build Destinations from a destination_sequences map.
-    ///
-    /// Accepts any iterable of `(domain, sequence)` pairs — `HashMap`,
-    /// `BTreeMap`, `IndexMap`, `Vec`, etc. The iteration order at
-    /// [`Destinations::domains`] follows the order yielded by the input
-    /// iterator. Pass an ordered collection (`Vec`, `IndexMap`,
-    /// `BTreeMap`) if you want deterministic order; passing a `HashMap`
-    /// keeps the surface compiling but forfeits the order guarantee.
-    pub fn from_sequences<I>(sequences: I) -> Self
+    /// Destinations for the given declared output domains. Duplicates are
+    /// kept once, at their first position.
+    pub fn new<I, S>(domains: I) -> Self
     where
-        I: IntoIterator<Item = (String, u32)>,
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
     {
-        Self {
-            sequences: sequences.into_iter().collect(),
+        let mut out: Vec<String> = Vec::new();
+        for d in domains {
+            let d = d.into();
+            if !out.contains(&d) {
+                out.push(d);
+            }
         }
+        Self { domains: out }
     }
 
-    /// Get the next sequence number for a domain.
-    ///
-    /// Returns `None` if no sequence is available for this domain.
-    pub fn sequence_for(&self, domain: &str) -> Option<u32> {
-        self.sequences.get(domain).copied()
-    }
-
-    /// Build a `PageHeader` carrying an `AngzarrDeferredSequence`.
-    ///
-    /// Use this on saga-produced commands so the framework can dedupe
-    /// on `(source.root, source_seq, target.root)`. AMQP at-least-once
-    /// redelivery of the trigger event becomes a no-op at the
-    /// destination aggregate's pipeline (cached events returned without
-    /// re-invoking business logic), instead of relying on a business
-    /// guard that surfaces as an idempotent-failure-shaped retry storm.
-    ///
-    /// Mirrors Python's `Destinations.deferred_header(source_cover, source_seq)`
-    /// (`destinations.py:113-131`).
-    pub fn deferred_header(source_cover: Cover, source_seq: u32) -> PageHeader {
+    /// A `PageHeader` carrying `angzarr_deferred` provenance: the
+    /// triggering event's cover and sequence and the command's position in
+    /// the invocation's output. `source_component` is left for the
+    /// coordinator to stamp.
+    pub fn deferred_header(source_cover: Cover, source_seq: u32, command_index: u32) -> PageHeader {
         PageHeader {
             sequence_type: Some(SequenceType::AngzarrDeferred(AngzarrDeferredSequence {
                 source: Some(source_cover),
                 source_seq,
+                command_index,
                 ..Default::default()
             })),
             sync_mode: None,
         }
     }
 
-    /// Stamp a command with the correct sequence for the destination domain.
-    ///
-    /// Sets the sequence number on all command pages for the given domain.
+    /// Make `cmd` a deferred command for `domain`: every page header becomes
+    /// [`Self::deferred_header`] (any explicit sequence is replaced; a
+    /// page's `sync_mode` is kept).
     ///
     /// # Errors
     ///
-    /// Returns [`ClientError::InvalidArgument`] with `code =
-    /// MISSING_DESTINATION_SEQUENCE` and `details["domain"]` set to the
-    /// missing domain when no sequence is available. Audit #64: was
-    /// previously `Result<(), String>` with a runtime-interpolated
-    /// message; now follows the structured-error model from audit #59.
-    pub fn stamp_command(&self, cmd: &mut CommandBook, domain: &str) -> Result<()> {
-        let seq = self.sequences.get(domain).ok_or_else(|| {
-            ClientError::invalid_argument(
-                codes::MISSING_DESTINATION_SEQUENCE,
-                messages::MISSING_DESTINATION_SEQUENCE,
+    /// `InvalidArgument` with code `UNDECLARED_OUTPUT_DOMAIN` and
+    /// `details["domain"]` when `domain` is not a declared output domain.
+    pub fn stamp_command(
+        &self,
+        cmd: &mut CommandBook,
+        domain: &str,
+        source_cover: &Cover,
+        source_seq: u32,
+        command_index: u32,
+    ) -> Result<()> {
+        if !self.has_domain(domain) {
+            return Err(ClientError::invalid_argument(
+                codes::UNDECLARED_OUTPUT_DOMAIN,
+                messages::UNDECLARED_OUTPUT_DOMAIN,
                 [(keys::DOMAIN, domain.to_string())],
-            )
-        })?;
-
-        for page in &mut cmd.pages {
-            let header = page.header.get_or_insert_with(Default::default);
-            header.sequence_type = Some(SequenceType::Sequence(*seq));
+            ));
         }
-
+        for page in &mut cmd.pages {
+            let sync_mode = page.header.as_ref().and_then(|h| h.sync_mode);
+            let mut header = Self::deferred_header(source_cover.clone(), source_seq, command_index);
+            header.sync_mode = sync_mode;
+            page.header = Some(header);
+        }
         Ok(())
     }
 
-    /// Check if a destination domain is available.
-    ///
-    /// Mirrors Python's `Destinations.has_domain` (`destinations.py:133`).
+    /// True when `domain` is a declared output domain.
     pub fn has_domain(&self, domain: &str) -> bool {
-        self.sequences.contains_key(domain)
+        self.domains.iter().any(|d| d == domain)
     }
 
-    /// Get all domain names that have sequences.
-    ///
-    /// Iteration order matches the insertion order from
-    /// [`Destinations::from_sequences`] — pass an ordered collection
-    /// (`Vec`, `IndexMap`, `BTreeMap`) to get deterministic order.
-    /// Mirrors Python's `Destinations.domains` (`destinations.py:144`),
-    /// which is insertion-preserving by virtue of CPython dict.
+    /// The declared output domains, in declaration order.
     pub fn domains(&self) -> impl Iterator<Item = &str> {
-        self.sequences.keys().map(|s| s.as_str())
+        self.domains.iter().map(|s| s.as_str())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use crate::proto::{command_page::Payload as CmdPayload, CommandPage, Uuid as ProtoUuid};
+    use prost::Message;
 
-    #[test]
-    fn destinations_from_sequences() {
-        let mut seqs = HashMap::new();
-        seqs.insert("order".to_string(), 5u32);
-        seqs.insert("inventory".to_string(), 10u32);
-
-        let destinations = Destinations::from_sequences(seqs);
-
-        assert_eq!(destinations.sequence_for("order"), Some(5));
-        assert_eq!(destinations.sequence_for("inventory"), Some(10));
-        assert_eq!(destinations.sequence_for("unknown"), None);
-    }
-
-    #[test]
-    fn destinations_has_domain() {
-        let mut seqs = HashMap::new();
-        seqs.insert("order".to_string(), 5u32);
-        let destinations = Destinations::from_sequences(seqs);
-
-        assert!(destinations.has_domain("order"));
-        assert!(!destinations.has_domain("inventory"));
-    }
-
-    #[test]
-    fn destinations_domains_preserves_insertion_order_from_vec() {
-        // P2.2: switching internal storage from HashMap to IndexMap pins
-        // the iteration order to the order of insertion, so callers
-        // passing an ordered iterable (Vec, IndexMap, BTreeMap) get a
-        // deterministic `domains()` listing. HashMap callers still
-        // compile but iteration order remains hash-random.
-        let pairs = vec![
-            ("zulu".to_string(), 0u32),
-            ("alpha".to_string(), 1u32),
-            ("mike".to_string(), 2u32),
-        ];
-        let destinations = Destinations::from_sequences(pairs);
-        let actual: Vec<&str> = destinations.domains().collect();
-        assert_eq!(actual, vec!["zulu", "alpha", "mike"]);
-    }
-
-    #[test]
-    fn destinations_domains() {
-        let mut seqs = HashMap::new();
-        seqs.insert("order".to_string(), 5u32);
-        seqs.insert("inventory".to_string(), 10u32);
-        let destinations = Destinations::from_sequences(seqs);
-
-        let domains: Vec<_> = destinations.domains().collect();
-        assert_eq!(domains.len(), 2);
-        assert!(domains.contains(&"order"));
-        assert!(domains.contains(&"inventory"));
-    }
-
-    #[test]
-    fn deferred_header_carries_source_and_seq() {
-        // Mirrors Python's `Destinations.deferred_header(source_cover, source_seq)`
-        // (`destinations.py:113-131`). Audit finding #31.
-        use crate::proto::Uuid as ProtoUuid;
-        let source = Cover {
-            domain: "orders".into(),
+    fn source() -> Cover {
+        Cover {
+            domain: "order".into(),
             root: Some(ProtoUuid {
-                value: vec![7u8; 16],
+                value: (0u8..16).collect(),
             }),
             correlation_id: "corr-1".into(),
-            edition: None,
             ..Default::default()
-        };
-
-        let header = Destinations::deferred_header(source.clone(), 9);
-
-        let Some(SequenceType::AngzarrDeferred(d)) = header.sequence_type else {
-            panic!(
-                "expected AngzarrDeferred variant, got {:?}",
-                header.sequence_type
-            );
-        };
-        assert_eq!(d.source_seq, 9);
-        let s = d.source.expect("source must be set");
-        assert_eq!(s.domain, "orders");
-        assert_eq!(s.correlation_id, "corr-1");
-        assert_eq!(s.root.expect("root").value, vec![7u8; 16]);
-    }
-
-    #[test]
-    fn destinations_stamp_command() {
-        use crate::proto::page_header::SequenceType;
-        use crate::proto::CommandPage;
-        use crate::proto::PageHeader;
-
-        let mut seqs = HashMap::new();
-        seqs.insert("order".to_string(), 42u32);
-        let destinations = Destinations::from_sequences(seqs);
-
-        let mut cmd = CommandBook {
-            pages: vec![CommandPage {
-                header: Some(PageHeader::default()),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        destinations.stamp_command(&mut cmd, "order").unwrap();
-        assert_eq!(
-            cmd.pages[0].header.as_ref().unwrap().sequence_type,
-            Some(SequenceType::Sequence(42))
-        );
-    }
-
-    #[test]
-    fn destinations_stamp_command_missing_domain() {
-        // Audit #64: structured ClientError with code +
-        // details["domain"], not a free-form String.
-        let destinations = Destinations::new();
-        let mut cmd = CommandBook::default();
-
-        let err = destinations
-            .stamp_command(&mut cmd, "unknown")
-            .expect_err("missing domain must error");
-        assert_eq!(err.code(), codes::MISSING_DESTINATION_SEQUENCE);
-        assert!(err.is_invalid_argument());
-        if let ClientError::InvalidArgument(detail) = &err {
-            assert_eq!(detail.details[keys::DOMAIN], "unknown");
-        } else {
-            panic!("expected InvalidArgument variant, got {:?}", err);
         }
     }
 
-    /// Wire-format parity with the Python client. Locks the SHA-256 of the
-    /// deterministically-encoded stamped CommandBook. The Python sibling
-    /// at `client-python/main/tests/test_destinations_wire_parity.py`
-    /// asserts the same hash for the same input. If either side changes
-    /// how `stamp_command` modifies wire bytes, both tests must agree on
-    /// the new value — drift fails on at least one side.
     #[test]
-    fn destinations_stamp_command_wire_parity() {
-        use crate::proto::{
-            command_page::Payload as CmdPayload, CommandPage, Cover, Uuid as ProtoUuid,
+    fn domains_keep_declaration_order_without_duplicates() {
+        let d = Destinations::new(["zulu", "alpha", "zulu", "mike"]);
+        assert_eq!(
+            d.domains().collect::<Vec<_>>(),
+            vec!["zulu", "alpha", "mike"]
+        );
+        assert!(d.has_domain("alpha"));
+        assert!(!d.has_domain("shipping"));
+        assert!(!d.has_domain(""));
+    }
+
+    #[test]
+    fn stamp_command_makes_every_page_deferred() {
+        let d = Destinations::new(["inventory"]);
+        let mut cmd = CommandBook {
+            pages: vec![
+                CommandPage {
+                    header: Some(PageHeader {
+                        sequence_type: Some(SequenceType::Sequence(9)),
+                        sync_mode: Some(crate::proto::SyncMode::Simple as i32),
+                    }),
+                    ..Default::default()
+                },
+                CommandPage::default(),
+            ],
+            ..Default::default()
         };
-        use prost::Message;
-        use prost_types::Any as ProtoAny;
+        d.stamp_command(&mut cmd, "inventory", &source(), 3, 1)
+            .unwrap();
+        for (i, page) in cmd.pages.iter().enumerate() {
+            let header = page.header.as_ref().unwrap();
+            let Some(SequenceType::AngzarrDeferred(def)) = &header.sequence_type else {
+                panic!("page {i} not deferred: {header:?}");
+            };
+            assert_eq!(def.source.as_ref(), Some(&source()));
+            assert_eq!(def.source_seq, 3);
+            assert_eq!(def.command_index, 1);
+            assert!(def.source_component.is_empty());
+        }
+        assert_eq!(
+            cmd.pages[0].header.as_ref().unwrap().sync_mode,
+            Some(crate::proto::SyncMode::Simple as i32)
+        );
+        assert_eq!(cmd.pages[1].header.as_ref().unwrap().sync_mode, None);
+    }
+
+    #[test]
+    fn stamp_command_rejects_an_undeclared_domain() {
+        let d = Destinations::new(["inventory"]);
+        let mut cmd = CommandBook {
+            pages: vec![CommandPage::default()],
+            ..Default::default()
+        };
+        let err = d
+            .stamp_command(&mut cmd, "shipping", &source(), 0, 0)
+            .expect_err("undeclared domain");
+        assert_eq!(err.code(), codes::UNDECLARED_OUTPUT_DOMAIN);
+        let ClientError::InvalidArgument(detail) = &err else {
+            panic!("expected InvalidArgument, got {err:?}");
+        };
+        assert_eq!(detail.details[keys::DOMAIN], "shipping");
+        assert_eq!(cmd.pages[0].header, None, "nothing stamped on error");
+    }
+
+    /// Same fixture and golden as parity/client/wire_parity.feature C-0182.
+    #[test]
+    fn stamp_command_wire_parity() {
         use sha2::{Digest, Sha256};
-
-        // Same fixed input as the Python test.
-        let root_bytes: Vec<u8> = (0u8..16).collect();
-        let domain = "saga-x";
-        let correlation_id = "corr-1";
-        let command_type_url = "type.googleapis.com/example.Foo";
-        let command_payload: Vec<u8> = vec![1, 2, 3, 4];
-        let target_domain = "inventory";
-        let target_sequence = 5u32;
-        const GOLDEN_SHA256: &str =
-            "8a6da2dfa422553d73fcd840f6ad501c91ac6ffcac2f591183146ab6c042ace9";
-
-        let payload_any = ProtoAny {
-            type_url: command_type_url.into(),
-            value: command_payload,
-        };
         let mut book = CommandBook {
             cover: Some(Cover {
-                domain: domain.into(),
-                root: Some(ProtoUuid { value: root_bytes }),
-                correlation_id: correlation_id.into(),
-                edition: None,
+                domain: "inventory".into(),
+                root: Some(ProtoUuid {
+                    value: (0x10u8..=0x1f).collect(),
+                }),
+                correlation_id: "corr-1".into(),
                 ..Default::default()
             }),
             pages: vec![CommandPage {
-                header: None,
-                merge_strategy: 0,
-                payload: Some(CmdPayload::Command(payload_any)),
+                payload: Some(CmdPayload::Command(prost_types::Any {
+                    type_url: "/example.Foo".into(),
+                    value: vec![1, 2, 3, 4],
+                })),
+                ..Default::default()
             }],
-            ..Default::default()
         };
-
-        let mut seqs = HashMap::new();
-        seqs.insert(target_domain.to_string(), target_sequence);
-        Destinations::from_sequences(seqs)
-            .stamp_command(&mut book, target_domain)
-            .expect("stamp must succeed");
-
-        let raw = book.encode_to_vec();
-        let digest = format!("{:x}", Sha256::digest(&raw));
-
+        Destinations::new(["inventory"])
+            .stamp_command(&mut book, "inventory", &source(), 3, 0)
+            .unwrap();
         assert_eq!(
-            digest, GOLDEN_SHA256,
-            "Stamped CommandBook wire bytes drifted from Python client.\n\
-             If this is intentional, update the golden in BOTH this test and\n\
-             client-python/main/tests/test_destinations_wire_parity.py in tandem.\n\
-             actual:   {}\n\
-             expected: {}",
-            digest, GOLDEN_SHA256
+            format!("{:x}", Sha256::digest(book.encode_to_vec())),
+            "10b1ce23a470f107662591a7da41830c724fdc0c9562824130f09b0a12f011f5"
         );
     }
 }

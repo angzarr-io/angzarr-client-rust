@@ -823,6 +823,7 @@ impl CommandHandlerCoordinatorService for Svc {
         Ok(Response::new(CommandResponse {
             events: Some(events),
             projections,
+            ..Default::default()
         }))
     }
 
@@ -874,6 +875,7 @@ impl CommandHandlerCoordinatorService for Svc {
                 ..Default::default()
             }),
             projections: Vec::new(),
+            ..Default::default()
         }))
     }
 

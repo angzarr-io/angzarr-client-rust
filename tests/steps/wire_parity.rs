@@ -6,8 +6,6 @@
 //! `client-python/main/tests/client/steps/test_wire_parity.py` exercises
 //! the same scenarios against the same expected SHA-256 values.
 
-use std::collections::HashMap;
-
 use cucumber::{given, then, when, World};
 use prost::Message;
 use prost_types::Any as ProtoAny;
@@ -23,7 +21,7 @@ use angzarr_client::router::Destinations;
 pub struct WireParityWorld {
     source: Option<Cover>,
     book: Option<CommandBook>,
-    sequences: HashMap<String, u32>,
+    output_domains: Vec<String>,
 }
 
 #[given(
@@ -80,19 +78,19 @@ async fn given_single_page(world: &mut WireParityWorld, type_url: String, payloa
     });
 }
 
-#[given(expr = "destination_sequences mapping {string} to {int}")]
-async fn given_sequences(world: &mut WireParityWorld, domain: String, seq: u32) {
-    world.sequences.insert(domain, seq);
+#[given(expr = "a Destinations for a component declaring output domain {string}")]
+async fn given_destinations(world: &mut WireParityWorld, domain: String) {
+    world.output_domains.push(domain);
 }
 
 #[when(
     expr = "I stamp the command for domain {string} from source event sequence {int} at command index {int}"
 )]
-async fn when_stamp(world: &mut WireParityWorld, domain: String, _source_seq: u32, _index: u32) {
-    let dest = Destinations::from_sequences(world.sequences.clone());
-    assert!(world.source.is_some(), "source cover must be set");
+async fn when_stamp(world: &mut WireParityWorld, domain: String, source_seq: u32, index: u32) {
+    let dest = Destinations::new(world.output_domains.clone());
+    let source = world.source.clone().expect("source cover must be set");
     let book = world.book.as_mut().expect("CommandBook must be set");
-    dest.stamp_command(book, &domain)
+    dest.stamp_command(book, &domain, &source, source_seq, index)
         .expect("stamp must succeed");
 }
 

@@ -152,6 +152,7 @@ fn canned_response() -> CommandResponse {
             ..Default::default()
         }),
         projections: vec![],
+        ..Default::default()
     }
 }
 

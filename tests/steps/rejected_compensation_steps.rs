@@ -98,6 +98,37 @@ impl TwoCompensations {
     }
 }
 
+/// Payment compensating ReserveStock differently per rejecting domain.
+pub struct PerDomainCompensations;
+
+#[command_handler(domain = "payment", state = PaymentState)]
+impl PerDomainCompensations {
+    #[rejected(domain = "inventory", command = "ReserveStock")]
+    fn on_inventory_rejected(
+        &self,
+        _notification: &Notification,
+        _state: &PaymentState,
+    ) -> CommandResult<BusinessResponse> {
+        Ok(events_response(vec![event_page_of(&FundsReleased {
+            amount: 0,
+            reason: "inventory rejected".into(),
+        })]))
+    }
+
+    #[rejected(domain = "warehouse", command = "ReserveStock")]
+    fn on_warehouse_rejected(
+        &self,
+        _notification: &Notification,
+        _state: &PaymentState,
+    ) -> CommandResult<BusinessResponse> {
+        Ok(events_response(vec![event_page_of(&WorkflowFailed {
+            reason: "warehouse rejected".into(),
+            failed_domain: "warehouse".into(),
+            failed_command: "ReserveStock".into(),
+        })]))
+    }
+}
+
 /// Payment with no compensation methods.
 pub struct NoCompensation;
 
@@ -119,6 +150,7 @@ enum Variant {
     #[default]
     Stateful,
     Two,
+    PerDomain,
     None,
 }
 
@@ -128,6 +160,8 @@ pub struct RejectedCompensationWorld {
     variant: Variant,
     releases: Arc<AtomicU32>,
     prior: Option<EventBook>,
+    /// Short name of the command whose rejection was delivered.
+    delivered: String,
     response: Option<BusinessResponse>,
 }
 
@@ -137,6 +171,7 @@ impl RejectedCompensationWorld {
             variant: Variant::Stateful,
             releases: Arc::new(AtomicU32::new(1)),
             prior: None,
+            delivered: String::new(),
             response: None,
         }
     }
@@ -152,6 +187,9 @@ impl RejectedCompensationWorld {
             Variant::Two => Router::new("payment")
                 .with_handler(|| TwoCompensations)
                 .build(),
+            Variant::PerDomain => Router::new("payment")
+                .with_handler(|| PerDomainCompensations)
+                .build(),
             Variant::None => Router::new("payment")
                 .with_handler(|| NoCompensation)
                 .build(),
@@ -164,6 +202,7 @@ impl RejectedCompensationWorld {
     }
 
     fn deliver<M: prost::Message + prost::Name>(&mut self, rejected: &M, domain: &str) {
+        self.delivered = M::NAME.to_string();
         let delivery = rejection_delivery(rejected, domain, "payment", self.prior.clone());
         self.response = Some(
             self.router()
@@ -226,7 +265,27 @@ fn given_release_bankroll(world: &mut RejectedCompensationWorld) {
 
 #[given("Payment compensates a rejected ReserveStock from inventory by emitting FundsReleased")]
 fn given_release(world: &mut RejectedCompensationWorld) {
+    assert!(matches!(world.variant, Variant::Two | Variant::PerDomain));
+}
+
+#[given("Payment compensates a rejected ReserveStock from warehouse by emitting WorkflowFailed")]
+fn given_warehouse_workflow_failed(world: &mut RejectedCompensationWorld) {
     assert_eq!(world.variant, Variant::Two);
+    world.variant = Variant::PerDomain;
+}
+
+#[given("Payment declares no output domains")]
+fn given_no_output_domains(world: &mut RejectedCompensationWorld) {
+    // A command handler has no output domains: its config carries none.
+    assert_eq!(world.router().output_domains(), Vec::<String>::new());
+}
+
+#[given("Payment compensates a rejected ReserveStock from any domain by emitting FundsReleased")]
+fn given_release_any_domain(_world: &mut RejectedCompensationWorld) {
+    panic!(
+        "#[rejected] requires a domain: the macro cannot declare an unqualified \
+         compensates entry (\"fq.ReserveStock\" for any domain)"
+    );
 }
 
 #[given("Payment compensates a rejected ProcessPayment from payment by emitting WorkflowFailed")]
@@ -286,6 +345,11 @@ fn when_process_payment(world: &mut RejectedCompensationWorld) {
     world.deliver(&ProcessPayment::default(), "payment");
 }
 
+#[when("a rejection of ReserveStock arrives from warehouse")]
+fn when_reserve_stock_warehouse(world: &mut RejectedCompensationWorld) {
+    world.deliver(&ReserveStock::default(), "warehouse");
+}
+
 #[when("a rejection of CreateShipment arrives from fulfillment")]
 fn when_create_shipment(world: &mut RejectedCompensationWorld) {
     world.deliver(&CreateShipment::default(), "fulfillment");
@@ -313,7 +377,7 @@ fn then_amount(world: &mut RejectedCompensationWorld, amount: i64) {
 fn then_one_workflow_failed(world: &mut RejectedCompensationWorld) {
     let failed = events_of::<WorkflowFailed>(world.events());
     assert_eq!(failed.len(), 1);
-    assert_eq!(failed[0].failed_command, "ProcessPayment");
+    assert_eq!(failed[0].failed_command, world.delivered);
 }
 
 #[then("no FundsReleased event is emitted")]

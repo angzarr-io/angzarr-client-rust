@@ -171,6 +171,16 @@ async fn then_constant_exported(_world: &mut ParityWorld, name: String) {
     check(&name);
 }
 
+#[then(expr = "the {string} constant is exported with value {string}")]
+async fn then_constant_value(_world: &mut ParityWorld, name: String, value: String) {
+    check(&name);
+    let actual = match name.as_str() {
+        "TYPE_URL_PREFIX" => angzarr_client::TYPE_URL_PREFIX,
+        other => panic!("no value probe for constant {other}"),
+    };
+    assert_eq!(actual, value, "{name} value");
+}
+
 #[then(expr = "the client exposes the {string} error predicate")]
 async fn then_error_predicate_exposed(_world: &mut ParityWorld, name: String) {
     assert!(

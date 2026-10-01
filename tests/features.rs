@@ -71,30 +71,42 @@ const PENDING: &[(&str, &str)] = &[
         "C-0248",
         "X-116 framework sequence stamping of emitted events",
     ),
-    ("C-0052", "X-037 saga handlers receive destinations"),
-    ("C-0053", "X-017 router stamps angzarr_deferred basis_seq"),
+    ("C-0053", "X-017 router stamps angzarr_deferred provenance"),
     ("C-0177", "X-017 router stamps angzarr_deferred provenance"),
     (
         "C-0179",
         "X-017 router stamps angzarr_deferred command_index",
     ),
-    ("C-0180", "X-017 router stamps angzarr_deferred basis_seq"),
     (
         "C-0181",
         "X-017 router stamps angzarr_deferred provenance on PM commands",
     ),
-    (
-        "C-0182",
-        "X-017 Destinations::stamp_command emits angzarr_deferred",
-    ),
-    (
-        "C-0183",
-        "X-017 Destinations::stamp_command emits angzarr_deferred",
-    ),
-    ("C-0251", "X-017 router stamps angzarr_deferred basis_seq"),
+    ("C-0251", "X-017 router stamps angzarr_deferred provenance"),
     ("C-0223", "X-167 saga #[rejected] dispatch"),
     ("C-0224", "X-167 process-manager #[rejected] dispatch"),
     ("C-0252", "X-167 saga #[rejected] dispatch"),
+    (
+        "C-0477",
+        "router: PM process events addressed to the PM domain",
+    ),
+    (
+        "C-0481",
+        "router: unqualified compensates entry (fq.Type, any domain)",
+    ),
+    (
+        "C-0475",
+        "type URL rule: accept any prefix, match by full name",
+    ),
+    (
+        "C-0365",
+        "type URL rule: accept any prefix, match by full name",
+    ),
+    (
+        "C-0372",
+        "type URL rule: accept any prefix, match by full name",
+    ),
+    ("C-0474", "type URL rule: emit the bare / prefix"),
+    ("C-0097", "type URL rule: TYPE_URL_PREFIX is /"),
     ("C-0336", "no configurable connect timeout"),
     ("C-0337", "no configurable HTTP/2 keep-alive"),
 ];

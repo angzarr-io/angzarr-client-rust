@@ -1026,8 +1026,6 @@ mod tests {
                 type_url: "type.googleapis.com/google.protobuf.Duration".to_string(),
                 value: msg.encode_to_vec(),
             })),
-            cascade_id: None,
-            no_commit: false,
         };
 
         let decoded: Option<prost_types::Duration> =
@@ -1054,8 +1052,6 @@ mod tests {
                 type_url: "type.googleapis.com/google.protobuf.Duration".to_string(),
                 value: msg.encode_to_vec(),
             })),
-            cascade_id: None,
-            no_commit: false,
         };
 
         let decoded: Option<prost_types::Duration> =
@@ -1072,8 +1068,6 @@ mod tests {
             }),
             created_at: None,
             payload: None,
-            cascade_id: None,
-            no_commit: false,
         };
 
         let decoded: Option<prost_types::Duration> =
@@ -1095,8 +1089,6 @@ mod tests {
                 type_url: "type.googleapis.com/google.protobuf.Duration".to_string(),
                 value: vec![0xFF, 0xFF, 0xFF], // garbage
             })),
-            cascade_id: None,
-            no_commit: false,
         };
 
         let decoded: Option<prost_types::Duration> =

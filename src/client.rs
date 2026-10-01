@@ -465,7 +465,6 @@ impl CommandHandlerClient {
             command: Some(command),
             sync_mode: SyncMode::Async as i32,
             cascade_error_mode: CascadeErrorMode::CascadeErrorFailFast as i32,
-            cascade_id: None,
         })
         .await
     }
@@ -504,7 +503,6 @@ impl traits::GatewayClient for CommandHandlerClient {
             command: Some(command),
             sync_mode: sync_mode as i32,
             cascade_error_mode: CascadeErrorMode::CascadeErrorFailFast as i32,
-            cascade_id: None,
         })
         .await
     }
@@ -607,7 +605,6 @@ impl DomainClient {
                 command: Some(command),
                 sync_mode: sync_mode as i32,
                 cascade_error_mode: CascadeErrorMode::CascadeErrorFailFast as i32,
-                cascade_id: None,
             })
             .await
     }

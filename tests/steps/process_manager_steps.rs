@@ -3,7 +3,6 @@
 //! The Fulfillment PM is a real `#[process_manager]` type dispatched through
 //! a `ProcessManagerRouter`; the state it observed is recorded on its probe.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use angzarr_client::proto::{EventBook, ProcessManagerHandleRequest, ProcessManagerHandleResponse};
@@ -13,7 +12,8 @@ use angzarr_client::{process_manager, CommandResult};
 use cucumber::{given, then, when, World};
 
 use super::deferred::{
-    command_of, deferred_header, has_explicit_sequence, root_for, trigger_book, unsequenced_command,
+    command_of, deferred_header, event_page_of, has_explicit_sequence, root_for, trigger_book,
+    unsequenced_command,
 };
 use crate::common::fixtures::{OrderCompleted, OrderCreated, ReserveStock, StockReserved};
 
@@ -25,6 +25,19 @@ pub struct WorkflowState {
 #[derive(Debug, Default)]
 pub struct PmProbe {
     observed_orders_seen: Mutex<Option<u32>>,
+    /// Also record a WorkflowStarted process event on OrderCreated.
+    record_started: Mutex<bool>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WorkflowStarted {
+    #[prost(string, tag = "1")]
+    pub order_id: String,
+}
+
+impl ::prost::Name for WorkflowStarted {
+    const NAME: &'static str = "WorkflowStarted";
+    const PACKAGE: &'static str = "fulfillment";
 }
 
 pub struct Fulfillment {
@@ -51,6 +64,18 @@ impl Fulfillment {
         state: &WorkflowState,
     ) -> CommandResult<ProcessManagerHandleResponse> {
         *self.probe.observed_orders_seen.lock().unwrap() = Some(state.orders_seen);
+        // The handler leaves the process-event book unaddressed; the PM's
+        // own domain is the framework's to fill in.
+        let process_events = if *self.probe.record_started.lock().unwrap() {
+            vec![EventBook {
+                pages: vec![event_page_of(&WorkflowStarted {
+                    order_id: event.order_id.clone(),
+                })],
+                ..Default::default()
+            }]
+        } else {
+            vec![]
+        };
         Ok(ProcessManagerHandleResponse {
             commands: vec![unsequenced_command(
                 &ReserveStock {
@@ -60,6 +85,7 @@ impl Fulfillment {
                 },
                 "shipping",
             )],
+            process_events,
             ..Default::default()
         })
     }
@@ -83,7 +109,6 @@ impl Fulfillment {
 pub struct ProcessManagerWorld {
     probe: Arc<PmProbe>,
     process_state: Vec<OrderCompleted>,
-    destination_sequences: HashMap<String, u32>,
     trigger_root: String,
     trigger_seq: u32,
     response: Option<ProcessManagerHandleResponse>,
@@ -94,7 +119,6 @@ impl ProcessManagerWorld {
         Self {
             probe: Arc::default(),
             process_state: Vec::new(),
-            destination_sequences: HashMap::new(),
             trigger_root: "order-1".into(),
             trigger_seq: 0,
             response: None,
@@ -137,7 +161,6 @@ impl ProcessManagerWorld {
                 pages,
                 ..Default::default()
             }),
-            destination_sequences: self.destination_sequences.clone(),
         };
         self.response = Some(self.router().dispatch(request).expect("pm dispatch"));
     }
@@ -195,15 +218,15 @@ fn given_process_state(world: &mut ProcessManagerWorld) {
     world.process_state = vec![OrderCompleted::default(), OrderCompleted::default()];
 }
 
-#[given(expr = "destination sequences {word}={int}")]
-fn given_head(world: &mut ProcessManagerWorld, domain: String, head: u32) {
-    world.destination_sequences = HashMap::from([(domain, head)]);
-}
-
 #[given(expr = "the OrderCreated trigger is at sequence {int} of order root {string}")]
 fn given_trigger_position(world: &mut ProcessManagerWorld, seq: u32, root: String) {
     world.trigger_seq = seq;
     world.trigger_root = root;
+}
+
+#[given("the PM handles OrderCreated by also recording a WorkflowStarted process event")]
+fn given_records_started(world: &mut ProcessManagerWorld) {
+    *world.probe.record_started.lock().unwrap() = true;
 }
 
 // --- When ------------------------------------------------------------------
@@ -247,6 +270,38 @@ fn then_seen(world: &mut ProcessManagerWorld, n: u32) {
     assert_eq!(*world.probe.observed_orders_seen.lock().unwrap(), Some(n));
 }
 
+#[then(expr = "the process events' cover domain is {string}")]
+fn then_process_event_domain(world: &mut ProcessManagerWorld, domain: String) {
+    let books = &world.response().process_events;
+    assert!(!books.is_empty(), "no process events");
+    for book in books {
+        assert_eq!(
+            book.cover.as_ref().map(|c| c.domain.as_str()),
+            Some(domain.as_str())
+        );
+    }
+}
+
+#[then(expr = "no process event is addressed to {string}, {string} or {string}")]
+fn then_process_event_not_addressed(
+    world: &mut ProcessManagerWorld,
+    a: String,
+    b: String,
+    c: String,
+) {
+    for book in &world.response().process_events {
+        let d = book
+            .cover
+            .as_ref()
+            .map(|c| c.domain.clone())
+            .unwrap_or_default();
+        assert!(
+            ![&a, &b, &c].contains(&&d),
+            "process event addressed to {d}"
+        );
+    }
+}
+
 #[then("the ReserveStock command carries an angzarr_deferred header")]
 fn then_deferred(world: &mut ProcessManagerWorld) {
     deferred_header(command_of::<ReserveStock>(&world.response().commands));
@@ -276,12 +331,6 @@ fn then_source_seq(world: &mut ProcessManagerWorld, seq: u32) {
 fn then_index(world: &mut ProcessManagerWorld, index: u32) {
     let cmd = command_of::<ReserveStock>(&world.response().commands);
     assert_eq!(deferred_header(cmd).command_index, index);
-}
-
-#[then(expr = "the deferred basis_seq is {int}")]
-fn then_basis(world: &mut ProcessManagerWorld, basis: u32) {
-    let cmd = command_of::<ReserveStock>(&world.response().commands);
-    assert_eq!(deferred_header(cmd).basis_seq, basis);
 }
 
 #[then("no page of the ReserveStock command has an explicit sequence")]

@@ -104,7 +104,7 @@ pub mod codes {
     // Saga / PM destinations
     /// Audit #64: a saga/PM tried to stamp a command for a domain that
     /// wasn't in the request's `destination_sequences` map.
-    pub const MISSING_DESTINATION_SEQUENCE: &str = "MISSING_DESTINATION_SEQUENCE";
+    pub const UNDECLARED_OUTPUT_DOMAIN: &str = "UNDECLARED_OUTPUT_DOMAIN";
 }
 
 /// Static human-readable messages — the value of `message` on every
@@ -200,7 +200,7 @@ pub mod messages {
         "cannot mix handler kinds in one Router — all handlers must share a kind";
 
     // Saga / PM destinations
-    pub const MISSING_DESTINATION_SEQUENCE: &str = "no sequence for destination domain";
+    pub const UNDECLARED_OUTPUT_DOMAIN: &str = "domain is not a declared output domain";
 }
 
 /// Detail-map key constants — the keys used in the `details` mapping on

@@ -1,12 +1,10 @@
-//! Step defs for features/client/destinations.feature.
+//! Step defs for parity/client/destinations.feature.
 //!
 //! Pins the canonical query surface on Destinations across languages:
 //! `has_domain(domain) -> bool` and `domains() -> impl Iterator<Item =
 //! &str>`. The Python sibling at
 //! `client-python/main/tests/client/steps/test_destinations.py`
 //! exercises the same scenarios against the same canonical names.
-
-use std::collections::HashMap;
 
 use cucumber::{given, then, World};
 
@@ -18,30 +16,18 @@ pub struct DestinationsWorld {
     destinations: Option<Destinations>,
 }
 
-#[given(regex = r"^a Destinations built from sequences mapping (.+)$")]
-async fn given_destinations(world: &mut DestinationsWorld, spec: String) {
-    let mut seqs: HashMap<String, u32> = HashMap::new();
-    for part in spec.split(" and ") {
-        let (name, seq) = part
-            .split_once(" to ")
-            .expect("expected `\"name\" to N` form");
-        let name = name.trim().trim_matches('"').to_string();
-        let seq: u32 = seq.trim().parse().expect("seq must parse as u32");
-        seqs.insert(name, seq);
-    }
-    world.destinations = Some(Destinations::from_sequences(seqs));
+/// Domain names from a "\"a\", \"b\" and \"c\"" list.
+fn quoted_names(spec: &str) -> Vec<String> {
+    spec.split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect()
 }
 
-#[given(regex = r"^a Destinations built from an ordered sequence list (.+)$")]
-async fn given_destinations_ordered(world: &mut DestinationsWorld, spec: String) {
-    // Build from an ordered Vec so the insertion sequence matches the
-    // spec literally. Each named destination gets sequence 0; the
-    // order is what's under test.
-    let pairs: Vec<(String, u32)> = spec
-        .split(" then ")
-        .map(|s| (s.trim().trim_matches('"').to_string(), 0u32))
-        .collect();
-    world.destinations = Some(Destinations::from_sequences(pairs));
+#[given(regex = r"^a Destinations for a component declaring output domains? (.+)$")]
+async fn given_destinations(world: &mut DestinationsWorld, spec: String) {
+    world.destinations = Some(Destinations::new(quoted_names(&spec)));
 }
 
 #[then(regex = r#"^has_domain "([^"]*)" returns (true|false)$"#)]
