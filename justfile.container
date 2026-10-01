@@ -131,13 +131,17 @@ mutation-test: generate-proto
     echo "PASS: Kill rate meets 70% threshold"
 
 # Mutation-test only the given source files. Unviable mutants are excluded
-# from the kill rate; survivors are listed for triage.
+# from the kill rate; survivors are listed for triage. MUTANTS_TEST_ARGS
+# narrows the test run per mutant (e.g. "--lib" or "--test router");
+# MUTANTS_ARGS adds cargo-mutants options (e.g. "--re 'fn_name'").
 mutants +FILES: generate-proto
     #!/usr/bin/env bash
     set -uo pipefail
     args=()
     for f in {{FILES}}; do args+=(--file "$f"); done
-    cargo mutants --jobs 4 "${args[@]}"
+    # shellcheck disable=SC2086
+    eval "extra=(${MUTANTS_ARGS:-})"
+    cargo mutants --jobs 4 "${args[@]}" "${extra[@]}" -- ${MUTANTS_TEST_ARGS:-}
     status=$?
     out=mutants.out
     caught=$(wc -l < "$out/caught.txt" 2>/dev/null || echo 0)

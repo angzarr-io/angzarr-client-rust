@@ -786,12 +786,15 @@ mod tests {
         use std::sync::Arc;
         let seen = Arc::new(AtomicU32::new(0));
         let s = Arc::clone(&seen);
+        let indices = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let idx = Arc::clone(&indices);
         let policy = crate::retry::RetryPolicy::default()
             .with_max_attempts(3)
             .with_min_delay(std::time::Duration::from_millis(1))
             .with_max_delay(std::time::Duration::from_millis(2))
-            .with_on_retry(move |_, _| {
+            .with_on_retry(move |attempt, _cause| {
                 s.fetch_add(1, Ordering::SeqCst);
+                idx.lock().unwrap().push(attempt);
             });
         let missing = "/nonexistent/angzarr-on-retry.sock";
         let err = super::create_channel(missing, &policy)
@@ -799,6 +802,7 @@ mod tests {
             .expect_err("no socket");
         assert_eq!(err.code(), crate::error_codes::codes::CONNECTION_FAILED);
         assert_eq!(seen.load(Ordering::SeqCst), 2);
+        assert_eq!(*indices.lock().unwrap(), vec![0, 1]);
 
         let zero = crate::retry::RetryPolicy {
             max_attempts: 0,

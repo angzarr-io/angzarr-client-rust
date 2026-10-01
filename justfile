@@ -90,6 +90,8 @@ _container-ephemeral +ARGS:
         -e DEVCONTAINER=true \
         -e MUTANTS_EPHEMERAL=1 \
         -e MUTANTS_OUT_DIR=/out \
+        -e MUTANTS_TEST_ARGS="${MUTANTS_TEST_ARGS:-}" \
+        -e MUTANTS_ARGS="${MUTANTS_ARGS:-}" \
         -w /work \
         {{IMAGE}} bash -eu -o pipefail -c '
             # Self-heal: install cargo-mutants on demand if the image
@@ -268,7 +270,8 @@ mutation-test: generate-proto
     just _container-ephemeral mutation-test
 
 # Mutation-test only the given source files (e.g. `just mutants src/server.rs`).
-# Ephemeral like mutation-test; prints the per-file kill rate.
+# Ephemeral like mutation-test; prints the per-file kill rate. Set
+# MUTANTS_TEST_ARGS (e.g. "--lib") to narrow the tests run per mutant.
 mutants +FILES: generate-proto
     just _container-ephemeral mutants {{FILES}}
 
