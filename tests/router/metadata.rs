@@ -264,3 +264,12 @@ fn a_wildcard_projector_consumes_every_domain() {
     }
     assert_eq!(*count.lock().unwrap(), 2);
 }
+
+#[test]
+fn a_router_debug_names_it_and_counts_its_handlers() {
+    let router = Router::new("projectors").with_handler(|| AnyDomain(Arc::new(Mutex::new(0))));
+    assert_eq!(
+        format!("{router:?}"),
+        r#"Router { name: "projectors", handlers: 1 }"#
+    );
+}
