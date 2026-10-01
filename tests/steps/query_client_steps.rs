@@ -553,3 +553,99 @@ async fn then_fail_connection_error(world: &mut QueryClientWorld) {
     let error = world.error.as_ref().expect("Should have error");
     assert!(error.to_lowercase().contains("connection"));
 }
+
+// ---------------------------------------------------------------------------
+// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
+// ---------------------------------------------------------------------------
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^a query surface available$")]
+async fn wip_given_a_query_surface_available(_world: &mut QueryClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the history is empty and the next sequence is (-?\d+)$")]
+async fn wip_then_the_history_is_empty_and_the_next_sequence_is_0(_world: &mut QueryClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^I receive (-?\d+) events$")]
+async fn wip_then_i_receive_5_events(_world: &mut QueryClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the events are in sequence order (-?\d+) to (-?\d+)$")]
+async fn wip_then_the_events_are_in_sequence_order_0_to_4(_world: &mut QueryClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r#"^the first event has type "([^"]*)"$"#)]
+async fn wip_then_the_first_event_has_type_ordercreated(_world: &mut QueryClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r#"^the first event has payload "([^"]*)"$"#)]
+async fn wip_then_the_first_event_has_payload_test_payload(_world: &mut QueryClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the first event has sequence (-?\d+)$")]
+async fn wip_then_the_first_event_has_sequence_5(_world: &mut QueryClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the last event has sequence (-?\d+)$")]
+async fn wip_then_the_last_event_has_sequence_7(_world: &mut QueryClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^I receive no events$")]
+async fn wip_then_i_receive_no_events(_world: &mut QueryClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^I receive events up to that timestamp$")]
+async fn wip_then_i_receive_events_up_to_that_timestamp(_world: &mut QueryClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^I receive events from that edition only$")]
+async fn wip_then_i_receive_events_from_that_edition_only(_world: &mut QueryClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^I receive events from all correlated aggregates$")]
+async fn wip_then_i_receive_events_from_all_correlated_aggregates(_world: &mut QueryClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the result carries a snapshot taken at sequence (-?\d+)$")]
+async fn wip_then_the_result_carries_a_snapshot_taken_at_sequence_5(_world: &mut QueryClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the query is refused because a domain is required$")]
+async fn wip_then_the_query_is_refused_because_a_domain_is_required(_world: &mut QueryClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the query fails because the backend is unreachable$")]
+async fn wip_then_the_query_fails_because_the_backend_is_unreachable(
+    _world: &mut QueryClientWorld,
+) {
+    panic!("WIP: step needs implementation");
+}

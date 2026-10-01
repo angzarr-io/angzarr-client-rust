@@ -203,7 +203,11 @@ pub fn parse_timestamp(rfc3339: &str) -> Result<Timestamp> {
     })?;
 
     let nanos = dt.timestamp_subsec_nanos();
-    debug_assert!(nanos < 1_000_000_000, "chrono nanos out of range: {}", nanos);
+    debug_assert!(
+        nanos < 1_000_000_000,
+        "chrono nanos out of range: {}",
+        nanos
+    );
     Ok(Timestamp {
         seconds: dt.timestamp(),
         nanos: nanos as i32,

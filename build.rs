@@ -22,16 +22,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let proto_files = [
-        "angzarr-project/proto/angzarr_client/proto/angzarr/v1/types.proto",
-        "angzarr-project/proto/angzarr_client/proto/angzarr/v1/command_handler.proto",
-        "angzarr-project/proto/angzarr_client/proto/angzarr/v1/projector.proto",
-        "angzarr-project/proto/angzarr_client/proto/angzarr/v1/saga.proto",
-        "angzarr-project/proto/angzarr_client/proto/angzarr/v1/process_manager.proto",
-        "angzarr-project/proto/angzarr_client/proto/angzarr/v1/query.proto",
-        "angzarr-project/proto/angzarr_client/proto/angzarr/v1/stream.proto",
-        "angzarr-project/proto/angzarr_client/proto/angzarr/v1/upcaster.proto",
-        "angzarr-project/proto/angzarr_client/proto/angzarr/v1/meta.proto",
-        "angzarr-project/proto/angzarr_client/proto/angzarr/v1/cloudevents.proto",
+        "angzarr-project/proto/io/angzarr/v1/types.proto",
+        "angzarr-project/proto/io/angzarr/v1/command_handler.proto",
+        "angzarr-project/proto/io/angzarr/v1/projector.proto",
+        "angzarr-project/proto/io/angzarr/v1/saga.proto",
+        "angzarr-project/proto/io/angzarr/v1/process_manager.proto",
+        "angzarr-project/proto/io/angzarr/v1/query.proto",
+        "angzarr-project/proto/io/angzarr/v1/stream.proto",
+        "angzarr-project/proto/io/angzarr/v1/upcaster.proto",
+        "angzarr-project/proto/io/angzarr/v1/meta.proto",
+        "angzarr-project/proto/io/angzarr/v1/cloudevents.proto",
     ];
     for file in &proto_files {
         println!("cargo:rerun-if-changed={}", file);
@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(true)
         .out_dir(&out_dir)
         .type_attribute(
-            ".angzarr_client.proto.angzarr.BusinessResponse.result",
+            ".io.angzarr.v1.BusinessResponse.result",
             "#[allow(clippy::large_enum_variant)]",
         )
         .compile_with_config(prost_config, &proto_files, &["angzarr-project/proto"])?;

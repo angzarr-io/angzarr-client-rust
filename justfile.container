@@ -4,7 +4,7 @@
 
 set shell := ["bash", "-c"]
 
-ROOT := `git rev-parse --show-toplevel`
+ROOT := justfile_directory()
 
 default:
     @just --list
@@ -138,3 +138,12 @@ publish-dry: generate-proto
 # Publish to crates.io
 publish: generate-proto
     cargo publish
+
+# Per-function cyclomatic complexity (lizard) — same tool core/main uses for
+# Rust. Generated proto (src/proto, *.pb.rs) and target/ are excluded so
+# numbers reflect hand-written source. Single-quoted globs so the host shell
+# doesn't expand them. Leading `-` keeps this a report — it does NOT fail the
+# build. `just lint` already gates cognitive complexity via clippy.
+LIZARD_EXCLUDES := "-x '*.pb.rs' -x '*/proto/*' -x '*/target/*'"
+complexity *ARGS:
+    -lizard -l rust -C 15 {{LIZARD_EXCLUDES}} {{ if ARGS == "" { "src" } else { ARGS } }}

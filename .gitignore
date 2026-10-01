@@ -27,3 +27,6 @@ Thumbs.db
 
 # ctxloom ephemeral data (synced bundles, session data, context files)
 .ctxloom/ephemeral/
+
+# Container-side cargo home (justfile `_container` sets CARGO_HOME here)
+.cargo-container/

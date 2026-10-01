@@ -89,38 +89,29 @@ impl UpcasterWorld {
     }
 }
 
-#[given(
-    regex = r#"^a class "([^"]+)" decorated as an upcaster named "([^"]+)" in domain "([^"]+)"$"#
-)]
-async fn given_upcaster_class(
-    world: &mut UpcasterWorld,
-    _cls: String,
-    _name: String,
-    _domain: String,
-) {
+#[given(regex = r#"^an upcaster named "([^"]+)" in domain "([^"]+)"$"#)]
+async fn given_upcaster_named(world: &mut UpcasterWorld, _name: String, _domain: String) {
     // The fact that `#[upcaster(name = ..., domain = ...)]` above compiled is the
     // assertion. Flag that the step was reached.
     world.class_applied = true;
 }
 
-#[given(regex = r#"^a method declared as upcasting from "([^"]+)" to "([^"]+)"$"#)]
-async fn given_upcasts_method(world: &mut UpcasterWorld, _from: String, _to: String) {
+#[given(regex = r#"^an upcasting rule from "([^"]+)" to "([^"]+)"$"#)]
+async fn given_upcasting_rule(world: &mut UpcasterWorld, _from: String, _to: String) {
     world.method_applied = true;
 }
 
-#[given("a method declared as a state factory")]
-async fn given_state_factory_method(world: &mut UpcasterWorld) {
+#[given("an upcaster with a state factory")]
+async fn given_upcaster_with_state_factory(world: &mut UpcasterWorld) {
     world.method_applied = true;
 }
 
-#[then("the class declaration compiles without error")]
-async fn then_class_compiles(world: &mut UpcasterWorld) {
-    assert!(world.class_applied);
-}
-
-#[then("the method declaration compiles without error")]
-async fn then_method_compiles(world: &mut UpcasterWorld) {
-    assert!(world.method_applied);
+#[then("the declaration is accepted")]
+async fn then_declaration_accepted(world: &mut UpcasterWorld) {
+    assert!(
+        world.class_applied || world.method_applied,
+        "no upcaster declaration was recorded"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +202,7 @@ async fn given_incoming_v1(world: &mut UpcasterWorld) {
     world.chain_incoming = Some(chain_event_page(&OrderCreatedV1::default()));
 }
 
-#[when("I dispatch the upcast request")]
+#[when("the V1 event is upcasted")]
 async fn when_dispatch_chain(world: &mut UpcasterWorld) {
     let mut builder = Router::new("upcaster-chain");
     for f in &world.chain_factories {

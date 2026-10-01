@@ -213,12 +213,9 @@ fn client_error_to_status(err: ClientError) -> Status {
     // identical wire output.
     let code = err.code();
     match err {
-        ClientError::InvalidArgument(d) => with_canonical_details(
-            Code::InvalidArgument,
-            d.message,
-            code,
-            Some(&d.details),
-        ),
+        ClientError::InvalidArgument(d) => {
+            with_canonical_details(Code::InvalidArgument, d.message, code, Some(&d.details))
+        }
         ClientError::Connection(d) => {
             with_canonical_details(Code::Unavailable, d.message, code, Some(&d.details))
         }
@@ -231,12 +228,9 @@ fn client_error_to_status(err: ClientError) -> Status {
             Status::with_details(Code::Unavailable, m, bytes::Bytes::from(payload))
         }
         ClientError::Grpc(s) => *s,
-        ClientError::InvalidTimestamp(d) => with_canonical_details(
-            Code::InvalidArgument,
-            d.message,
-            code,
-            Some(&d.details),
-        ),
+        ClientError::InvalidTimestamp(d) => {
+            with_canonical_details(Code::InvalidArgument, d.message, code, Some(&d.details))
+        }
         ClientError::Rejected(r) => r.into(),
     }
 }
@@ -258,7 +252,6 @@ fn with_canonical_details(
 fn unimplemented_with_code(code: &'static str, message: &'static str) -> Status {
     with_canonical_details(Code::Unimplemented, message, code, None)
 }
-
 
 // ---------------------------------------------------------------------------
 // Upcaster wrappers — unified-Router factory-based dispatch (R8b).
@@ -321,8 +314,7 @@ mod tests {
             [("field", "amount"), ("expected", "positive")],
         );
         let status = client_error_to_status(err);
-        let (_code, metadata, _cover) =
-            unpack_status_details(&status.details()).expect("decode");
+        let (_code, metadata, _cover) = unpack_status_details(&status.details()).expect("decode");
         assert_eq!(metadata.get("field").map(String::as_str), Some("amount"));
         assert_eq!(
             metadata.get("expected").map(String::as_str),
@@ -338,8 +330,7 @@ mod tests {
             [("field", "amount")],
         );
         let status = client_error_to_status(ClientError::Rejected(rej));
-        let (code, metadata, _cover) =
-            unpack_status_details(&status.details()).expect("decode");
+        let (code, metadata, _cover) = unpack_status_details(&status.details()).expect("decode");
         assert_eq!(code, "VALUE_NOT_POSITIVE");
         assert_eq!(metadata.get("field").map(String::as_str), Some("amount"));
     }

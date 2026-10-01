@@ -121,6 +121,7 @@ impl CompensationContext {
                 }),
                 correlation_id: self.correlation_id.clone(),
                 edition: None,
+                ..Default::default()
             }),
             pages: vec![CommandPage {
                 header: Some(PageHeader {
@@ -163,6 +164,7 @@ fn make_saga_command(
             }),
             correlation_id: "workflow-123".to_string(),
             edition: None,
+            ..Default::default()
         }),
         pages: vec![CommandPage {
             header: Some(PageHeader {
@@ -665,4 +667,158 @@ async fn then_context_issuer_type(world: &mut CompensationWorld, expected: Strin
     // In real impl, issuer_type would be set based on component type
     // For this test, we're simulating
     assert!(expected == "saga" || expected == "process_manager");
+}
+
+// ---------------------------------------------------------------------------
+// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
+// ---------------------------------------------------------------------------
+
+// TODO (WIP): Implement this step matcher properly.
+#[when(regex = r"^the compensation context is constructed from the rejection$")]
+async fn wip_when_the_compensation_context_is_constructed_from_the_r(
+    _world: &mut CompensationWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the context carries the rejected command$")]
+async fn wip_then_the_context_carries_the_rejected_command(_world: &mut CompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the context carries the rejection reason$")]
+async fn wip_then_the_context_carries_the_rejection_reason(_world: &mut CompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the context carries the saga origin$")]
+async fn wip_then_the_context_carries_the_saga_origin(_world: &mut CompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the saga origin is preserved$")]
+async fn wip_then_the_saga_origin_is_preserved(_world: &mut CompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the correlation ID is preserved$")]
+async fn wip_then_the_correlation_id_is_preserved(_world: &mut CompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the notification carries the rejected command$")]
+async fn wip_then_the_notification_carries_the_rejected_command(_world: &mut CompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the notification carries the rejection reason$")]
+async fn wip_then_the_notification_carries_the_rejection_reason(_world: &mut CompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the source aggregate and sequence are recorded$")]
+async fn wip_then_the_source_aggregate_and_sequence_are_recorded(_world: &mut CompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r#"^the notification identifies the issuing saga as "([^"]*)"$"#)]
+async fn wip_then_the_notification_identifies_the_issuing_saga_as_or(
+    _world: &mut CompensationWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the notification has a cover$")]
+async fn wip_then_the_notification_has_a_cover(_world: &mut CompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the notification payload contains a RejectionNotification$")]
+async fn wip_then_the_notification_payload_contains_a_rejectionnotif(
+    _world: &mut CompensationWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the notification carries its dispatch time$")]
+async fn wip_then_the_notification_carries_its_dispatch_time(_world: &mut CompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the command book targets the source aggregate$")]
+async fn wip_then_the_command_book_targets_the_source_aggregate(_world: &mut CompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the command book preserves the correlation ID$")]
+async fn wip_then_the_command_book_preserves_the_correlation_id(_world: &mut CompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r#"^the rejection reason equals "([^"]*)"$"#)]
+async fn wip_then_the_rejection_reason_equals_insufficient_funds(_world: &mut CompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the rejection reason carries the full error details$")]
+async fn wip_then_the_rejection_reason_carries_the_full_error_detail(
+    _world: &mut CompensationWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the rejected command is the original command$")]
+async fn wip_then_the_rejected_command_is_the_original_command(_world: &mut CompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^all command fields are preserved$")]
+async fn wip_then_all_command_fields_are_preserved(_world: &mut CompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the full saga origin chain is preserved$")]
+async fn wip_then_the_full_saga_origin_chain_is_preserved(_world: &mut CompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the root cause can be traced through the chain$")]
+async fn wip_then_the_root_cause_can_be_traced_through_the_chain(_world: &mut CompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^saga rejections produce a compensation notification$")]
+async fn wip_then_saga_rejections_produce_a_compensation_notificatio(
+    _world: &mut CompensationWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^process manager rejections produce a compensation notification$")]
+async fn wip_then_process_manager_rejections_produce_a_compensation(
+    _world: &mut CompensationWorld,
+) {
+    panic!("WIP: step needs implementation");
 }

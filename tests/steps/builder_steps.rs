@@ -370,3 +370,97 @@ fn _linker() {
     let _ = full_type_url::<CreateOrder>();
     let _ = OrderCreated::default().encode_to_vec();
 }
+
+// ---------------------------------------------------------------------------
+// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
+// ---------------------------------------------------------------------------
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^an empty handler configuration$")]
+async fn wip_given_an_empty_handler_configuration(_world: &mut BuilderWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the configuration is rejected because no handlers are registered$")]
+async fn wip_then_the_configuration_is_rejected_because_no_handlers(_world: &mut BuilderWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^a component that has not been marked as a handler kind$")]
+async fn wip_given_a_component_that_has_not_been_marked_as_a_handler(_world: &mut BuilderWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[when(regex = r"^I attempt to register it$")]
+async fn wip_when_i_attempt_to_register_it(_world: &mut BuilderWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(
+    regex = r"^the configuration is rejected because the component is not a recognised handler$"
+)]
+async fn wip_then_the_configuration_is_rejected_because_the_componen(_world: &mut BuilderWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r#"^a command handler "([^"]*)" for domain "([^"]*)" with order state$"#)]
+async fn wip_given_a_command_handler_order_for_domain_order_with_orde(_world: &mut BuilderWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r#"^another command handler "([^"]*)" for domain "([^"]*)" with payment state$"#)]
+async fn wip_given_another_command_handler_payment_for_domain_payment(_world: &mut BuilderWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the result routes commands to their handlers$")]
+async fn wip_then_the_result_routes_commands_to_their_handlers(_world: &mut BuilderWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the configuration is rejected for mixing handler kinds$")]
+async fn wip_then_the_configuration_is_rejected_for_mixing_handler_k(_world: &mut BuilderWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(
+    regex = r#"^two command handlers Alpha and Beta for domain "([^"]*)" both handling the same command$"#
+)]
+async fn wip_given_two_command_handlers_alpha_and_beta_for_domain_ord(_world: &mut BuilderWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(
+    regex = r"^the configuration is rejected because two command handlers share the same domain and command$"
+)]
+async fn wip_then_the_configuration_is_rejected_because_two_command(_world: &mut BuilderWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^the handler reports how many times it has been introspected$")]
+async fn wip_given_the_handler_reports_how_many_times_it_has_been_int(_world: &mut BuilderWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the handler has been introspected exactly once$")]
+async fn wip_then_the_handler_has_been_introspected_exactly_once(_world: &mut BuilderWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the result routes saga notifications to their handlers$")]
+async fn wip_then_the_result_routes_saga_notifications_to_their_hand(_world: &mut BuilderWorld) {
+    panic!("WIP: step needs implementation");
+}

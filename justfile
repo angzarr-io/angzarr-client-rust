@@ -24,6 +24,12 @@ import? 'angzarr-project/submodule.just'
 ROOT := `git rev-parse --show-toplevel`
 IMAGE := "ghcr.io/angzarr-io/angzarr-rust:latest"
 
+# Rootless docker maps container uid 0 to the host user, so `-u 0:0` is what
+# makes bind-mounted writes (target/, .cargo-container/, src/proto/) land as
+# the host user. The image's default `angzarr` user maps to a subuid there and
+# cannot write the workspace. Rootful docker keeps the image default (fixuid).
+DOCKER_USER := if `docker info 2>/dev/null | grep -q rootless && echo yes || echo no` == "yes" { "-u 0:0" } else { "" }
+
 # Run just target in container (or directly if already in devcontainer)
 [private]
 _container +ARGS:
@@ -31,7 +37,7 @@ _container +ARGS:
     if [ "${DEVCONTAINER:-}" = "true" ]; then
         just {{ARGS}}
     else
-        docker run --rm --network=host \
+        docker run --rm --network=host {{DOCKER_USER}} \
             -v "{{ROOT}}:/workspace:Z" \
             -v "{{ROOT}}/justfile.container:/workspace/justfile:ro" \
             -w /workspace \
@@ -73,7 +79,7 @@ _container-ephemeral +ARGS:
     mkdir -p "{{ROOT}}/mutants.out" \
              "{{ROOT}}/.mutants-cache/cargo-home" \
              "{{ROOT}}/.mutants-cache/cargo-target"
-    docker run --rm --network=host \
+    docker run --rm --network=host {{DOCKER_USER}} \
         -v "{{ROOT}}:/src:ro,Z" \
         -v "{{ROOT}}/mutants.out:/out:Z" \
         -v "{{ROOT}}/.mutants-cache/cargo-home:/cargo-home:Z" \
@@ -233,6 +239,16 @@ fmt-fix: generate-proto
 
 # Cross-language alias — `just check` runs lint + fmt-check.
 check: lint fmt
+
+# === Code complexity (lizard, in container) ===
+# Per-function cyclomatic complexity via lizard — the same tool core/main
+# uses for Rust (clippy dropped its cyclomatic lint in favour of
+# `cognitive_complexity`, and rust-code-analysis is unmaintained). Baked
+# into the angzarr-rust image. Generated proto (src/proto) and target/ are
+# excluded. Defaults to `src`. Report-only — never fails the build.
+# (`just lint` already runs clippy's cognitive-complexity gate.)
+complexity *ARGS:
+    just _container complexity {{ARGS}}
 
 # Remove build artifacts
 clean:

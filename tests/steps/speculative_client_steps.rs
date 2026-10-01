@@ -591,3 +591,27 @@ async fn then_fail_connection(world: &mut SpeculativeClientWorld) {
 async fn then_fail_invalid_argument(world: &mut SpeculativeClientWorld) {
     assert_eq!(world.error_type, Some("invalid_argument".to_string()));
 }
+
+// ---------------------------------------------------------------------------
+// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
+// ---------------------------------------------------------------------------
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^a what-if execution surface available$")]
+async fn wip_given_a_what_if_execution_surface_available(_world: &mut SpeculativeClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the projected execution leaves no trace$")]
+async fn wip_then_the_projected_execution_leaves_no_trace(_world: &mut SpeculativeClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r#"^events with saga origin from "([^"]*)" aggregate$"#)]
+async fn wip_given_events_with_saga_origin_from_inventory_aggregate(
+    _world: &mut SpeculativeClientWorld,
+) {
+    panic!("WIP: step needs implementation");
+}

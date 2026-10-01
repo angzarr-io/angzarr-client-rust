@@ -47,6 +47,7 @@ impl Fulfillment {
             }],
             process_events: vec![],
             facts: vec![],
+            ..Default::default()
         })
     }
 
@@ -61,6 +62,7 @@ impl Fulfillment {
             commands: vec![],
             process_events: vec![],
             facts: vec![],
+            ..Default::default()
         })
     }
 }
@@ -179,4 +181,40 @@ async fn then_no_commands(world: &mut ProcessManagerWorld) {
 #[then(expr = "the PM observed state.orders_seen = {int}")]
 async fn then_orders_seen(_world: &mut ProcessManagerWorld, _n: u32) {
     // Observability requires instrumented PM state; best-effort no-op here.
+}
+
+// ---------------------------------------------------------------------------
+// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
+// ---------------------------------------------------------------------------
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r#"^a process manager "([^"]*)" for the fulfillment domain$"#)]
+async fn wip_given_a_process_manager_fulfillment_for_the_fulfillment(
+    _world: &mut ProcessManagerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^the PM tracks the number of orders seen$")]
+async fn wip_given_the_pm_tracks_the_number_of_orders_seen(_world: &mut ProcessManagerWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^OrderCompleted advances the orders-seen count$")]
+async fn wip_given_ordercompleted_advances_the_orders_seen_count(_world: &mut ProcessManagerWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^Fulfillment is the active process manager$")]
+async fn wip_given_fulfillment_is_the_active_process_manager(_world: &mut ProcessManagerWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the PM has seen (-?\d+) completed orders$")]
+async fn wip_then_the_pm_has_seen_2_completed_orders(_world: &mut ProcessManagerWorld) {
+    panic!("WIP: step needs implementation");
 }

@@ -174,3 +174,19 @@ async fn then_factory_invoked(world: &mut ProjectorWorld, n: u32) {
         n
     );
 }
+
+// ---------------------------------------------------------------------------
+// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
+// ---------------------------------------------------------------------------
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^Output is the active projector$")]
+async fn wip_given_output_is_the_active_projector(_world: &mut ProjectorWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^every entry was appended by the same projector instance$")]
+async fn wip_then_every_entry_was_appended_by_the_same_projector_ins(_world: &mut ProjectorWorld) {
+    panic!("WIP: step needs implementation");
+}

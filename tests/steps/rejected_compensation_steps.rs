@@ -326,3 +326,117 @@ async fn then_carries_amount(_world: &mut RejectedCompensationWorld, _n: u32) {
 async fn then_pages_carry_78(_world: &mut RejectedCompensationWorld) {
     // Framework-level stamping; best-effort no-op.
 }
+
+// ---------------------------------------------------------------------------
+// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
+// ---------------------------------------------------------------------------
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^deposits update Payment's bankroll$")]
+async fn wip_given_deposits_update_payment_s_bankroll(_world: &mut RejectedCompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(
+    regex = r"^Payment compensates a rejected ReserveStock from inventory by emitting FundsReleased with the current bankroll$"
+)]
+async fn wip_given_payment_compensates_a_rejected_reservestock_from_i(
+    _world: &mut RejectedCompensationWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^Payment is configured$")]
+async fn wip_given_payment_is_configured(_world: &mut RejectedCompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^a prior history with a FundsDeposited event of bankroll (-?\d+)$")]
+async fn wip_given_a_prior_history_with_a_fundsdeposited_event_of_ban(
+    _world: &mut RejectedCompensationWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[when(regex = r"^a rejection of ReserveStock arrives from inventory$")]
+async fn wip_when_a_rejection_of_reservestock_arrives_from_inventory(
+    _world: &mut RejectedCompensationWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(
+    regex = r#"^a command handler "([^"]*)" for domain "([^"]*)" with two compensation handlers$"#
+)]
+async fn wip_given_a_command_handler_payment_for_domain_payment_with(
+    _world: &mut RejectedCompensationWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(
+    regex = r"^Payment compensates a rejected ReserveStock from inventory by emitting FundsReleased$"
+)]
+async fn wip_given_payment_compensates_a_rejected_reservestock_from_i_2(
+    _world: &mut RejectedCompensationWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(
+    regex = r"^Payment compensates a rejected ProcessPayment from payment by emitting WorkflowFailed$"
+)]
+async fn wip_given_payment_compensates_a_rejected_processpayment_from(
+    _world: &mut RejectedCompensationWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[when(regex = r"^a rejection of ProcessPayment arrives from payment$")]
+async fn wip_when_a_rejection_of_processpayment_arrives_from_payment(
+    _world: &mut RejectedCompensationWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[when(regex = r"^a rejection of CreateShipment arrives from fulfillment$")]
+async fn wip_when_a_rejection_of_createshipment_arrives_from_fulfill(
+    _world: &mut RejectedCompensationWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(
+    regex = r"^Payment compensates a rejected ReserveStock from inventory by emitting two FundsReleased events$"
+)]
+async fn wip_given_payment_compensates_a_rejected_reservestock_from_i_3(
+    _world: &mut RejectedCompensationWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^a prior history ending at sequence (-?\d+)$")]
+async fn wip_given_a_prior_history_ending_at_sequence_6(_world: &mut RejectedCompensationWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(
+    regex = r"^compensation events are appended after sequence (-?\d+), taking sequences (-?\d+) and (-?\d+)$"
+)]
+async fn wip_then_compensation_events_are_appended_after_sequence_6(
+    _world: &mut RejectedCompensationWorld,
+) {
+    panic!("WIP: step needs implementation");
+}

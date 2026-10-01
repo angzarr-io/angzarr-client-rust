@@ -320,3 +320,173 @@ async fn then_no_event_pages(world: &mut CommandHandlerWorld) {
         other => panic!("expected empty Events, got {:?}", other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
+// ---------------------------------------------------------------------------
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r#"^a command handler "([^"]*)" for domain "([^"]*)" with order state$"#)]
+async fn wip_given_a_command_handler_order_for_domain_order_with_orde(
+    _world: &mut CommandHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^OrderCreated marks the order as created$")]
+async fn wip_given_ordercreated_marks_the_order_as_created(_world: &mut CommandHandlerWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^CreateOrder emits OrderCreated$")]
+async fn wip_given_createorder_emits_ordercreated(_world: &mut CommandHandlerWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^Order is the active aggregate handler$")]
+async fn wip_given_order_is_the_active_aggregate_handler(_world: &mut CommandHandlerWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[when(regex = r#"^CreateOrder\(order_id="([^"]*)"\) is dispatched$"#)]
+async fn wip_when_createorder_order_id_o_1_is_dispatched(_world: &mut CommandHandlerWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^a prior history with an OrderCreated event at sequence (-?\d+)$")]
+async fn wip_given_a_prior_history_with_an_ordercreated_event_at_sequ(
+    _world: &mut CommandHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the order is treated as already created$")]
+async fn wip_then_the_order_is_treated_as_already_created(_world: &mut CommandHandlerWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[when(regex = r#"^CompleteOrder\(order_id="([^"]*)"\) is dispatched$"#)]
+async fn wip_when_completeorder_order_id_o_1_is_dispatched(_world: &mut CommandHandlerWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the unknown command is rejected as invalid input$")]
+async fn wip_then_the_unknown_command_is_rejected_as_invalid_input(
+    _world: &mut CommandHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^when the handler emits nothing, no events are produced$")]
+async fn wip_then_when_the_handler_emits_nothing_no_events_are_produ(
+    _world: &mut CommandHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^the aggregate supplies its own initial state with created = true$")]
+async fn wip_given_the_aggregate_supplies_its_own_initial_state_with(
+    _world: &mut CommandHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(
+    regex = r"^Order handles CreateOrder by emitting OrderCreated only when the order is already created$"
+)]
+async fn wip_given_order_handles_createorder_by_emitting_ordercreated(
+    _world: &mut CommandHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^the aggregate does not supply its own initial state$")]
+async fn wip_given_the_aggregate_does_not_supply_its_own_initial_stat(
+    _world: &mut CommandHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^Order handles CreateOrder by reading whether the order is created$")]
+async fn wip_given_order_handles_createorder_by_reading_whether_the_o(
+    _world: &mut CommandHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the handler observes that the order is not created$")]
+async fn wip_then_the_handler_observes_that_the_order_is_not_created(
+    _world: &mut CommandHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^the incoming command has cover\.ext set to a packed parent Cover$")]
+async fn wip_given_the_incoming_command_has_cover_ext_set_to_a_packed(
+    _world: &mut CommandHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the response's EventBook cover\.ext is the same packed parent Cover$")]
+async fn wip_then_the_response_s_eventbook_cover_ext_is_the_same_pac(
+    _world: &mut CommandHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^a command handler whose emit step sets EventBook cover\.ext explicitly$")]
+async fn wip_given_a_command_handler_whose_emit_step_sets_eventbook_c(
+    _world: &mut CommandHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^the incoming command also has a different cover\.ext set$")]
+async fn wip_given_the_incoming_command_also_has_a_different_cover_ex(
+    _world: &mut CommandHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the response's EventBook cover\.ext is the handler-set value$")]
+async fn wip_then_the_response_s_eventbook_cover_ext_is_the_handler(
+    _world: &mut CommandHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^the incoming command's cover has no ext field set$")]
+async fn wip_given_the_incoming_command_s_cover_has_no_ext_field_set(
+    _world: &mut CommandHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the response's EventBook cover has no ext field set$")]
+async fn wip_then_the_response_s_eventbook_cover_has_no_ext_field_se(
+    _world: &mut CommandHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}

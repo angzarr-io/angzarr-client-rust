@@ -89,6 +89,7 @@ impl Destinations {
             sequence_type: Some(SequenceType::AngzarrDeferred(AngzarrDeferredSequence {
                 source: Some(source_cover),
                 source_seq,
+                ..Default::default()
             })),
             sync_mode: None,
         }
@@ -211,6 +212,7 @@ mod tests {
             }),
             correlation_id: "corr-1".into(),
             edition: None,
+            ..Default::default()
         };
 
         let header = Destinations::deferred_header(source.clone(), 9);
@@ -308,6 +310,7 @@ mod tests {
                 root: Some(ProtoUuid { value: root_bytes }),
                 correlation_id: correlation_id.into(),
                 edition: None,
+                ..Default::default()
             }),
             pages: vec![CommandPage {
                 header: None,

@@ -53,6 +53,7 @@ fn make_event_book(events: Vec<EventPage>) -> EventBook {
             }),
             correlation_id: String::new(),
             edition: None,
+            ..Default::default()
         }),
         pages: events,
         snapshot: None,

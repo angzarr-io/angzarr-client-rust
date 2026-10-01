@@ -111,7 +111,10 @@ impl CommandHandlerRouter {
                 return Err(ClientError::invalid_argument(
                     crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
                     crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
-                    [(crate::error_codes::keys::EXPECTED_KIND, Kind::CommandHandler.as_str())],
+                    [(
+                        crate::error_codes::keys::EXPECTED_KIND,
+                        Kind::CommandHandler.as_str(),
+                    )],
                 ));
             };
             return Ok(br);
@@ -181,7 +184,10 @@ impl CommandHandlerRouter {
                 return Err(ClientError::invalid_argument(
                     crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
                     crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
-                    [(crate::error_codes::keys::EXPECTED_KIND, Kind::CommandHandler.as_str())],
+                    [(
+                        crate::error_codes::keys::EXPECTED_KIND,
+                        Kind::CommandHandler.as_str(),
+                    )],
                 ));
             };
             if let Some(business_response::Result::Events(events)) = br.result {
@@ -189,14 +195,20 @@ impl CommandHandlerRouter {
                     ClientError::invalid_argument(
                         crate::error_codes::codes::ROUTER_SEQUENCE_OVERFLOW,
                         crate::error_codes::messages::ROUTER_SEQUENCE_OVERFLOW,
-                        [(crate::error_codes::keys::ACTUAL, events.pages.len().to_string())],
+                        [(
+                            crate::error_codes::keys::ACTUAL,
+                            events.pages.len().to_string(),
+                        )],
                     )
                 })?;
                 running_seq = running_seq.checked_add(added).ok_or_else(|| {
                     ClientError::invalid_argument(
                         crate::error_codes::codes::ROUTER_SEQUENCE_OVERFLOW,
                         crate::error_codes::messages::ROUTER_SEQUENCE_OVERFLOW,
-                        [(crate::error_codes::keys::ACTUAL, format!("{}+{}", running_seq, added))],
+                        [(
+                            crate::error_codes::keys::ACTUAL,
+                            format!("{}+{}", running_seq, added),
+                        )],
                     )
                 })?;
                 merged.pages.extend(events.pages);
@@ -503,7 +515,10 @@ impl ProcessManagerRouter {
                 return Err(ClientError::invalid_argument(
                     crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
                     crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
-                    [(crate::error_codes::keys::EXPECTED_KIND, Kind::ProcessManager.as_str())],
+                    [(
+                        crate::error_codes::keys::EXPECTED_KIND,
+                        Kind::ProcessManager.as_str(),
+                    )],
                 ));
             };
             // Audit #86 reverted 2026-04-29: edition propagation moved
@@ -658,7 +673,10 @@ impl ProjectorRouter {
                     return Err(ClientError::invalid_argument(
                         crate::error_codes::codes::HANDLER_WRONG_RESPONSE_KIND,
                         crate::error_codes::messages::HANDLER_WRONG_RESPONSE_KIND,
-                        [(crate::error_codes::keys::EXPECTED_KIND, Kind::Projector.as_str())],
+                        [(
+                            crate::error_codes::keys::EXPECTED_KIND,
+                            Kind::Projector.as_str(),
+                        )],
                     ));
                 };
             }
@@ -728,8 +746,7 @@ impl CommandHandlerRouter {
     /// enough to call per-request.
     pub fn supports_handle_fact(&self) -> bool {
         for factory in &self.factories {
-            if let HandlerConfig::CommandHandler { handles_fact, .. } = factory.config()
-            {
+            if let HandlerConfig::CommandHandler { handles_fact, .. } = factory.config() {
                 if !handles_fact.is_empty() {
                     return true;
                 }

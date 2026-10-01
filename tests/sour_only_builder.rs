@@ -7,7 +7,7 @@ mod common;
 mod steps;
 
 use cucumber::World;
-use steps::builder::BuilderWorld;
+use steps::builder_steps::BuilderWorld;
 
 #[tokio::main]
 async fn main() {

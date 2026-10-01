@@ -526,6 +526,12 @@ async fn then_fails_aggregate_error(world: &mut MergeStrategyWorld) {
     assert!(world.command_failed);
 }
 
+// TODO (WIP): Implement this step matcher properly.
+#[then("the command fails with the aggregate's rejection reason")]
+async fn then_fails_aggregate_rejection_reason(_world: &mut MergeStrategyWorld) {
+    panic!("WIP: step needs implementation");
+}
+
 #[then("both commands succeed")]
 async fn then_both_succeed(world: &mut MergeStrategyWorld) {
     for (succeeded, _) in &world.concurrent_results {

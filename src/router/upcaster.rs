@@ -104,7 +104,10 @@ impl UpcasterRouter {
                     return Err(ClientError::invalid_argument(
                         crate::error_codes::codes::UPCASTER_WRONG_RESPONSE_KIND,
                         crate::error_codes::messages::UPCASTER_WRONG_RESPONSE_KIND,
-                        [(crate::error_codes::keys::EXPECTED_KIND, Kind::Upcaster.as_str())],
+                        [(
+                            crate::error_codes::keys::EXPECTED_KIND,
+                            Kind::Upcaster.as_str(),
+                        )],
                     ));
                 };
                 if let Some(transformed) = r.events.into_iter().next() {

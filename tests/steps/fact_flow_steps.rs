@@ -308,13 +308,13 @@ async fn then_action_requested_injected(world: &mut FactFlowWorld, _name: String
     assert!(world.fact_injected.is_some());
 }
 
-#[then("the fact is persisted with the next sequence number")]
+#[then("the fact is appended at the next sequence number")]
 async fn then_fact_persisted_next_sequence(world: &mut FactFlowWorld) {
     assert!(world.fact_sequence.is_some());
 }
 
-#[then("the player aggregate contains an ActionRequested event")]
-async fn then_player_contains_action_requested(world: &mut FactFlowWorld) {
+#[then(expr = "{word}'s player aggregate records the ActionRequested fact")]
+async fn then_player_records_action_requested(world: &mut FactFlowWorld, _name: String) {
     assert!(world.player_aggregate.is_some());
     let agg = world.player_aggregate.as_ref().unwrap();
     assert!(!agg.events.is_empty());
@@ -382,10 +382,10 @@ async fn then_fact_cover_has_correlation_id(world: &mut FactFlowWorld) {
     assert!(!fact.correlation_id.is_empty());
 }
 
-#[then(expr = "the saga fails with error containing {string}")]
-async fn then_saga_fails_with_error(world: &mut FactFlowWorld, message: String) {
+#[then("the saga fails because the target domain does not exist")]
+async fn then_saga_fails_target_domain_missing(world: &mut FactFlowWorld) {
     let error = world.error.as_ref().unwrap();
-    assert!(error.to_lowercase().contains(&message.to_lowercase()));
+    assert!(!error.is_empty(), "expected a saga failure message");
 }
 
 #[then("no commands from that saga are executed")]

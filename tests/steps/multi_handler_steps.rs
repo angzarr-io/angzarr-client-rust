@@ -131,6 +131,7 @@ impl PMA {
             }],
             process_events: vec![],
             facts: vec![],
+            ..Default::default()
         })
     }
 }
@@ -161,6 +162,7 @@ impl PMB {
             }],
             process_events: vec![],
             facts: vec![],
+            ..Default::default()
         })
     }
 }
@@ -665,4 +667,40 @@ async fn then_saga_a_invoked(world: &mut MultiHandlerWorld, n: u32) {
 #[then(expr = "SagaB's factory was invoked exactly {int} time")]
 async fn then_saga_b_invoked(world: &mut MultiHandlerWorld, n: u32) {
     assert_eq!(world.beta_calls.load(Ordering::SeqCst), n);
+}
+
+// ---------------------------------------------------------------------------
+// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
+// ---------------------------------------------------------------------------
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(
+    regex = r#"^registration is rejected because two command handlers claim CreateOrder in "([^"]*)"$"#
+)]
+async fn wip_then_registration_is_rejected_because_two_command_handl(
+    _world: &mut MultiHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the configuration is accepted$")]
+async fn wip_then_the_configuration_is_accepted(_world: &mut MultiHandlerWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(
+    regex = r#"^two process managers PMA and PMB both sourcing from "([^"]*)" and handling OrderCreated$"#
+)]
+async fn wip_given_two_process_managers_pma_and_pmb_both_sourcing_fro(
+    _world: &mut MultiHandlerWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^each saga handles the event exactly once$")]
+async fn wip_then_each_saga_handles_the_event_exactly_once(_world: &mut MultiHandlerWorld) {
+    panic!("WIP: step needs implementation");
 }

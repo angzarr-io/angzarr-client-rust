@@ -213,3 +213,75 @@ async fn then_env_var_name(world: &mut DomainClientWorld, expected: String) {
         actual, expected
     );
 }
+
+// ---------------------------------------------------------------------------
+// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
+// ---------------------------------------------------------------------------
+
+// TODO (WIP): Implement this step matcher properly.
+#[when(regex = r"^I create a domain client for the coordinator endpoint$")]
+async fn wip_when_i_create_a_domain_client_for_the_coordinator_endpo(
+    _world: &mut DomainClientWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[when(regex = r#"^I create a domain client for domain "([^"]*)"$"#)]
+async fn wip_when_i_create_a_domain_client_for_domain_test(_world: &mut DomainClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^I should receive a command response$")]
+async fn wip_then_i_should_receive_a_command_response(_world: &mut DomainClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^I should receive (-?\d+) event pages$")]
+async fn wip_then_i_should_receive_5_event_pages(_world: &mut DomainClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^a connected domain client$")]
+async fn wip_given_a_connected_domain_client(_world: &mut DomainClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[when(regex = r"^I close the domain client$")]
+async fn wip_when_i_close_the_domain_client(_world: &mut DomainClientWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^subsequent commands should fail with a connection error$")]
+async fn wip_then_subsequent_commands_should_fail_with_a_connection(
+    _world: &mut DomainClientWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^subsequent queries should fail with a connection error$")]
+async fn wip_then_subsequent_queries_should_fail_with_a_connection_e(
+    _world: &mut DomainClientWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[when(regex = r#"^I create a domain client from environment variable "([^"]*)"$"#)]
+async fn wip_when_i_create_a_domain_client_from_environment_variable(
+    _world: &mut DomainClientWorld,
+) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^the domain client should be connected$")]
+async fn wip_then_the_domain_client_should_be_connected(_world: &mut DomainClientWorld) {
+    panic!("WIP: step needs implementation");
+}

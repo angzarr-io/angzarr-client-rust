@@ -41,6 +41,7 @@ async fn given_commandbook(
             root: Some(ProtoUuid { value: root_bytes }),
             correlation_id,
             edition: None,
+            ..Default::default()
         }),
         pages: Vec::new(),
         ..Default::default()

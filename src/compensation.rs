@@ -337,6 +337,7 @@ mod tests {
                 ..Default::default()
             }),
             source_seq: 42,
+            ..Default::default()
         };
 
         let rejected_command = CommandBook {

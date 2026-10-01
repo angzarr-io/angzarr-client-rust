@@ -54,7 +54,7 @@ pub fn make_cover(
             value: root.to_vec(),
         }),
         correlation_id: correlation_id.into(),
-        edition: None,
+        ..Default::default()
     }
 }
 
