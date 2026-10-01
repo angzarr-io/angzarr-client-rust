@@ -1,329 +1,225 @@
-//! QueryClient step definitions.
+//! Step definitions for `features/client/query_client.feature`.
+//!
+//! Drives a real [`QueryClient`] (through [`QueryBuilderExt`]) against the
+//! in-process test backend (`tests/common/backend.rs`).
 
+use angzarr_client::proto::{event_page, EventBook, EventPage};
+use angzarr_client::{ClientError, QueryBuilderExt, QueryClient};
 use cucumber::{given, then, when, World};
-use std::collections::HashMap;
+use prost::Message;
 
-/// Mock event for testing.
-#[derive(Debug, Clone)]
-struct MockEvent {
-    sequence: u32,
-    event_type: String,
-    payload: String,
-}
+use crate::common::backend::{
+    cover, page_seq, root_for, short_type, single_attempt, ts, unavailable_endpoint, GenericEvent,
+    Hidden, TestBackend,
+};
 
-/// Mock EventBook for testing.
-#[derive(Debug, Clone, Default)]
-struct MockEventBook {
-    events: Vec<MockEvent>,
-    snapshot_sequence: Option<u32>,
-    edition: Option<String>,
-}
-
-/// Test context for QueryClient scenarios.
 #[derive(Debug, Default, World)]
 pub struct QueryClientWorld {
-    client_connected: bool,
-    aggregates: HashMap<String, MockEventBook>,
-    correlation_events: HashMap<String, Vec<MockEventBook>>,
-    result: Option<MockEventBook>,
-    error: Option<String>,
-    service_available: bool,
+    backend: Option<TestBackend>,
+    client: Hidden<QueryClient>,
+    endpoint: String,
+    book: Option<Result<EventBook, ClientError>>,
+    books: Option<Result<Vec<EventBook>, ClientError>>,
+    cutoff: Option<prost_types::Timestamp>,
+    expected_edition_data: Vec<String>,
+    correlated_roots: usize,
 }
 
-// ==========================================================================
-// Background Steps
-// ==========================================================================
+impl QueryClientWorld {
+    fn backend(&self) -> &TestBackend {
+        self.backend.as_ref().expect("test backend running")
+    }
 
-#[given("a QueryClient connected to the test backend")]
-async fn given_query_client(world: &mut QueryClientWorld) {
-    world.client_connected = true;
-    world.service_available = true;
+    fn book(&self) -> &EventBook {
+        match self.book.as_ref().expect("a query was made") {
+            Ok(b) => b,
+            Err(e) => panic!("query failed: {e:?}"),
+        }
+    }
+
+    fn err(&self) -> &ClientError {
+        match self.book.as_ref().expect("a query was made") {
+            Ok(b) => panic!("query unexpectedly succeeded: {b:?}"),
+            Err(e) => e,
+        }
+    }
 }
 
-// ==========================================================================
-// Given Steps - Aggregates
-// ==========================================================================
+fn seqs(pages: &[EventPage]) -> Vec<u32> {
+    pages
+        .iter()
+        .map(|p| page_seq(p).expect("sequence"))
+        .collect()
+}
+
+fn event_of(page: &EventPage) -> &prost_types::Any {
+    match &page.payload {
+        Some(event_page::Payload::Event(a)) => a,
+        other => panic!("expected event payload, got {other:?}"),
+    }
+}
+
+// --------------------------------------------------------------------------
+// Arrangement
+// --------------------------------------------------------------------------
+
+#[given("a query surface available")]
+async fn given_surface(world: &mut QueryClientWorld) {
+    let backend = TestBackend::start_tcp().await;
+    world.client.set(
+        QueryClient::connect(backend.endpoint())
+            .await
+            .expect("query client connects to the test backend"),
+    );
+    world.endpoint = backend.endpoint().to_string();
+    world.backend = Some(backend);
+}
 
 #[given(expr = "an aggregate {string} with root {string}")]
-async fn given_aggregate(world: &mut QueryClientWorld, domain: String, root: String) {
-    let key = format!("{}:{}", domain, root);
-    world.aggregates.insert(
-        key,
-        MockEventBook {
-            events: vec![],
-            snapshot_sequence: None,
-            edition: None,
-        },
-    );
+async fn given_unknown(world: &mut QueryClientWorld, domain: String, root: String) {
+    assert!(world
+        .backend()
+        .stored_pages(&cover(&domain, &root, None, ""))
+        .is_empty());
 }
 
 #[given(expr = "an aggregate {string} with root {string} has {int} events")]
-async fn given_aggregate_with_events(
-    world: &mut QueryClientWorld,
-    domain: String,
-    root: String,
-    count: u32,
-) {
-    let key = format!("{}:{}", domain, root);
-    let mut events = vec![];
-    for i in 0..count {
-        events.push(MockEvent {
-            sequence: i,
-            event_type: "Event".to_string(),
-            payload: format!("data-{}", i),
-        });
-    }
-    world.aggregates.insert(
-        key,
-        MockEventBook {
-            events,
-            snapshot_sequence: None,
-            edition: None,
-        },
-    );
+async fn given_n_events(world: &mut QueryClientWorld, domain: String, root: String, n: u32) {
+    world
+        .backend()
+        .seed(&cover(&domain, &root, None, ""), "ItemAdded", n);
 }
 
 #[given(expr = "an aggregate {string} with root {string} has event {string} with data {string}")]
-async fn given_aggregate_with_specific_event(
+async fn given_event_with_data(
     world: &mut QueryClientWorld,
     domain: String,
     root: String,
-    event_type: String,
+    name: String,
     data: String,
 ) {
-    let key = format!("{}:{}", domain, root);
-    world.aggregates.insert(
-        key,
-        MockEventBook {
-            events: vec![MockEvent {
-                sequence: 0,
-                event_type,
-                payload: data,
-            }],
-            snapshot_sequence: None,
-            edition: None,
-        },
-    );
+    world
+        .backend()
+        .seed_event(&cover(&domain, &root, None, ""), &name, &data, None);
 }
 
 #[given(expr = "an aggregate {string} with root {string} has events at known timestamps")]
-async fn given_aggregate_with_timestamps(
-    world: &mut QueryClientWorld,
-    domain: String,
-    root: String,
-) {
-    let key = format!("{}:{}", domain, root);
-    let mut events = vec![];
-    for i in 0..5 {
-        events.push(MockEvent {
-            sequence: i,
-            event_type: "Event".to_string(),
-            payload: format!("data-{}", i),
-        });
+async fn given_timestamps(world: &mut QueryClientWorld, domain: String, root: String) {
+    let c = cover(&domain, &root, None, "");
+    for (i, at) in [
+        "2024-01-15T10:00:00Z",
+        "2024-01-15T10:15:00Z",
+        "2024-01-15T10:30:00Z",
+        "2024-01-15T10:45:00Z",
+        "2024-01-15T11:00:00Z",
+    ]
+    .iter()
+    .enumerate()
+    {
+        world
+            .backend()
+            .seed_event(&c, "ItemAdded", &format!("t{i}"), Some(ts(at)));
     }
-    world.aggregates.insert(
-        key,
-        MockEventBook {
-            events,
-            snapshot_sequence: None,
-            edition: None,
-        },
-    );
 }
 
 #[given(expr = "an aggregate {string} with root {string} in edition {string}")]
-async fn given_aggregate_in_edition(
+async fn given_in_edition(
     world: &mut QueryClientWorld,
     domain: String,
     root: String,
     edition: String,
 ) {
-    let key = format!("{}:{}:{}", domain, root, edition);
-    let mut events = vec![];
-    for i in 0..3 {
-        events.push(MockEvent {
-            sequence: i,
-            event_type: "Event".to_string(),
-            payload: format!("data-{}", i),
-        });
-    }
-    world.aggregates.insert(
-        key,
-        MockEventBook {
-            events,
-            snapshot_sequence: None,
-            edition: Some(edition),
-        },
+    world.backend().seed_event(
+        &cover(&domain, &root, None, ""),
+        "ItemAdded",
+        "main-0",
+        None,
     );
+    world.backend().seed_event(
+        &cover(&domain, &root, Some(&edition), ""),
+        "ItemAdded",
+        "edition-0",
+        None,
+    );
+    world.expected_edition_data = vec!["edition-0".into()];
 }
 
 #[given(expr = "an aggregate {string} with root {string} has {int} events in main")]
-async fn given_aggregate_in_main(
-    world: &mut QueryClientWorld,
-    domain: String,
-    root: String,
-    count: u32,
-) {
-    let key = format!("{}:{}", domain, root);
-    let mut events = vec![];
-    for i in 0..count {
-        events.push(MockEvent {
-            sequence: i,
-            event_type: "Event".to_string(),
-            payload: format!("data-{}", i),
-        });
-    }
-    world.aggregates.insert(
-        key,
-        MockEventBook {
-            events,
-            snapshot_sequence: None,
-            edition: None,
-        },
-    );
+async fn given_main(world: &mut QueryClientWorld, domain: String, root: String, n: u32) {
+    world
+        .backend()
+        .seed(&cover(&domain, &root, None, ""), "ItemAdded", n);
 }
 
 #[given(expr = "an aggregate {string} with root {string} has {int} events in edition {string}")]
-async fn given_aggregate_in_edition_count(
+async fn given_edition_n(
     world: &mut QueryClientWorld,
     domain: String,
     root: String,
-    count: u32,
+    n: u32,
     edition: String,
 ) {
-    let key = format!("{}:{}:{}", domain, root, edition);
-    let mut events = vec![];
-    for i in 0..count {
-        events.push(MockEvent {
-            sequence: i,
-            event_type: "Event".to_string(),
-            payload: format!("data-{}", i),
-        });
-    }
-    world.aggregates.insert(
-        key,
-        MockEventBook {
-            events,
-            snapshot_sequence: None,
-            edition: Some(edition),
-        },
+    world
+        .backend()
+        .seed(&cover(&domain, &root, Some(&edition), ""), "ItemAdded", n);
+}
+
+#[given(expr = "events with correlation ID {string} exist in multiple aggregates")]
+async fn given_correlated(world: &mut QueryClientWorld, id: String) {
+    let b = world.backend();
+    b.seed(&cover("orders", "corr-order", None, &id), "OrderCreated", 1);
+    b.seed(
+        &cover("inventory", "corr-stock", None, &id),
+        "StockReserved",
+        1,
     );
+    b.seed(
+        &cover("shipping", "corr-ship", None, &id),
+        "ShipmentCreated",
+        1,
+    );
+    b.seed(
+        &cover("orders", "unrelated", None, "other-flow"),
+        "OrderCreated",
+        1,
+    );
+    world.correlated_roots = 3;
 }
 
 #[given(
     expr = "an aggregate {string} with root {string} has a snapshot at sequence {int} and {int} events"
 )]
-async fn given_aggregate_with_snapshot(
+async fn given_snapshot(
     world: &mut QueryClientWorld,
     domain: String,
     root: String,
-    snap_seq: u32,
-    total: u32,
+    snap: u32,
+    n: u32,
 ) {
-    let key = format!("{}:{}", domain, root);
-    let mut events = vec![];
-    for i in 0..total {
-        events.push(MockEvent {
-            sequence: i,
-            event_type: "Event".to_string(),
-            payload: format!("data-{}", i),
-        });
-    }
-    world.aggregates.insert(
-        key,
-        MockEventBook {
-            events,
-            snapshot_sequence: Some(snap_seq),
-            edition: None,
-        },
-    );
-}
-
-#[given(expr = "events with correlation ID {string} exist in multiple aggregates")]
-async fn given_correlated_events(world: &mut QueryClientWorld, cid: String) {
-    let books = vec![
-        MockEventBook {
-            events: vec![
-                MockEvent {
-                    sequence: 0,
-                    event_type: "OrderCreated".to_string(),
-                    payload: "data".to_string(),
-                },
-                MockEvent {
-                    sequence: 1,
-                    event_type: "OrderUpdated".to_string(),
-                    payload: "data".to_string(),
-                },
-            ],
-            snapshot_sequence: None,
-            edition: None,
-        },
-        MockEventBook {
-            events: vec![MockEvent {
-                sequence: 0,
-                event_type: "Reserved".to_string(),
-                payload: "data".to_string(),
-            }],
-            snapshot_sequence: None,
-            edition: None,
-        },
-    ];
-    world.correlation_events.insert(cid, books);
+    let c = cover(&domain, &root, None, "");
+    world.backend().seed(&c, "ItemAdded", n);
+    world.backend().seed_snapshot(&c, snap);
 }
 
 #[given("the query service is unavailable")]
-async fn given_service_unavailable(world: &mut QueryClientWorld) {
-    world.service_available = false;
+async fn given_unavailable(world: &mut QueryClientWorld) {
+    world.endpoint = unavailable_endpoint().await;
 }
 
-// ==========================================================================
-// When Steps
-// ==========================================================================
+// --------------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------------
 
 #[when(expr = "I query events for {string} root {string}")]
-async fn when_query_events(world: &mut QueryClientWorld, domain: String, root: String) {
-    if !world.service_available {
-        world.error = Some("Connection error".to_string());
-        return;
-    }
-
-    let key = format!("{}:{}", domain, root);
-    world.result = world.aggregates.get(&key).cloned().or_else(|| {
-        Some(MockEventBook {
-            events: vec![],
-            snapshot_sequence: None,
-            edition: None,
-        })
-    });
-}
-
-#[when(expr = "I query events for {string} root {string} from sequence {int}")]
-async fn when_query_from_sequence(
-    world: &mut QueryClientWorld,
-    domain: String,
-    root: String,
-    start: u32,
-) {
-    let key = format!("{}:{}", domain, root);
-    if let Some(book) = world.aggregates.get(&key) {
-        let filtered_events: Vec<_> = book
-            .events
-            .iter()
-            .filter(|e| e.sequence >= start)
-            .cloned()
-            .collect();
-        world.result = Some(MockEventBook {
-            events: filtered_events,
-            snapshot_sequence: book.snapshot_sequence,
-            edition: book.edition.clone(),
-        });
-    } else {
-        world.result = Some(MockEventBook {
-            events: vec![],
-            snapshot_sequence: None,
-            edition: None,
-        });
-    }
+async fn when_query(world: &mut QueryClientWorld, domain: String, root: String) {
+    world.book = Some(
+        world
+            .client
+            .get()
+            .query(domain, root_for(&root))
+            .get_event_book()
+            .await,
+    );
 }
 
 #[when(expr = "I query events for {string} root {string} from sequence {int} to {int}")]
@@ -331,60 +227,49 @@ async fn when_query_range(
     world: &mut QueryClientWorld,
     domain: String,
     root: String,
-    start: u32,
-    end: u32,
+    lo: u32,
+    hi: u32,
 ) {
-    let key = format!("{}:{}", domain, root);
-    if let Some(book) = world.aggregates.get(&key) {
-        // Inclusive upper bound — matches `range_to(lower, upper)`
-        // docstring (`builder.rs:170`) and audit finding #27.
-        let filtered_events: Vec<_> = book
-            .events
-            .iter()
-            .filter(|e| e.sequence >= start && e.sequence <= end)
-            .cloned()
-            .collect();
-        world.result = Some(MockEventBook {
-            events: filtered_events,
-            snapshot_sequence: book.snapshot_sequence,
-            edition: book.edition.clone(),
-        });
-    } else {
-        world.result = Some(MockEventBook {
-            events: vec![],
-            snapshot_sequence: None,
-            edition: None,
-        });
-    }
+    world.book = Some(
+        world
+            .client
+            .get()
+            .query(domain, root_for(&root))
+            .range(lo..=hi)
+            .get_event_book()
+            .await,
+    );
+}
+
+#[when(expr = "I query events for {string} root {string} from sequence {int}")]
+async fn when_query_from(world: &mut QueryClientWorld, domain: String, root: String, lo: u32) {
+    world.book = Some(
+        world
+            .client
+            .get()
+            .query(domain, root_for(&root))
+            .range(lo..)
+            .get_event_book()
+            .await,
+    );
 }
 
 #[when(expr = "I query events for {string} root {string} as of sequence {int}")]
-async fn when_query_as_of_sequence(
+async fn when_query_as_of_seq(
     world: &mut QueryClientWorld,
     domain: String,
     root: String,
     seq: u32,
 ) {
-    let key = format!("{}:{}", domain, root);
-    if let Some(book) = world.aggregates.get(&key) {
-        let filtered_events: Vec<_> = book
-            .events
-            .iter()
-            .filter(|e| e.sequence <= seq)
-            .cloned()
-            .collect();
-        world.result = Some(MockEventBook {
-            events: filtered_events,
-            snapshot_sequence: book.snapshot_sequence,
-            edition: book.edition.clone(),
-        });
-    } else {
-        world.result = Some(MockEventBook {
-            events: vec![],
-            snapshot_sequence: None,
-            edition: None,
-        });
-    }
+    world.book = Some(
+        world
+            .client
+            .get()
+            .query(domain, root_for(&root))
+            .as_of_sequence(seq)
+            .get_event_book()
+            .await,
+    );
 }
 
 #[when(expr = "I query events for {string} root {string} as of time {string}")]
@@ -392,260 +277,197 @@ async fn when_query_as_of_time(
     world: &mut QueryClientWorld,
     domain: String,
     root: String,
-    _timestamp: String,
+    at: String,
 ) {
-    // For testing, return all events (timestamp filtering is simulated)
-    let key = format!("{}:{}", domain, root);
-    world.result = world.aggregates.get(&key).cloned().or_else(|| {
-        Some(MockEventBook {
-            events: vec![],
-            snapshot_sequence: None,
-            edition: None,
-        })
-    });
+    world.cutoff = Some(ts(&at));
+    let builder = world
+        .client
+        .get()
+        .query(domain, root_for(&root))
+        .as_of_time(&at)
+        .expect("valid RFC 3339 timestamp");
+    world.book = Some(builder.get_event_book().await);
 }
 
 #[when(expr = "I query events for {string} root {string} in edition {string}")]
-async fn when_query_in_edition(
+async fn when_query_edition(
     world: &mut QueryClientWorld,
     domain: String,
     root: String,
     edition: String,
 ) {
-    let key = format!("{}:{}:{}", domain, root, edition);
-    world.result = world.aggregates.get(&key).cloned().or_else(|| {
-        Some(MockEventBook {
-            events: vec![],
-            snapshot_sequence: None,
-            edition: Some(edition),
-        })
-    });
+    world.book = Some(
+        world
+            .client
+            .get()
+            .query(domain, root_for(&root))
+            .with_edition(edition)
+            .get_event_book()
+            .await,
+    );
 }
 
 #[when(expr = "I query events by correlation ID {string}")]
-async fn when_query_by_correlation(world: &mut QueryClientWorld, cid: String) {
-    if let Some(books) = world.correlation_events.get(&cid) {
-        // Combine all events
-        let mut all_events = vec![];
-        for book in books {
-            all_events.extend(book.events.clone());
-        }
-        world.result = Some(MockEventBook {
-            events: all_events,
-            snapshot_sequence: None,
-            edition: None,
-        });
-    } else {
-        world.result = Some(MockEventBook {
-            events: vec![],
-            snapshot_sequence: None,
-            edition: None,
-        });
-    }
+async fn when_query_correlation(world: &mut QueryClientWorld, id: String) {
+    world.books = Some(
+        world
+            .client
+            .get()
+            .query_domain("orders")
+            .by_correlation_id(id)
+            .get_events()
+            .await,
+    );
 }
 
 #[when("I query events with empty domain")]
 async fn when_query_empty_domain(world: &mut QueryClientWorld) {
-    world.error = Some("Invalid argument: empty domain".to_string());
+    world.book = Some(
+        world
+            .client
+            .get()
+            .query("", root_for("any"))
+            .get_event_book()
+            .await,
+    );
 }
 
 #[when("I attempt to query events")]
-async fn when_attempt_query(world: &mut QueryClientWorld) {
-    if !world.service_available {
-        world.error = Some("Connection error".to_string());
+async fn when_attempt(world: &mut QueryClientWorld) {
+    let result = match QueryClient::connect_with_retry(&world.endpoint, &single_attempt()).await {
+        Ok(client) => {
+            client
+                .query("orders", root_for("any"))
+                .get_event_book()
+                .await
+        }
+        Err(e) => Err(e),
+    };
+    world.book = Some(result);
+}
+
+// --------------------------------------------------------------------------
+// Outcomes
+// --------------------------------------------------------------------------
+
+#[then(expr = "the history is empty and the next sequence is {int}")]
+async fn then_empty(world: &mut QueryClientWorld, next: u32) {
+    let book = world.book();
+    assert!(book.pages.is_empty());
+    assert_eq!(book.next_sequence, next);
+}
+
+#[then(expr = "I receive {int} events")]
+async fn then_n_events(world: &mut QueryClientWorld, n: usize) {
+    assert_eq!(world.book().pages.len(), n);
+}
+
+#[then(expr = "the events are in sequence order {int} to {int}")]
+async fn then_order(world: &mut QueryClientWorld, lo: u32, hi: u32) {
+    assert_eq!(seqs(&world.book().pages), (lo..=hi).collect::<Vec<_>>());
+}
+
+#[then(expr = "the first event has type {string}")]
+async fn then_first_type(world: &mut QueryClientWorld, name: String) {
+    let page = world.book().pages.first().expect("an event");
+    assert_eq!(short_type(event_of(page)), name);
+}
+
+#[then(expr = "the first event has payload {string}")]
+async fn then_first_payload(world: &mut QueryClientWorld, data: String) {
+    let page = world.book().pages.first().expect("an event");
+    let evt = GenericEvent::decode(event_of(page).value.as_slice()).expect("decodes");
+    assert_eq!(evt.data, data);
+}
+
+#[then(expr = "the first event has sequence {int}")]
+async fn then_first_seq(world: &mut QueryClientWorld, seq: u32) {
+    assert_eq!(seqs(&world.book().pages).first().copied(), Some(seq));
+}
+
+#[then(expr = "the last event has sequence {int}")]
+async fn then_last_seq(world: &mut QueryClientWorld, seq: u32) {
+    assert_eq!(seqs(&world.book().pages).last().copied(), Some(seq));
+}
+
+#[then("I receive no events")]
+async fn then_none(world: &mut QueryClientWorld) {
+    if let Some(books) = &world.books {
+        let books = books.as_ref().expect("query succeeds");
+        assert_eq!(books.iter().map(|b| b.pages.len()).sum::<usize>(), 0);
+    } else {
+        assert!(world.book().pages.is_empty());
     }
 }
 
-// ==========================================================================
-// Then Steps
-// ==========================================================================
-
-#[then(expr = "I should receive an EventBook with {int} events")]
-async fn then_receive_events(world: &mut QueryClientWorld, count: u32) {
-    let result = world.result.as_ref().expect("Should have result");
-    assert_eq!(result.events.len() as u32, count);
-}
-
-#[then(expr = "the next_sequence should be {int}")]
-async fn then_next_sequence(world: &mut QueryClientWorld, seq: u32) {
-    let result = world.result.as_ref().expect("Should have result");
-    assert_eq!(result.events.len() as u32, seq);
-}
-
-#[then(expr = "events should be in sequence order {int} to {int}")]
-async fn then_events_in_order(world: &mut QueryClientWorld, start: u32, _end: u32) {
-    let result = world.result.as_ref().expect("Should have result");
-    for (i, event) in result.events.iter().enumerate() {
-        assert_eq!(event.sequence, start + i as u32);
+#[then("I receive events up to that timestamp")]
+async fn then_up_to_time(world: &mut QueryClientWorld) {
+    let cutoff = world.cutoff.expect("cutoff recorded");
+    let pages = &world.book().pages;
+    assert_eq!(pages.len(), 3, "events at 10:00, 10:15 and 10:30 qualify");
+    for p in pages {
+        let at = p.created_at.expect("timestamp");
+        assert!((at.seconds, at.nanos) <= (cutoff.seconds, cutoff.nanos));
     }
 }
 
-#[then(expr = "the first event should have type {string}")]
-async fn then_first_event_type(world: &mut QueryClientWorld, event_type: String) {
-    let result = world.result.as_ref().expect("Should have result");
-    assert!(!result.events.is_empty());
-    assert_eq!(result.events[0].event_type, event_type);
+#[then("I receive events from that edition only")]
+async fn then_edition_only(world: &mut QueryClientWorld) {
+    let data: Vec<String> = world
+        .book()
+        .pages
+        .iter()
+        .map(|p| {
+            GenericEvent::decode(event_of(p).value.as_slice())
+                .expect("decodes")
+                .data
+        })
+        .collect();
+    assert_eq!(data, world.expected_edition_data);
 }
 
-#[then(expr = "the first event should have payload {string}")]
-async fn then_first_event_payload(world: &mut QueryClientWorld, payload: String) {
-    let result = world.result.as_ref().expect("Should have result");
-    assert!(!result.events.is_empty());
-    assert_eq!(result.events[0].payload, payload);
+#[then("I receive events from all correlated aggregates")]
+async fn then_correlated(world: &mut QueryClientWorld) {
+    let books = world
+        .books
+        .as_ref()
+        .expect("a correlation query was made")
+        .as_ref()
+        .expect("query succeeds");
+    assert_eq!(books.len(), world.correlated_roots);
+    let mut domains: Vec<String> = books
+        .iter()
+        .map(|b| b.cover.as_ref().expect("cover").domain.clone())
+        .collect();
+    domains.sort();
+    assert_eq!(domains, vec!["inventory", "orders", "shipping"]);
 }
 
-#[then(expr = "the first event should have sequence {int}")]
-async fn then_first_event_sequence(world: &mut QueryClientWorld, seq: u32) {
-    let result = world.result.as_ref().expect("Should have result");
-    assert!(!result.events.is_empty());
-    assert_eq!(result.events[0].sequence, seq);
+#[then(expr = "the result carries a snapshot taken at sequence {int}")]
+async fn then_snapshot(world: &mut QueryClientWorld, seq: u32) {
+    let snap = world.book().snapshot.as_ref().expect("snapshot present");
+    assert_eq!(snap.sequence, seq);
 }
 
-#[then(expr = "the last event should have sequence {int}")]
-async fn then_last_event_sequence(world: &mut QueryClientWorld, seq: u32) {
-    let result = world.result.as_ref().expect("Should have result");
-    assert!(!result.events.is_empty());
-    assert_eq!(result.events.last().unwrap().sequence, seq);
+#[then("the query is refused because a domain is required")]
+async fn then_domain_required(world: &mut QueryClientWorld) {
+    let err = world.err();
+    assert!(
+        err.is_invalid_argument(),
+        "expected INVALID_ARGUMENT, got {err:?}"
+    );
+    let msg = err
+        .status()
+        .map(|s| s.message().to_string())
+        .unwrap_or_default();
+    assert!(msg.contains("domain"), "message: {msg}");
 }
 
-#[then("I should receive events up to that timestamp")]
-async fn then_receive_events_up_to_timestamp(world: &mut QueryClientWorld) {
-    assert!(world.result.is_some());
-}
-
-#[then("I should receive events from that edition only")]
-async fn then_receive_events_from_edition(world: &mut QueryClientWorld) {
-    assert!(world.result.is_some());
-}
-
-#[then("I should receive events from all correlated aggregates")]
-async fn then_receive_correlated_events(world: &mut QueryClientWorld) {
-    let result = world.result.as_ref().expect("Should have result");
-    assert!(!result.events.is_empty());
-}
-
-#[then("I should receive no events")]
-async fn then_receive_no_events(world: &mut QueryClientWorld) {
-    let result = world.result.as_ref().expect("Should have result");
-    assert!(result.events.is_empty());
-}
-
-#[then("the EventBook should include the snapshot")]
-async fn then_event_book_includes_snapshot(world: &mut QueryClientWorld) {
-    let result = world.result.as_ref().expect("Should have result");
-    assert!(result.snapshot_sequence.is_some());
-}
-
-#[then(expr = "the returned snapshot should be at sequence {int}")]
-async fn then_snapshot_at_sequence(world: &mut QueryClientWorld, seq: u32) {
-    let result = world.result.as_ref().expect("Should have result");
-    assert_eq!(result.snapshot_sequence, Some(seq));
-}
-
-#[then("the operation should fail with invalid argument error")]
-async fn then_fail_invalid_argument(world: &mut QueryClientWorld) {
-    let error = world.error.as_ref().expect("Should have error");
-    assert!(error.to_lowercase().contains("invalid"));
-}
-
-#[then("the operation should fail with connection error")]
-async fn then_fail_connection_error(world: &mut QueryClientWorld) {
-    let error = world.error.as_ref().expect("Should have error");
-    assert!(error.to_lowercase().contains("connection"));
-}
-
-// ---------------------------------------------------------------------------
-// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
-// ---------------------------------------------------------------------------
-
-// TODO (WIP): Implement this step matcher properly.
-#[given(regex = r"^a query surface available$")]
-async fn wip_given_a_query_surface_available(_world: &mut QueryClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the history is empty and the next sequence is (-?\d+)$")]
-async fn wip_then_the_history_is_empty_and_the_next_sequence_is_0(_world: &mut QueryClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^I receive (-?\d+) events$")]
-async fn wip_then_i_receive_5_events(_world: &mut QueryClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the events are in sequence order (-?\d+) to (-?\d+)$")]
-async fn wip_then_the_events_are_in_sequence_order_0_to_4(_world: &mut QueryClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r#"^the first event has type "([^"]*)"$"#)]
-async fn wip_then_the_first_event_has_type_ordercreated(_world: &mut QueryClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r#"^the first event has payload "([^"]*)"$"#)]
-async fn wip_then_the_first_event_has_payload_test_payload(_world: &mut QueryClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the first event has sequence (-?\d+)$")]
-async fn wip_then_the_first_event_has_sequence_5(_world: &mut QueryClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the last event has sequence (-?\d+)$")]
-async fn wip_then_the_last_event_has_sequence_7(_world: &mut QueryClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^I receive no events$")]
-async fn wip_then_i_receive_no_events(_world: &mut QueryClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^I receive events up to that timestamp$")]
-async fn wip_then_i_receive_events_up_to_that_timestamp(_world: &mut QueryClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^I receive events from that edition only$")]
-async fn wip_then_i_receive_events_from_that_edition_only(_world: &mut QueryClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^I receive events from all correlated aggregates$")]
-async fn wip_then_i_receive_events_from_all_correlated_aggregates(_world: &mut QueryClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the result carries a snapshot taken at sequence (-?\d+)$")]
-async fn wip_then_the_result_carries_a_snapshot_taken_at_sequence_5(_world: &mut QueryClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the query is refused because a domain is required$")]
-async fn wip_then_the_query_is_refused_because_a_domain_is_required(_world: &mut QueryClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the query fails because the backend is unreachable$")]
-async fn wip_then_the_query_fails_because_the_backend_is_unreachable(
-    _world: &mut QueryClientWorld,
-) {
-    panic!("WIP: step needs implementation");
+#[then("the query fails because the backend is unreachable")]
+async fn then_unreachable(world: &mut QueryClientWorld) {
+    let err = world.err();
+    assert!(
+        err.is_connection_error(),
+        "expected connection error, got {err:?}"
+    );
 }

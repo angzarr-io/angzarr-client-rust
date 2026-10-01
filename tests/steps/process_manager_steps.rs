@@ -1,26 +1,35 @@
-//! Process-manager dispatch step definitions.
+//! Step definitions for `features/client/process_manager.feature`.
+//!
+//! The Fulfillment PM is a real `#[process_manager]` type dispatched through
+//! a `ProcessManagerRouter`; the state it observed is recorded on its probe.
 
-use angzarr_client::proto::{CommandBook, Cover, EventBook, ProcessManagerHandleResponse};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use angzarr_client::proto::{EventBook, ProcessManagerHandleRequest, ProcessManagerHandleResponse};
+use angzarr_client::router::runtime::ProcessManagerRouter;
 use angzarr_client::router::{Built, Router};
 use angzarr_client::{process_manager, CommandResult};
 use cucumber::{given, then, when, World};
 
-use crate::common::fixtures::{OrderCompleted, OrderCreated, StockReserved};
-use crate::common::helpers::{event_book, pm_request};
+use super::deferred::{
+    command_of, deferred_header, has_explicit_sequence, root_for, trigger_book, unsequenced_command,
+};
+use crate::common::fixtures::{OrderCompleted, OrderCreated, ReserveStock, StockReserved};
 
-// WorkflowState is PM-internal; not in shared fixtures.
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct WorkflowState {}
-impl ::prost::Name for WorkflowState {
-    const NAME: &'static str = "WorkflowState";
-    const PACKAGE: &'static str = "fulfillment";
+#[derive(Default)]
+pub struct WorkflowState {
+    orders_seen: u32,
 }
 
-// ---------------------------------------------------------------------------
-// PM under test.
-// ---------------------------------------------------------------------------
+#[derive(Debug, Default)]
+pub struct PmProbe {
+    observed_orders_seen: Mutex<Option<u32>>,
+}
 
-struct Fulfillment;
+pub struct Fulfillment {
+    probe: Arc<PmProbe>,
+}
 
 #[process_manager(
     name = "Fulfillment",
@@ -30,191 +39,253 @@ struct Fulfillment;
     state = WorkflowState
 )]
 impl Fulfillment {
+    #[applies(OrderCompleted)]
+    fn on_completed(state: &mut WorkflowState, _evt: OrderCompleted) {
+        state.orders_seen += 1;
+    }
+
     #[handles(OrderCreated)]
-    #[allow(unused_variables, dead_code)]
     fn on_order_created(
         &self,
         event: OrderCreated,
         state: &WorkflowState,
     ) -> CommandResult<ProcessManagerHandleResponse> {
+        *self.probe.observed_orders_seen.lock().unwrap() = Some(state.orders_seen);
         Ok(ProcessManagerHandleResponse {
-            commands: vec![CommandBook {
-                cover: Some(Cover {
-                    domain: "shipping".to_string(),
-                    ..Default::default()
-                }),
-                pages: vec![],
-            }],
-            process_events: vec![],
-            facts: vec![],
+            commands: vec![unsequenced_command(
+                &ReserveStock {
+                    order_id: event.order_id,
+                    sku: "sku-1".into(),
+                    quantity: 1,
+                },
+                "shipping",
+            )],
             ..Default::default()
         })
     }
 
-    #[handles(OrderCompleted)]
-    #[allow(unused_variables, dead_code)]
-    fn on_order_completed(
+    #[handles(StockReserved)]
+    fn on_stock_reserved(
         &self,
-        event: OrderCompleted,
+        _event: StockReserved,
         state: &WorkflowState,
     ) -> CommandResult<ProcessManagerHandleResponse> {
+        *self.probe.observed_orders_seen.lock().unwrap() = Some(state.orders_seen);
         Ok(ProcessManagerHandleResponse {
-            commands: vec![],
-            process_events: vec![],
-            facts: vec![],
+            commands: vec![unsequenced_command(&ReserveStock::default(), "shipping")],
             ..Default::default()
         })
     }
 }
 
-// ---------------------------------------------------------------------------
-// World.
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, World)]
 #[world(init = Self::new)]
 pub struct ProcessManagerWorld {
-    process_state: EventBook,
+    probe: Arc<PmProbe>,
+    process_state: Vec<OrderCompleted>,
+    destination_sequences: HashMap<String, u32>,
+    trigger_root: String,
+    trigger_seq: u32,
     response: Option<ProcessManagerHandleResponse>,
 }
 
 impl ProcessManagerWorld {
     fn new() -> Self {
         Self {
-            process_state: EventBook::default(),
+            probe: Arc::default(),
+            process_state: Vec::new(),
+            destination_sequences: HashMap::new(),
+            trigger_root: "order-1".into(),
+            trigger_seq: 0,
             response: None,
         }
     }
+
+    fn router(&self) -> ProcessManagerRouter {
+        let probe = Arc::clone(&self.probe);
+        let built = Router::new("fulfillment")
+            .with_handler(move || Fulfillment {
+                probe: Arc::clone(&probe),
+            })
+            .build()
+            .expect("router builds");
+        match built {
+            Built::ProcessManager(r) => r,
+            other => panic!("expected a PM router, got {other:?}"),
+        }
+    }
+
+    fn dispatch<M: prost::Message + prost::Name>(&mut self, event: &M, domain: &str) {
+        let pages = self
+            .process_state
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let mut book = trigger_book(e, "fulfillment", "pm-1", i as u32);
+                book.pages.remove(0)
+            })
+            .collect::<Vec<_>>();
+        let request = ProcessManagerHandleRequest {
+            trigger: Some(trigger_book(
+                event,
+                domain,
+                &self.trigger_root,
+                self.trigger_seq,
+            )),
+            process_state: Some(EventBook {
+                next_sequence: pages.len() as u32,
+                pages,
+                ..Default::default()
+            }),
+            destination_sequences: self.destination_sequences.clone(),
+        };
+        self.response = Some(self.router().dispatch(request).expect("pm dispatch"));
+    }
+
+    fn response(&self) -> &ProcessManagerHandleResponse {
+        self.response.as_ref().expect("pm response")
+    }
 }
 
-fn build_router() -> angzarr_client::router::runtime::ProcessManagerRouter {
-    let built = Router::new("fulfillment")
-        .with_handler(|| Fulfillment)
-        .build()
-        .expect("build");
-    let Built::ProcessManager(r) = built else {
-        panic!("expected PM");
-    };
-    r
+// --- Given -----------------------------------------------------------------
+
+#[given(expr = "a process manager {string} for the fulfillment domain")]
+fn given_pm(world: &mut ProcessManagerWorld, name: String) {
+    assert_eq!(name, "Fulfillment");
+    let router = world.router();
+    assert_eq!(router.name(), "Fulfillment");
 }
-
-// ---------------------------------------------------------------------------
-// Given steps.
-// ---------------------------------------------------------------------------
-
-#[given(expr = "a process manager {string} with pm_domain {string}")]
-async fn given_pm(_world: &mut ProcessManagerWorld, _name: String, _pm_domain: String) {}
 
 #[given(expr = "the PM sources from {string} and {string}")]
-async fn given_pm_sources(_world: &mut ProcessManagerWorld, _a: String, _b: String) {}
-
-#[given(expr = "the PM targets {string}")]
-async fn given_pm_targets(_world: &mut ProcessManagerWorld, _a: String) {}
-
-#[given("the PM has state WorkflowState with orders_seen int")]
-async fn given_pm_state(_world: &mut ProcessManagerWorld) {}
-
-#[given("the PM applies OrderCompleted by incrementing state.orders_seen")]
-async fn given_pm_applies(_world: &mut ProcessManagerWorld) {}
-
-#[given("the PM handles OrderCreated by emitting a ReserveStock command")]
-async fn given_pm_handles(_world: &mut ProcessManagerWorld) {}
-
-#[given("the router is built with the Fulfillment PM")]
-async fn given_pm_built(_world: &mut ProcessManagerWorld) {}
-
-#[given("process state events: OrderCompleted, OrderCompleted")]
-async fn given_state_events(world: &mut ProcessManagerWorld) {
-    world.process_state = event_book(
-        &[OrderCompleted::default(), OrderCompleted::default()],
-        "fulfillment",
-    );
+fn given_sources(_world: &mut ProcessManagerWorld, a: String, b: String) {
+    let config = <Fulfillment as angzarr_client::router::HandlerKind>::handler_config();
+    let angzarr_client::router::HandlerConfig::ProcessManager { sources, .. } = config else {
+        panic!("not a PM config");
+    };
+    assert_eq!(sources, vec![a, b]);
 }
 
-// ---------------------------------------------------------------------------
-// When steps.
-// ---------------------------------------------------------------------------
+#[given(expr = "the PM targets {string}")]
+fn given_targets(world: &mut ProcessManagerWorld, target: String) {
+    assert_eq!(world.router().output_domains(), vec![target]);
+}
 
-#[when("an OrderCreated trigger is dispatched to the PM router")]
-async fn when_dispatch_order_created(world: &mut ProcessManagerWorld) {
-    let router = build_router();
-    let mut req = pm_request::<OrderCreated, OrderCompleted>(
-        &[OrderCreated::default()],
+#[given("the PM tracks the number of orders seen")]
+fn given_tracks(world: &mut ProcessManagerWorld) {
+    world.process_state.clear();
+}
+
+#[given("OrderCompleted advances the orders-seen count")]
+fn given_applier(_world: &mut ProcessManagerWorld) {
+    // `#[applies(OrderCompleted)]` on Fulfillment increments orders_seen.
+}
+
+#[given("the PM handles OrderCreated by emitting a ReserveStock command")]
+fn given_handles(_world: &mut ProcessManagerWorld) {
+    // `#[handles(OrderCreated)]` on Fulfillment emits ReserveStock to shipping.
+}
+
+#[given("Fulfillment is the active process manager")]
+fn given_active(world: &mut ProcessManagerWorld) {
+    assert_eq!(world.router().handler_count(), 1);
+}
+
+#[given("process state events: OrderCompleted, OrderCompleted")]
+fn given_process_state(world: &mut ProcessManagerWorld) {
+    world.process_state = vec![OrderCompleted::default(), OrderCompleted::default()];
+}
+
+#[given(expr = "destination sequences {word}={int}")]
+fn given_head(world: &mut ProcessManagerWorld, domain: String, head: u32) {
+    world.destination_sequences = HashMap::from([(domain, head)]);
+}
+
+#[given(expr = "the OrderCreated trigger is at sequence {int} of order root {string}")]
+fn given_trigger_position(world: &mut ProcessManagerWorld, seq: u32, root: String) {
+    world.trigger_seq = seq;
+    world.trigger_root = root;
+}
+
+// --- When ------------------------------------------------------------------
+
+#[when(regex = r"^(?:an|the) OrderCreated trigger is dispatched to the PM router$")]
+fn when_order_created(world: &mut ProcessManagerWorld) {
+    world.dispatch(
+        &OrderCreated {
+            order_id: "o-1".into(),
+            ..Default::default()
+        },
         "order",
-        &[],
-        "fulfillment",
-        None,
     );
-    req.process_state = Some(world.process_state.clone());
-    world.response = Some(router.dispatch(req).expect("pm dispatch"));
 }
 
 #[when("a StockReserved trigger with a domain outside sources is dispatched")]
-async fn when_dispatch_outside(world: &mut ProcessManagerWorld) {
-    let router = build_router();
-    let req = pm_request::<StockReserved, OrderCompleted>(
-        &[StockReserved::default()],
-        "unrelated",
-        &[],
-        "fulfillment",
-        None,
-    );
-    world.response = Some(router.dispatch(req).unwrap_or_default());
+fn when_outside_sources(world: &mut ProcessManagerWorld) {
+    world.dispatch(&StockReserved::default(), "billing");
 }
 
-// ---------------------------------------------------------------------------
-// Then steps.
-// ---------------------------------------------------------------------------
+// --- Then ------------------------------------------------------------------
 
 #[then("the response contains exactly one command")]
-async fn then_exactly_one(world: &mut ProcessManagerWorld) {
-    let r = world.response.as_ref().expect("response");
+fn then_one(world: &mut ProcessManagerWorld) {
+    let r = world.response();
     assert_eq!(r.commands.len(), 1);
+    assert_eq!(
+        r.commands[0].cover.as_ref().map(|c| c.domain.as_str()),
+        Some("shipping")
+    );
 }
 
 #[then("the response contains no commands")]
-async fn then_no_commands(world: &mut ProcessManagerWorld) {
-    let r = world.response.as_ref().expect("response");
-    assert!(r.commands.is_empty());
+fn then_none(world: &mut ProcessManagerWorld) {
+    assert!(world.response().commands.is_empty());
+    assert_eq!(*world.probe.observed_orders_seen.lock().unwrap(), None);
 }
 
-#[then(expr = "the PM observed state.orders_seen = {int}")]
-async fn then_orders_seen(_world: &mut ProcessManagerWorld, _n: u32) {
-    // Observability requires instrumented PM state; best-effort no-op here.
+#[then(expr = "the PM has seen {int} completed orders")]
+fn then_seen(world: &mut ProcessManagerWorld, n: u32) {
+    assert_eq!(*world.probe.observed_orders_seen.lock().unwrap(), Some(n));
 }
 
-// ---------------------------------------------------------------------------
-// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
-// ---------------------------------------------------------------------------
-
-// TODO (WIP): Implement this step matcher properly.
-#[given(regex = r#"^a process manager "([^"]*)" for the fulfillment domain$"#)]
-async fn wip_given_a_process_manager_fulfillment_for_the_fulfillment(
-    _world: &mut ProcessManagerWorld,
-) {
-    panic!("WIP: step needs implementation");
+#[then("the ReserveStock command carries an angzarr_deferred header")]
+fn then_deferred(world: &mut ProcessManagerWorld) {
+    deferred_header(command_of::<ReserveStock>(&world.response().commands));
 }
 
-// TODO (WIP): Implement this step matcher properly.
-#[given(regex = r"^the PM tracks the number of orders seen$")]
-async fn wip_given_the_pm_tracks_the_number_of_orders_seen(_world: &mut ProcessManagerWorld) {
-    panic!("WIP: step needs implementation");
+#[then(expr = "the deferred source cover is domain {string} root {string}")]
+fn then_source(world: &mut ProcessManagerWorld, domain: String, root: String) {
+    let cmd = command_of::<ReserveStock>(&world.response().commands);
+    let source = deferred_header(cmd)
+        .source
+        .as_ref()
+        .expect("deferred source");
+    assert_eq!(source.domain, domain);
+    assert_eq!(
+        source.root.as_ref().map(|r| r.value.clone()),
+        Some(root_for(&root))
+    );
 }
 
-// TODO (WIP): Implement this step matcher properly.
-#[given(regex = r"^OrderCompleted advances the orders-seen count$")]
-async fn wip_given_ordercompleted_advances_the_orders_seen_count(_world: &mut ProcessManagerWorld) {
-    panic!("WIP: step needs implementation");
+#[then(expr = "the deferred source_seq is {int}")]
+fn then_source_seq(world: &mut ProcessManagerWorld, seq: u32) {
+    let cmd = command_of::<ReserveStock>(&world.response().commands);
+    assert_eq!(deferred_header(cmd).source_seq, seq);
 }
 
-// TODO (WIP): Implement this step matcher properly.
-#[given(regex = r"^Fulfillment is the active process manager$")]
-async fn wip_given_fulfillment_is_the_active_process_manager(_world: &mut ProcessManagerWorld) {
-    panic!("WIP: step needs implementation");
+#[then(expr = "the deferred command_index is {int}")]
+fn then_index(world: &mut ProcessManagerWorld, index: u32) {
+    let cmd = command_of::<ReserveStock>(&world.response().commands);
+    assert_eq!(deferred_header(cmd).command_index, index);
 }
 
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the PM has seen (-?\d+) completed orders$")]
-async fn wip_then_the_pm_has_seen_2_completed_orders(_world: &mut ProcessManagerWorld) {
-    panic!("WIP: step needs implementation");
+#[then(expr = "the deferred basis_seq is {int}")]
+fn then_basis(world: &mut ProcessManagerWorld, basis: u32) {
+    let cmd = command_of::<ReserveStock>(&world.response().commands);
+    assert_eq!(deferred_header(cmd).basis_seq, basis);
+}
+
+#[then("no page of the ReserveStock command has an explicit sequence")]
+fn then_no_explicit(world: &mut ProcessManagerWorld) {
+    let cmd = command_of::<ReserveStock>(&world.response().commands);
+    assert!(!has_explicit_sequence(cmd));
 }

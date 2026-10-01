@@ -80,10 +80,10 @@ async fn given_a_class(world: &mut ValidationWorld, class: String) {
 }
 
 #[given(expr = "{word} is declared as an aggregate handler")]
-async fn given_class_is_aggregate_handler(_world: &mut ValidationWorld, _class: String) {
-    // TODO: Implement this step matcher properly. This is a no-op stub
-    // added during the cucumber business-vocabulary rewrite to keep
-    // the step registry matched.
+async fn given_class_is_aggregate_handler(world: &mut ValidationWorld, class: String) {
+    // The compile-fail fixture declares `class` with #[command_handler]
+    // stacked on #[saga]; the When step selects it.
+    assert_eq!(class, world.class_name);
 }
 
 #[when(expr = "I also declare {word} as a saga")]
@@ -100,8 +100,6 @@ async fn given_method_is_command_handler(world: &mut ValidationWorld, method: St
 
 #[when(expr = "I also declare {string} as an event applier")]
 async fn when_also_declare_event_applier(world: &mut ValidationWorld, _method: String) {
-    // There's no built-in fixture for method-level stacking, so point at the
-    // same-kind class-level fixture as a reasonable compile-fail proxy.
     world.fixture = Some("tests/router/ui/method_stack_handles_applies.rs");
     world.scenario_tag = "C-0077".into();
 }

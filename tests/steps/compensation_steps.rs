@@ -1,824 +1,890 @@
-//! Compensation step definitions.
+//! Step definitions for `features/client/compensation.feature`.
 //!
-//! Tests compensation handling patterns for saga rejections.
-//! Since some proto types may not be directly available, we use simplified
-//! representations to test the behavioral patterns.
+//! A rejected saga/PM command carries `PageHeader.angzarr_deferred`
+//! (source cover, source_seq, source_component, command_index). The
+//! coordinator delivers its rejection to the source aggregate as a
+//! `Notification` wrapping a `RejectionNotification`, inside a CommandBook
+//! addressed to that source (types.proto, RejectionNotification). The
+//! scenarios build that delivery as fixture data and exercise the client
+//! library on it: `CompensationContext::from_notification`, and the
+//! command-handler / saga / process-manager routers dispatching the
+//! delivery to `#[rejected]` handlers, which record what they received.
+
+use std::sync::{Arc, Mutex};
 
 use angzarr_client::proto::{
-    command_page, page_header, CommandBook, CommandPage, Cover, MergeStrategy, PageHeader,
+    command_page, event_page, page_header, AngzarrDeferredSequence, BusinessResponse, CommandBook,
+    CommandPage, ContextualCommand, Cover, EventBook, EventPage, Notification, PageHeader,
+    ProcessManagerHandleRequest, ProcessManagerHandleResponse, RejectionNotification,
+    SagaHandleRequest, SagaResponse, Uuid as ProtoUuid,
+};
+use angzarr_client::router::{Built, Router};
+use angzarr_client::{
+    command_handler, emit_compensation_events, full_type_url, process_manager, saga, ClientError,
+    CommandRejectedError, CommandResult, CompensationContext,
 };
 use cucumber::{given, then, when, World};
-use prost::Message;
-use prost_types::Any;
-use uuid::Uuid;
+use prost::{Message, Name};
+use prost_types::{Any, Timestamp};
 
-/// Test command for compensation testing.
-#[derive(Clone, Message)]
-struct TestCommand {
+// ---------------------------------------------------------------------------
+// Local protos (package `compensation`).
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, PartialEq, Message)]
+pub struct ReserveStock {
     #[prost(string, tag = "1")]
-    pub data: String,
+    pub order_id: String,
+    #[prost(uint32, tag = "2")]
+    pub quantity: u32,
+}
+impl Name for ReserveStock {
+    const PACKAGE: &'static str = "compensation";
+    const NAME: &'static str = "ReserveStock";
 }
 
-/// Simulated saga origin for testing.
-#[derive(Debug, Clone, Default)]
-struct TestSagaOrigin {
-    saga_name: String,
-    triggering_domain: String,
-    triggering_root: Option<String>,
-    triggering_event_sequence: u32,
+#[derive(Clone, PartialEq, Message)]
+pub struct CreateShipment {
+    #[prost(string, tag = "1")]
+    pub order_id: String,
+}
+impl Name for CreateShipment {
+    const PACKAGE: &'static str = "compensation";
+    const NAME: &'static str = "CreateShipment";
 }
 
-/// Simulated rejection notification for testing.
-#[derive(Debug, Clone, Default)]
-struct TestRejectionNotification {
-    rejected_command: Option<CommandBook>,
-    rejection_reason: String,
-    issuer_name: String,
-    issuer_type: String,
-    source_domain: String,
-    source_event_sequence: u32,
+#[derive(Clone, PartialEq, Message)]
+pub struct OrderCreated {}
+impl Name for OrderCreated {
+    const PACKAGE: &'static str = "compensation";
+    const NAME: &'static str = "OrderCreated";
 }
 
-/// Simulated notification for testing.
+#[derive(Default)]
+pub struct NoState;
+
+// ---------------------------------------------------------------------------
+// Observation log shared with the `#[rejected]` handlers.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+pub struct Received {
+    /// Component that handled the rejection.
+    handler: Option<&'static str>,
+    notification: Option<Notification>,
+    context: Option<Result<CompensationContext, String>>,
+}
+
+type Log = Arc<Mutex<Received>>;
+
+fn receive(log: &Log, handler: &'static str, notification: &Notification) {
+    let mut r = log.lock().unwrap();
+    r.handler = Some(handler);
+    r.notification = Some(notification.clone());
+    r.context =
+        Some(CompensationContext::from_notification(notification).map_err(|e| e.to_string()));
+}
+
+/// Source aggregate in domain "orders": compensates ReserveStock rejected by
+/// inventory.
+struct OrdersAggregate {
+    log: Log,
+}
+
+#[command_handler(domain = "orders", state = NoState)]
+impl OrdersAggregate {
+    #[rejected(domain = "inventory", command = "ReserveStock")]
+    fn on_reserve_rejected(
+        &self,
+        notification: &Notification,
+        _state: &NoState,
+    ) -> CommandResult<BusinessResponse> {
+        receive(&self.log, "orders", notification);
+        Ok(emit_compensation_events(EventBook::default()))
+    }
+}
+
+/// Source aggregate in domain "fulfillment": compensates CreateShipment
+/// rejected by shipping (the inner leg of a nested saga chain).
+struct FulfillmentAggregate {
+    log: Log,
+}
+
+#[command_handler(domain = "fulfillment", state = NoState)]
+impl FulfillmentAggregate {
+    #[rejected(domain = "shipping", command = "CreateShipment")]
+    fn on_shipment_rejected(
+        &self,
+        notification: &Notification,
+        _state: &NoState,
+    ) -> CommandResult<BusinessResponse> {
+        receive(&self.log, "fulfillment", notification);
+        Ok(emit_compensation_events(EventBook::default()))
+    }
+}
+
+/// Inventory aggregate that rejects every reservation.
+struct InventoryAggregate;
+
+#[command_handler(domain = "inventory", state = NoState)]
+impl InventoryAggregate {
+    #[handles(ReserveStock)]
+    fn reserve(&self, _cmd: ReserveStock, _state: &NoState, _seq: u32) -> CommandResult<EventBook> {
+        Err(CommandRejectedError::precondition_failed(
+            "INSUFFICIENT_STOCK",
+            "insufficient stock",
+            std::iter::empty::<(String, String)>(),
+        ))
+    }
+}
+
+struct FulfillmentSaga {
+    log: Log,
+}
+
+#[saga(name = "order-fulfillment", source = "orders", target = "inventory")]
+impl FulfillmentSaga {
+    #[handles(OrderCreated)]
+    fn on_created(&self, _evt: OrderCreated) -> CommandResult<SagaResponse> {
+        Ok(SagaResponse::default())
+    }
+
+    #[rejected(domain = "inventory", command = "ReserveStock")]
+    #[allow(dead_code)]
+    fn on_reserve_rejected(&self, notification: &Notification) -> CommandResult<SagaResponse> {
+        receive(&self.log, "saga", notification);
+        Ok(SagaResponse::default())
+    }
+}
+
+struct WorkflowPm {
+    log: Log,
+}
+
+#[process_manager(
+    name = "pmg-order-workflow",
+    pm_domain = "order-workflow",
+    state = NoState,
+    sources = ["orders"],
+    targets = ["inventory"]
+)]
+impl WorkflowPm {
+    #[handles(OrderCreated)]
+    fn on_created(
+        &self,
+        _evt: OrderCreated,
+        _state: &NoState,
+    ) -> CommandResult<ProcessManagerHandleResponse> {
+        Ok(ProcessManagerHandleResponse::default())
+    }
+
+    #[rejected(domain = "inventory", command = "ReserveStock")]
+    #[allow(dead_code)]
+    fn on_reserve_rejected(
+        &self,
+        notification: &Notification,
+        _state: &NoState,
+    ) -> CommandResult<ProcessManagerHandleResponse> {
+        receive(&self.log, "pm", notification);
+        Ok(ProcessManagerHandleResponse::default())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fixtures.
+// ---------------------------------------------------------------------------
+
+fn root_for(label: &str) -> ProtoUuid {
+    ProtoUuid {
+        value: uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, label.as_bytes())
+            .as_bytes()
+            .to_vec(),
+    }
+}
+
+/// Parameters of the rejected saga command.
 #[derive(Debug, Clone)]
-struct TestNotification {
-    cover_domain: String,
-    sent_at: i64,
-    payload_type_url: String,
-}
-
-/// Compensation context for rejected commands.
-#[derive(Debug, Clone, Default)]
-struct CompensationContext {
-    rejected_command: Option<CommandBook>,
-    rejection_reason: String,
-    saga_origin: Option<TestSagaOrigin>,
-    correlation_id: String,
+struct Origin {
+    saga_name: String,
     source_domain: String,
     source_root: String,
-    source_sequence: u32,
+    source_seq: u32,
+    correlation_id: String,
+    target_domain: String,
 }
 
-impl CompensationContext {
-    fn from_rejection(
-        cmd: &CommandBook,
-        reason: &str,
-        saga_origin: Option<TestSagaOrigin>,
-    ) -> Self {
-        let cover = cmd.cover.as_ref();
-
+impl Default for Origin {
+    fn default() -> Self {
         Self {
-            rejected_command: Some(cmd.clone()),
-            rejection_reason: reason.to_string(),
-            saga_origin: saga_origin.clone(),
-            correlation_id: cover.map(|c| c.correlation_id.clone()).unwrap_or_default(),
-            source_domain: saga_origin
-                .as_ref()
-                .map(|o| o.triggering_domain.clone())
-                .unwrap_or_default(),
-            source_root: saga_origin
-                .as_ref()
-                .and_then(|o| o.triggering_root.clone())
-                .unwrap_or_default(),
-            source_sequence: saga_origin
-                .as_ref()
-                .map(|o| o.triggering_event_sequence)
-                .unwrap_or(0),
+            saga_name: "order-fulfillment".into(),
+            source_domain: "orders".into(),
+            source_root: "order-1".into(),
+            source_seq: 5,
+            correlation_id: "workflow-123".into(),
+            target_domain: "inventory".into(),
+        }
+    }
+}
+
+impl Origin {
+    fn source_cover(&self) -> Cover {
+        Cover {
+            domain: self.source_domain.clone(),
+            root: Some(root_for(&self.source_root)),
+            correlation_id: self.correlation_id.clone(),
+            ..Default::default()
         }
     }
 
-    fn build_rejection_notification(&self) -> TestRejectionNotification {
-        TestRejectionNotification {
-            rejected_command: self.rejected_command.clone(),
-            rejection_reason: self.rejection_reason.clone(),
-            issuer_name: self
-                .saga_origin
-                .as_ref()
-                .map(|o| o.saga_name.clone())
-                .unwrap_or_default(),
-            issuer_type: "saga".to_string(),
-            source_domain: self.source_domain.clone(),
-            source_event_sequence: self.source_sequence,
+    fn deferred_header(&self) -> PageHeader {
+        PageHeader {
+            sequence_type: Some(page_header::SequenceType::AngzarrDeferred(
+                AngzarrDeferredSequence {
+                    source: Some(self.source_cover()),
+                    source_seq: self.source_seq,
+                    source_component: self.saga_name.clone(),
+                    command_index: 0,
+                    ..Default::default()
+                },
+            )),
+            sync_mode: None,
         }
     }
 
-    fn build_notification(&self) -> TestNotification {
-        TestNotification {
-            cover_domain: self.source_domain.clone(),
-            sent_at: chrono::Utc::now().timestamp(),
-            payload_type_url: angzarr_client::full_type_url::<
-                angzarr_client::proto::RejectionNotification,
-            >(),
-        }
-    }
-
-    fn build_command_book(&self) -> CommandBook {
+    /// The saga-emitted command as the target aggregate rejected it.
+    fn rejected_command(&self, payload: Any) -> CommandBook {
         CommandBook {
             cover: Some(Cover {
-                domain: self.source_domain.clone(),
-                root: Some(angzarr_client::proto::Uuid {
-                    value: self.source_root.as_bytes().to_vec(),
-                }),
+                domain: self.target_domain.clone(),
+                root: Some(root_for("target-1")),
                 correlation_id: self.correlation_id.clone(),
-                edition: None,
                 ..Default::default()
             }),
             pages: vec![CommandPage {
-                header: Some(PageHeader {
-                    sequence_type: Some(page_header::SequenceType::Sequence(0)),
-                    sync_mode: None,
-                }),
-                merge_strategy: MergeStrategy::MergeCommutative as i32,
-                payload: Some(command_page::Payload::Command(Any {
-                    type_url: "type.googleapis.com/angzarr.Notification".to_string(),
-                    value: vec![],
-                })),
+                header: Some(self.deferred_header()),
+                payload: Some(command_page::Payload::Command(payload)),
+                ..Default::default()
             }],
         }
     }
 }
 
-fn make_saga_command(
-    domain: &str,
-    saga_name: &str,
-    triggering_domain: &str,
-    triggering_sequence: u32,
-) -> (CommandBook, TestSagaOrigin) {
-    let cmd = TestCommand {
-        data: "saga-command".to_string(),
-    };
-    let root = Uuid::new_v4();
-
-    let origin = TestSagaOrigin {
-        saga_name: saga_name.to_string(),
-        triggering_domain: triggering_domain.to_string(),
-        triggering_root: Some(Uuid::new_v4().to_string()),
-        triggering_event_sequence: triggering_sequence,
-    };
-
-    let book = CommandBook {
-        cover: Some(Cover {
-            domain: domain.to_string(),
-            root: Some(angzarr_client::proto::Uuid {
-                value: root.as_bytes().to_vec(),
-            }),
-            correlation_id: "workflow-123".to_string(),
-            edition: None,
-            ..Default::default()
-        }),
-        pages: vec![CommandPage {
-            header: Some(PageHeader {
-                sequence_type: Some(page_header::SequenceType::Sequence(0)),
-                sync_mode: None,
-            }),
-            merge_strategy: 0,
-            payload: Some(command_page::Payload::Command(Any {
-                type_url: "type.googleapis.com/test.SagaCommand".to_string(),
-                value: cmd.encode_to_vec(),
-            })),
-        }],
-    };
-
-    (book, origin)
+fn pack<M: Message + Name>(msg: &M) -> Any {
+    Any {
+        type_url: full_type_url::<M>(),
+        value: msg.encode_to_vec(),
+    }
 }
 
-/// Test context for compensation scenarios.
+/// Coordinator delivery of a rejection: the Notification and the
+/// CommandBook addressed to the source aggregate that carries it.
+fn delivery(
+    origin: &Origin,
+    rejected: &CommandBook,
+    reason: &str,
+    sent_at: Timestamp,
+) -> (Notification, CommandBook) {
+    let notification = Notification {
+        cover: Some(origin.source_cover()),
+        payload: Some(pack(&RejectionNotification {
+            rejected_command: Some(rejected.clone()),
+            rejection_reason: reason.to_string(),
+        })),
+        sent_at: Some(sent_at),
+    };
+    let envelope = CommandBook {
+        cover: Some(origin.source_cover()),
+        pages: vec![CommandPage {
+            header: Some(origin.deferred_header()),
+            payload: Some(command_page::Payload::Command(pack(&notification))),
+            ..Default::default()
+        }],
+    };
+    (notification, envelope)
+}
+
+// ---------------------------------------------------------------------------
+// World.
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, World)]
 #[world(init = Self::new)]
 pub struct CompensationWorld {
-    rejected_command: Option<CommandBook>,
-    saga_origin: Option<TestSagaOrigin>,
-    rejection_reason: String,
-    compensation_context: Option<CompensationContext>,
-    rejection_notification: Option<TestRejectionNotification>,
-    notification: Option<TestNotification>,
-    command_book: Option<CommandBook>,
+    log: Log,
+    origin: Origin,
+    rejected: Option<CommandBook>,
+    reason: String,
+    context: Option<CompensationContext>,
+    sent_at: Option<Timestamp>,
+    envelope: Option<CommandBook>,
+    dispatch_error: Option<ClientError>,
+    saga_mode: Option<&'static str>,
 }
 
 impl CompensationWorld {
     fn new() -> Self {
         Self {
-            rejected_command: None,
-            saga_origin: None,
-            rejection_reason: String::new(),
-            compensation_context: None,
-            rejection_notification: None,
-            notification: None,
-            command_book: None,
+            log: Arc::new(Mutex::new(Received::default())),
+            origin: Origin::default(),
+            rejected: None,
+            reason: String::new(),
+            context: None,
+            sent_at: None,
+            envelope: None,
+            dispatch_error: None,
+            saga_mode: None,
         }
+    }
+
+    fn ensure_rejected(&mut self) {
+        if self.rejected.is_none() {
+            self.rejected = Some(self.origin.rejected_command(pack(&ReserveStock {
+                order_id: "o-1".into(),
+                quantity: 1,
+            })));
+        }
+        if self.reason.is_empty() {
+            self.reason = "out_of_stock".into();
+        }
+    }
+
+    fn rejected(&self) -> &CommandBook {
+        self.rejected.as_ref().expect("rejected command")
+    }
+
+    fn notification(&mut self) -> Notification {
+        self.ensure_rejected();
+        let sent_at = angzarr_client::now();
+        self.sent_at = Some(sent_at);
+        let (notification, envelope) =
+            delivery(&self.origin, self.rejected(), &self.reason, sent_at);
+        self.envelope = Some(envelope);
+        notification
+    }
+
+    /// Deliver the rejection to the source aggregate's command-handler router.
+    fn deliver_to_source(&mut self) {
+        self.notification();
+        let log = self.log.clone();
+        let built = match self.origin.source_domain.as_str() {
+            "fulfillment" => Router::new("compensation")
+                .with_handler(move || FulfillmentAggregate { log: log.clone() })
+                .build(),
+            _ => Router::new("compensation")
+                .with_handler(move || OrdersAggregate { log: log.clone() })
+                .build(),
+        };
+        let Ok(Built::CommandHandler(router)) = built else {
+            panic!("expected a command-handler router");
+        };
+        let request = ContextualCommand {
+            events: Some(EventBook::default()),
+            command: self.envelope.clone(),
+        };
+        if let Err(e) = router.dispatch(request) {
+            self.dispatch_error = Some(e);
+        }
+    }
+
+    /// Context the `#[rejected]` handler derived from what it received.
+    fn received_context(&self) -> CompensationContext {
+        let r = self.log.lock().unwrap();
+        assert!(
+            self.dispatch_error.is_none(),
+            "delivery failed: {:?}",
+            self.dispatch_error
+        );
+        match r.context.clone() {
+            Some(Ok(ctx)) => ctx,
+            Some(Err(e)) => panic!("handler could not read the rejection: {e}"),
+            None => panic!("no #[rejected] handler received the rejection"),
+        }
+    }
+
+    fn received_notification(&self) -> Notification {
+        self.log
+            .lock()
+            .unwrap()
+            .notification
+            .clone()
+            .expect("no #[rejected] handler received the rejection")
     }
 }
 
-// --- Given steps ---
+fn deferred_of(cmd: &CommandBook) -> AngzarrDeferredSequence {
+    match cmd
+        .pages
+        .first()
+        .and_then(|p| p.header.as_ref())
+        .and_then(|h| h.sequence_type.as_ref())
+    {
+        Some(page_header::SequenceType::AngzarrDeferred(d)) => d.clone(),
+        other => panic!("expected an angzarr_deferred header, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Givens.
+// ---------------------------------------------------------------------------
 
 #[given("a compensation handling context")]
-async fn given_compensation_context(_world: &mut CompensationWorld) {
-    // Background context
+fn given_handling_context(world: &mut CompensationWorld) {
+    world.origin = Origin::default();
 }
 
 #[given("a saga command that was rejected")]
-async fn given_saga_command_rejected(world: &mut CompensationWorld) {
-    let (cmd, origin) = make_saga_command("fulfillment", "order-fulfillment", "orders", 5);
-    world.rejected_command = Some(cmd);
-    world.saga_origin = Some(origin);
-    world.rejection_reason = "inventory insufficient".to_string();
+fn given_saga_command_rejected(world: &mut CompensationWorld) {
+    world.reason = "out_of_stock".into();
+    world.ensure_rejected();
 }
 
 #[given(expr = "a saga {string} triggered by {string} aggregate at sequence {int}")]
-async fn given_saga_triggered(
-    world: &mut CompensationWorld,
-    saga_name: String,
-    domain: String,
-    seq: u32,
-) {
-    let (cmd, origin) = make_saga_command("fulfillment", &saga_name, &domain, seq);
-    world.rejected_command = Some(cmd);
-    world.saga_origin = Some(origin);
+fn given_saga_triggered(world: &mut CompensationWorld, saga: String, domain: String, seq: u32) {
+    world.origin.saga_name = saga;
+    world.origin.source_domain = domain;
+    world.origin.source_seq = seq;
 }
 
-#[given("the saga command was rejected")]
-async fn given_saga_command_was_rejected(world: &mut CompensationWorld) {
-    world.rejection_reason = "command rejected".to_string();
+#[given(regex = r"^the (?:saga )?command was rejected$")]
+fn given_command_rejected(world: &mut CompensationWorld) {
+    world.reason = "rejected_by_target".into();
+    world.ensure_rejected();
 }
 
 #[given(expr = "a saga command with correlation ID {string}")]
-async fn given_saga_with_correlation(world: &mut CompensationWorld, cid: String) {
-    let (mut cmd, origin) = make_saga_command("fulfillment", "order-fulfillment", "orders", 5);
-    if let Some(ref mut cover) = cmd.cover {
-        cover.correlation_id = cid;
-    }
-    world.rejected_command = Some(cmd);
-    world.saga_origin = Some(origin);
-}
-
-#[given("the command was rejected")]
-async fn given_command_rejected(world: &mut CompensationWorld) {
-    world.rejection_reason = "rejected".to_string();
+fn given_correlation(world: &mut CompensationWorld, cid: String) {
+    world.origin.correlation_id = cid;
 }
 
 #[given("a CompensationContext for rejected command")]
-async fn given_compensation_context_for_rejected(world: &mut CompensationWorld) {
-    if let Some(ref cmd) = world.rejected_command {
-        world.compensation_context = Some(CompensationContext::from_rejection(
-            cmd,
-            &world.rejection_reason,
-            world.saga_origin.clone(),
-        ));
-    } else {
-        let (cmd, origin) = make_saga_command("fulfillment", "order-fulfillment", "orders", 5);
-        world.rejection_reason = "rejected".to_string();
-        world.compensation_context = Some(CompensationContext::from_rejection(
-            &cmd,
-            "rejected",
-            Some(origin.clone()),
-        ));
-        world.rejected_command = Some(cmd);
-        world.saga_origin = Some(origin);
-    }
+fn given_context_for_rejected(world: &mut CompensationWorld) {
+    let notification = world.notification();
+    world.context = Some(CompensationContext::from_notification(&notification).expect("context"));
 }
 
 #[given(expr = "a CompensationContext from {string} aggregate at sequence {int}")]
-async fn given_context_from_aggregate(world: &mut CompensationWorld, domain: String, seq: u32) {
-    let (cmd, origin) = make_saga_command("fulfillment", "order-fulfillment", &domain, seq);
-    world.compensation_context = Some(CompensationContext::from_rejection(
-        &cmd,
-        "rejected",
-        Some(origin.clone()),
-    ));
-    world.rejected_command = Some(cmd);
-    world.saga_origin = Some(origin);
+fn given_context_from_domain_seq(world: &mut CompensationWorld, domain: String, seq: u32) {
+    world.origin.source_domain = domain;
+    world.origin.source_seq = seq;
+    given_context_for_rejected(world);
 }
 
 #[given(expr = "a CompensationContext from saga {string}")]
-async fn given_context_from_saga(world: &mut CompensationWorld, saga_name: String) {
-    let (cmd, origin) = make_saga_command("fulfillment", &saga_name, "orders", 5);
-    world.compensation_context = Some(CompensationContext::from_rejection(
-        &cmd,
-        "rejected",
-        Some(origin.clone()),
-    ));
-    world.rejected_command = Some(cmd);
-    world.saga_origin = Some(origin);
+fn given_context_from_saga(world: &mut CompensationWorld, saga: String) {
+    world.origin.saga_name = saga;
+    given_context_for_rejected(world);
 }
 
 #[given(expr = "a CompensationContext from {string} aggregate root {string}")]
-async fn given_context_from_aggregate_root(
-    world: &mut CompensationWorld,
-    domain: String,
-    _root: String,
-) {
-    let (cmd, origin) = make_saga_command("fulfillment", "order-fulfillment", &domain, 5);
-    world.compensation_context = Some(CompensationContext::from_rejection(
-        &cmd,
-        "rejected",
-        Some(origin.clone()),
-    ));
-    world.rejected_command = Some(cmd);
-    world.saga_origin = Some(origin);
+fn given_context_from_root(world: &mut CompensationWorld, domain: String, root: String) {
+    world.origin.source_domain = domain;
+    world.origin.source_root = root;
+    given_context_for_rejected(world);
 }
 
 #[given(expr = "a command rejected with reason {string}")]
-async fn given_command_rejected_with_reason(world: &mut CompensationWorld, reason: String) {
-    let (cmd, origin) = make_saga_command("fulfillment", "order-fulfillment", "orders", 5);
-    world.rejection_reason = reason;
-    world.rejected_command = Some(cmd);
-    world.saga_origin = Some(origin);
+fn given_reason(world: &mut CompensationWorld, reason: String) {
+    world.reason = reason;
+    world.ensure_rejected();
 }
 
+const STRUCTURED_REASON: &str =
+    r#"{"code":"INSUFFICIENT_STOCK","sku":"sku-9","requested":10,"available":3}"#;
+
 #[given("a command rejected with structured reason")]
-async fn given_structured_reason(world: &mut CompensationWorld) {
-    let (cmd, origin) = make_saga_command("fulfillment", "order-fulfillment", "orders", 5);
-    world.rejection_reason = "structured: {code: INVENTORY_INSUFFICIENT, quantity: 10}".to_string();
-    world.rejected_command = Some(cmd);
-    world.saga_origin = Some(origin);
+fn given_structured_reason(world: &mut CompensationWorld) {
+    world.reason = STRUCTURED_REASON.into();
+    world.ensure_rejected();
 }
 
 #[given("a saga command with specific payload")]
-async fn given_saga_with_payload(world: &mut CompensationWorld) {
-    let (cmd, origin) = make_saga_command("fulfillment", "order-fulfillment", "orders", 5);
-    world.rejected_command = Some(cmd);
-    world.saga_origin = Some(origin);
+fn given_specific_payload(world: &mut CompensationWorld) {
+    world.rejected = Some(world.origin.rejected_command(pack(&ReserveStock {
+        order_id: "o-77".into(),
+        quantity: 12,
+    })));
 }
 
 #[given("a nested saga scenario")]
-async fn given_nested_saga(world: &mut CompensationWorld) {
-    let (cmd, origin) = make_saga_command("shipping", "fulfillment-shipping", "fulfillment", 10);
-    world.rejected_command = Some(cmd);
-    world.saga_origin = Some(origin);
+fn given_nested(world: &mut CompensationWorld) {
+    // orders --(order-fulfillment)--> fulfillment --(fulfillment-shipping)--> shipping.
+    // The inner command's source is the fulfillment aggregate; the workflow
+    // correlation_id threads the whole chain back to the orders root cause.
+    world.origin = Origin {
+        saga_name: "fulfillment-shipping".into(),
+        source_domain: "fulfillment".into(),
+        source_root: "fulfillment-1".into(),
+        source_seq: 10,
+        correlation_id: "workflow-123".into(),
+        target_domain: "shipping".into(),
+    };
 }
 
 #[given("an inner saga command was rejected")]
-async fn given_inner_saga_rejected(world: &mut CompensationWorld) {
-    world.rejection_reason = "inner saga rejection".to_string();
+fn given_inner_rejected(world: &mut CompensationWorld) {
+    world.rejected = Some(world.origin.rejected_command(pack(&CreateShipment {
+        order_id: "o-1".into(),
+    })));
+    world.reason = "carrier_unavailable".into();
 }
 
 #[given("a saga router handling rejections")]
-async fn given_saga_router_handling_rejections(_world: &mut CompensationWorld) {
-    // Router setup
+fn given_saga_router(world: &mut CompensationWorld) {
+    world.saga_mode = Some("saga");
 }
 
 #[given("a process manager router")]
-async fn given_pm_router(_world: &mut CompensationWorld) {
-    // PM router setup
+fn given_pm_router(world: &mut CompensationWorld) {
+    world.saga_mode = Some("pm");
+    world.origin.saga_name = "pmg-order-workflow".into();
 }
 
-// --- When steps ---
+// ---------------------------------------------------------------------------
+// Whens.
+// ---------------------------------------------------------------------------
 
-#[when("I build a CompensationContext")]
-async fn when_build_compensation_context(world: &mut CompensationWorld) {
-    if let Some(ref cmd) = world.rejected_command {
-        world.compensation_context = Some(CompensationContext::from_rejection(
-            cmd,
-            &world.rejection_reason,
-            world.saga_origin.clone(),
-        ));
-    }
+#[when("the compensation context is constructed from the rejection")]
+fn when_context_constructed(world: &mut CompensationWorld) {
+    let notification = world.notification();
+    world.context = Some(
+        CompensationContext::from_notification(&notification)
+            .expect("context from a delivered rejection"),
+    );
 }
 
-#[when("I build a RejectionNotification")]
-async fn when_build_rejection_notification(world: &mut CompensationWorld) {
-    // Build context if not already present
-    if world.compensation_context.is_none() {
-        if let Some(ref cmd) = world.rejected_command {
-            world.compensation_context = Some(CompensationContext::from_rejection(
-                cmd,
-                &world.rejection_reason,
-                world.saga_origin.clone(),
-            ));
+#[when(
+    regex = r"^I build a (?:RejectionNotification|Notification from the context|Notification from a CompensationContext|notification CommandBook)$"
+)]
+fn when_deliver(world: &mut CompensationWorld) {
+    world.deliver_to_source();
+}
+
+/// The target aggregate rejects the command; the rejection is delivered
+/// back to the emitting saga / PM router.
+fn reject_and_deliver_to_emitter(world: &mut CompensationWorld) {
+    world.ensure_rejected();
+    let Ok(Built::CommandHandler(inventory)) = Router::new("inventory")
+        .with_handler(|| InventoryAggregate)
+        .build()
+    else {
+        panic!("expected a command-handler router");
+    };
+    let err = inventory
+        .dispatch(ContextualCommand {
+            events: Some(EventBook::default()),
+            command: world.rejected.clone(),
+        })
+        .expect_err("inventory rejects the reservation");
+    assert!(err.is_precondition_failed(), "unexpected error {err:?}");
+    world.reason = err.message();
+    let notification = world.notification();
+    let page = EventPage {
+        header: Some(world.origin.deferred_header()),
+        payload: Some(event_page::Payload::Event(pack(&notification))),
+        ..Default::default()
+    };
+    let book = EventBook {
+        cover: Some(world.origin.source_cover()),
+        pages: vec![page],
+        next_sequence: world.origin.source_seq + 1,
+        ..Default::default()
+    };
+    let log = world.log.clone();
+    let result = match world.saga_mode {
+        Some("saga") => {
+            let Ok(Built::Saga(router)) = Router::new("saga")
+                .with_handler(move || FulfillmentSaga { log: log.clone() })
+                .build()
+            else {
+                panic!("expected a saga router");
+            };
+            router
+                .dispatch(SagaHandleRequest {
+                    source: Some(book),
+                    ..Default::default()
+                })
+                .map(|_| ())
         }
-    }
-    if let Some(ref ctx) = world.compensation_context {
-        world.rejection_notification = Some(ctx.build_rejection_notification());
-    }
-}
-
-#[when("I build a Notification from the context")]
-async fn when_build_notification(world: &mut CompensationWorld) {
-    if let Some(ref ctx) = world.compensation_context {
-        world.notification = Some(ctx.build_notification());
-    }
-}
-
-#[when("I build a Notification from a CompensationContext")]
-async fn when_build_notification_from_context(world: &mut CompensationWorld) {
-    if world.compensation_context.is_none() {
-        let (cmd, origin) = make_saga_command("fulfillment", "order-fulfillment", "orders", 5);
-        world.compensation_context = Some(CompensationContext::from_rejection(
-            &cmd,
-            "rejected",
-            Some(origin),
-        ));
-    }
-    if let Some(ref ctx) = world.compensation_context {
-        world.notification = Some(ctx.build_notification());
-    }
-}
-
-#[when("I build a notification CommandBook")]
-async fn when_build_command_book(world: &mut CompensationWorld) {
-    if let Some(ref ctx) = world.compensation_context {
-        world.command_book = Some(ctx.build_command_book());
+        Some("pm") => {
+            let Ok(Built::ProcessManager(router)) = Router::new("pm")
+                .with_handler(move || WorkflowPm { log: log.clone() })
+                .build()
+            else {
+                panic!("expected a process-manager router");
+            };
+            router
+                .dispatch(ProcessManagerHandleRequest {
+                    trigger: Some(book),
+                    ..Default::default()
+                })
+                .map(|_| ())
+        }
+        other => panic!("no emitter router configured: {other:?}"),
+    };
+    if let Err(e) = result {
+        world.dispatch_error = Some(e);
     }
 }
 
 #[when("a command execution fails with precondition error")]
-async fn when_command_fails(world: &mut CompensationWorld) {
-    let (cmd, origin) = make_saga_command("fulfillment", "order-fulfillment", "orders", 5);
-    world.rejection_reason = "precondition failed".to_string();
-    world.compensation_context = Some(CompensationContext::from_rejection(
-        &cmd,
-        "precondition failed",
-        Some(origin),
-    ));
+fn when_precondition_fails(world: &mut CompensationWorld) {
+    reject_and_deliver_to_emitter(world);
 }
 
 #[when("a PM command is rejected")]
-async fn when_pm_command_rejected(world: &mut CompensationWorld) {
-    let (cmd, origin) = make_saga_command("fulfillment", "pmg-order-workflow", "orders", 5);
-    world.rejection_reason = "pm command rejected".to_string();
-    world.compensation_context = Some(CompensationContext::from_rejection(
-        &cmd,
-        "pm command rejected",
-        Some(origin),
-    ));
+fn when_pm_rejected(world: &mut CompensationWorld) {
+    reject_and_deliver_to_emitter(world);
 }
 
-// --- Then steps ---
+// ---------------------------------------------------------------------------
+// Thens: CompensationContext built from the rejection.
+// ---------------------------------------------------------------------------
 
-#[then("the context should include the rejected command")]
-async fn then_context_has_command(world: &mut CompensationWorld) {
-    assert!(world
-        .compensation_context
+fn context(world: &CompensationWorld) -> &CompensationContext {
+    world.context.as_ref().expect("compensation context")
+}
+
+#[then("the context carries the rejected command")]
+fn then_ctx_command(world: &mut CompensationWorld) {
+    assert_eq!(
+        context(world).rejected_command.as_ref(),
+        world.rejected.as_ref()
+    );
+    assert_eq!(
+        context(world).rejected_command_type(),
+        full_type_url::<ReserveStock>()
+    );
+}
+
+#[then("the context carries the rejection reason")]
+fn then_ctx_reason(world: &mut CompensationWorld) {
+    assert_eq!(context(world).rejection_reason, world.reason);
+}
+
+#[then("the context carries the saga origin")]
+fn then_ctx_origin(world: &mut CompensationWorld) {
+    let ctx = context(world);
+    assert_eq!(ctx.source_aggregate, Some(world.origin.source_cover()));
+    assert_eq!(ctx.source_event_sequence, world.origin.source_seq);
+}
+
+#[then("the saga origin is preserved")]
+fn then_origin_preserved(world: &mut CompensationWorld) {
+    let ctx = context(world);
+    let source = ctx.source_aggregate.as_ref().expect("source aggregate");
+    assert_eq!(source.domain, world.origin.source_domain);
+    assert_eq!(ctx.source_event_sequence, world.origin.source_seq);
+    let deferred = deferred_of(ctx.rejected_command.as_ref().expect("rejected command"));
+    assert_eq!(deferred.source_component, world.origin.saga_name);
+}
+
+#[then("the correlation ID is preserved")]
+fn then_correlation_preserved(world: &mut CompensationWorld) {
+    let ctx = context(world);
+    let cid = &world.origin.correlation_id;
+    assert_eq!(
+        ctx.rejected_command
+            .as_ref()
+            .and_then(|c| c.cover.as_ref())
+            .map(|c| &c.correlation_id),
+        Some(cid)
+    );
+    assert_eq!(
+        ctx.source_aggregate.as_ref().map(|c| &c.correlation_id),
+        Some(cid)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Thens: what the source aggregate's #[rejected] handler received.
+// ---------------------------------------------------------------------------
+
+#[then("the notification carries the rejected command")]
+fn then_notification_command(world: &mut CompensationWorld) {
+    assert_eq!(
+        world.received_context().rejected_command.as_ref(),
+        world.rejected.as_ref()
+    );
+}
+
+#[then("the notification carries the rejection reason")]
+fn then_notification_reason(world: &mut CompensationWorld) {
+    assert_eq!(world.received_context().rejection_reason, world.reason);
+}
+
+#[then("the source aggregate and sequence are recorded")]
+fn then_source_recorded(world: &mut CompensationWorld) {
+    let ctx = world.received_context();
+    assert_eq!(ctx.source_aggregate, Some(world.origin.source_cover()));
+    assert_eq!(ctx.source_event_sequence, world.origin.source_seq);
+}
+
+#[then(expr = "the notification identifies the issuing saga as {string}")]
+fn then_issuer(world: &mut CompensationWorld, saga: String) {
+    let ctx = world.received_context();
+    let deferred = deferred_of(ctx.rejected_command.as_ref().expect("rejected command"));
+    assert_eq!(deferred.source_component, saga);
+}
+
+#[then("the notification has a cover")]
+fn then_notification_cover(world: &mut CompensationWorld) {
+    let cover = world
+        .received_notification()
+        .cover
+        .expect("notification cover");
+    assert_eq!(cover.domain, world.origin.source_domain);
+    assert_eq!(cover.root, Some(root_for(&world.origin.source_root)));
+}
+
+#[then("the notification payload contains a RejectionNotification")]
+fn then_payload_rejection(world: &mut CompensationWorld) {
+    let payload = world.received_notification().payload.expect("payload");
+    assert_eq!(payload.type_url, full_type_url::<RejectionNotification>());
+    let ctx = world.received_context();
+    assert_eq!(ctx.rejected_command.as_ref(), world.rejected.as_ref());
+}
+
+#[then("the notification carries its dispatch time")]
+fn then_dispatch_time(world: &mut CompensationWorld) {
+    let sent_at = world.received_notification().sent_at.expect("sent_at");
+    assert_eq!(Some(sent_at), world.sent_at);
+    assert!(sent_at.seconds > 0);
+}
+
+#[then("the command book targets the source aggregate")]
+fn then_targets_source(world: &mut CompensationWorld) {
+    let ctx = world.received_context();
+    let handler = world.log.lock().unwrap().handler;
+    assert_eq!(
+        handler,
+        Some(match world.origin.source_domain.as_str() {
+            "fulfillment" => "fulfillment",
+            _ => "orders",
+        })
+    );
+    let source = ctx.source_aggregate.expect("source aggregate");
+    assert_eq!(source.domain, world.origin.source_domain);
+    assert_eq!(source.root, Some(root_for(&world.origin.source_root)));
+    let envelope_cover = world
+        .envelope
         .as_ref()
-        .unwrap()
+        .and_then(|e| e.cover.clone())
+        .expect("envelope cover");
+    assert_eq!(envelope_cover.domain, source.domain);
+    assert_eq!(envelope_cover.root, source.root);
+}
+
+#[then("the command book preserves the correlation ID")]
+fn then_command_book_correlation(world: &mut CompensationWorld) {
+    let cover = world
+        .received_notification()
+        .cover
+        .expect("notification cover");
+    let rejected_cid = world
+        .rejected()
+        .cover
+        .as_ref()
+        .map(|c| c.correlation_id.clone())
+        .expect("rejected cover");
+    assert_eq!(cover.correlation_id, rejected_cid);
+}
+
+#[then(expr = "the rejection reason equals {string}")]
+fn then_reason_equals(world: &mut CompensationWorld, reason: String) {
+    assert_eq!(world.received_context().rejection_reason, reason);
+}
+
+#[then("the rejection reason carries the full error details")]
+fn then_full_details(world: &mut CompensationWorld) {
+    assert_eq!(world.received_context().rejection_reason, STRUCTURED_REASON);
+}
+
+#[then("the rejected command is the original command")]
+fn then_original_command(world: &mut CompensationWorld) {
+    assert_eq!(
+        world.received_context().rejected_command.as_ref(),
+        world.rejected.as_ref()
+    );
+}
+
+#[then("all command fields are preserved")]
+fn then_fields_preserved(world: &mut CompensationWorld) {
+    let ctx = world.received_context();
+    let cmd = ctx.rejected_command.as_ref().expect("rejected command");
+    let payload = match cmd.pages.first().and_then(|p| p.payload.as_ref()) {
+        Some(command_page::Payload::Command(a)) => a,
+        other => panic!("expected a command payload, got {other:?}"),
+    };
+    assert_eq!(
+        ReserveStock::decode(payload.value.as_slice()).expect("payload decodes"),
+        ReserveStock {
+            order_id: "o-77".into(),
+            quantity: 12,
+        }
+    );
+    assert_eq!(cmd.cover, world.rejected().cover);
+    assert_eq!(cmd.pages[0].header, world.rejected().pages[0].header);
+}
+
+#[then("the full saga origin chain is preserved")]
+fn then_chain_preserved(world: &mut CompensationWorld) {
+    let ctx = world.received_context();
+    let source = ctx.source_aggregate.as_ref().expect("source aggregate");
+    assert_eq!(source.domain, "fulfillment");
+    assert_eq!(ctx.source_event_sequence, 10);
+    let deferred = deferred_of(ctx.rejected_command.as_ref().expect("rejected command"));
+    assert_eq!(deferred.source_component, "fulfillment-shipping");
+    assert_eq!(
+        ctx.rejected_command_type(),
+        full_type_url::<CreateShipment>()
+    );
+}
+
+#[then("the root cause can be traced through the chain")]
+fn then_root_cause(world: &mut CompensationWorld) {
+    let ctx = world.received_context();
+    let source_cid = ctx
+        .source_aggregate
+        .as_ref()
+        .map(|c| c.correlation_id.clone())
+        .expect("source aggregate");
+    let command_cid = ctx
         .rejected_command
-        .is_some());
-}
-
-#[then("the context should include the rejection reason")]
-async fn then_context_has_reason(world: &mut CompensationWorld) {
-    assert!(!world
-        .compensation_context
         .as_ref()
-        .unwrap()
-        .rejection_reason
-        .is_empty());
-}
-
-#[then("the context should include the saga origin")]
-async fn then_context_has_saga_origin(world: &mut CompensationWorld) {
-    assert!(world
-        .compensation_context
-        .as_ref()
-        .unwrap()
-        .saga_origin
-        .is_some());
-}
-
-#[then(expr = "the saga_origin saga_name should be {string}")]
-async fn then_saga_name(world: &mut CompensationWorld, expected: String) {
-    let ctx = world.compensation_context.as_ref().unwrap();
-    let origin = ctx.saga_origin.as_ref().unwrap();
-    assert_eq!(origin.saga_name, expected);
-}
-
-#[then(expr = "the triggering_aggregate should be {string}")]
-async fn then_triggering_aggregate(world: &mut CompensationWorld, expected: String) {
-    let ctx = world.compensation_context.as_ref().unwrap();
-    assert_eq!(ctx.source_domain, expected);
-}
-
-#[then(expr = "the triggering_event_sequence should be {int}")]
-async fn then_triggering_sequence(world: &mut CompensationWorld, expected: u32) {
-    let ctx = world.compensation_context.as_ref().unwrap();
-    assert_eq!(ctx.source_sequence, expected);
-}
-
-#[then(expr = "the context correlation_id should be {string}")]
-async fn then_context_correlation_id(world: &mut CompensationWorld, expected: String) {
-    let ctx = world.compensation_context.as_ref().unwrap();
-    assert_eq!(ctx.correlation_id, expected);
-}
-
-#[then("the notification should include the rejected command")]
-async fn then_notification_has_command(world: &mut CompensationWorld) {
-    let notif = world.rejection_notification.as_ref().unwrap();
-    assert!(notif.rejected_command.is_some());
-}
-
-#[then("the notification should include the rejection reason")]
-async fn then_notification_has_reason(world: &mut CompensationWorld) {
-    let notif = world.rejection_notification.as_ref().unwrap();
-    assert!(!notif.rejection_reason.is_empty());
-}
-
-#[then(expr = "the notification should have issuer_type {string}")]
-async fn then_notification_issuer_type(world: &mut CompensationWorld, expected: String) {
-    let notif = world.rejection_notification.as_ref().unwrap();
-    assert_eq!(notif.issuer_type, expected);
-}
-
-#[then(expr = "the source_aggregate should have domain {string}")]
-async fn then_source_domain(world: &mut CompensationWorld, expected: String) {
-    let notif = world.rejection_notification.as_ref().unwrap();
-    assert_eq!(notif.source_domain, expected);
-}
-
-#[then(expr = "the source_event_sequence should be {int}")]
-async fn then_source_sequence(world: &mut CompensationWorld, expected: u32) {
-    let notif = world.rejection_notification.as_ref().unwrap();
-    assert_eq!(notif.source_event_sequence, expected);
-}
-
-#[then(expr = "the issuer_name should be {string}")]
-async fn then_issuer_name(world: &mut CompensationWorld, expected: String) {
-    let notif = world.rejection_notification.as_ref().unwrap();
-    assert_eq!(notif.issuer_name, expected);
-}
-
-#[then(expr = "the issuer_type should be {string}")]
-async fn then_issuer_type(world: &mut CompensationWorld, expected: String) {
-    let notif = world.rejection_notification.as_ref().unwrap();
-    assert_eq!(notif.issuer_type, expected);
-}
-
-#[then("the notification should have a cover")]
-async fn then_notification_has_cover(world: &mut CompensationWorld) {
-    let notif = world.notification.as_ref().unwrap();
-    assert!(!notif.cover_domain.is_empty());
-}
-
-#[then("the notification payload should contain RejectionNotification")]
-async fn then_payload_contains_rejection(world: &mut CompensationWorld) {
-    let notif = world.notification.as_ref().unwrap();
-    assert!(notif.payload_type_url.contains("RejectionNotification"));
-}
-
-#[then(expr = "the payload type_url should be {string}")]
-async fn then_payload_type_url(world: &mut CompensationWorld, expected: String) {
-    let notif = world.notification.as_ref().unwrap();
-    assert_eq!(notif.payload_type_url, expected);
-}
-
-#[then("the notification should have a sent_at timestamp")]
-async fn then_has_sent_at(world: &mut CompensationWorld) {
-    let notif = world.notification.as_ref().unwrap();
-    assert!(notif.sent_at > 0);
-}
-
-#[then("the timestamp should be recent")]
-async fn then_timestamp_recent(world: &mut CompensationWorld) {
-    let notif = world.notification.as_ref().unwrap();
-    let now = chrono::Utc::now().timestamp();
-    assert!(notif.sent_at >= now - 60);
-}
-
-#[then("the command book should target the source aggregate")]
-async fn then_targets_source(world: &mut CompensationWorld) {
-    let book = world.command_book.as_ref().unwrap();
-    let cover = book.cover.as_ref().unwrap();
-    assert!(!cover.domain.is_empty());
-}
-
-#[then("the command book should have MERGE_COMMUTATIVE strategy")]
-async fn then_merge_commutative(world: &mut CompensationWorld) {
-    let book = world.command_book.as_ref().unwrap();
-    let page = &book.pages[0];
-    assert_eq!(page.merge_strategy, MergeStrategy::MergeCommutative as i32);
-}
-
-#[then("the command book should preserve correlation ID")]
-async fn then_preserves_correlation(world: &mut CompensationWorld) {
-    let book = world.command_book.as_ref().unwrap();
-    let cover = book.cover.as_ref().unwrap();
-    assert!(!cover.correlation_id.is_empty());
-}
-
-#[then(expr = "the command book cover should have domain {string}")]
-async fn then_book_domain(world: &mut CompensationWorld, expected: String) {
-    let book = world.command_book.as_ref().unwrap();
-    let cover = book.cover.as_ref().unwrap();
-    assert_eq!(cover.domain, expected);
-}
-
-#[then(expr = "the command book cover should have root {string}")]
-async fn then_book_root(world: &mut CompensationWorld, _expected: String) {
-    let book = world.command_book.as_ref().unwrap();
-    let cover = book.cover.as_ref().unwrap();
-    assert!(cover.root.is_some());
-}
-
-#[then(expr = "the rejection_reason should be {string}")]
-async fn then_rejection_reason(world: &mut CompensationWorld, expected: String) {
-    let notif = world.rejection_notification.as_ref().unwrap();
-    assert_eq!(notif.rejection_reason, expected);
-}
-
-#[then("the rejection_reason should contain the full error details")]
-async fn then_reason_has_details(world: &mut CompensationWorld) {
-    let notif = world.rejection_notification.as_ref().unwrap();
-    assert!(notif.rejection_reason.contains("structured"));
-}
-
-#[then("the rejected_command should be the original command")]
-async fn then_rejected_is_original(world: &mut CompensationWorld) {
-    let notif = world.rejection_notification.as_ref().unwrap();
-    assert!(notif.rejected_command.is_some());
-}
-
-#[then("all command fields should be preserved")]
-async fn then_fields_preserved(world: &mut CompensationWorld) {
-    let notif = world.rejection_notification.as_ref().unwrap();
-    let cmd = notif.rejected_command.as_ref().unwrap();
-    assert!(cmd.cover.is_some());
-    assert!(!cmd.pages.is_empty());
-}
-
-#[then("the full saga origin chain should be preserved")]
-async fn then_origin_chain_preserved(world: &mut CompensationWorld) {
-    let ctx = world.compensation_context.as_ref().unwrap();
-    assert!(ctx.saga_origin.is_some());
-}
-
-#[then("root cause can be traced through the chain")]
-async fn then_can_trace_root_cause(world: &mut CompensationWorld) {
-    let ctx = world.compensation_context.as_ref().unwrap();
-    let origin = ctx.saga_origin.as_ref().unwrap();
-    assert!(!origin.triggering_domain.is_empty());
-}
-
-#[then("the router should build a CompensationContext")]
-async fn then_router_builds_context(world: &mut CompensationWorld) {
-    assert!(world.compensation_context.is_some());
-}
-
-#[then("the router should emit a rejection notification")]
-async fn then_router_emits_notification(world: &mut CompensationWorld) {
-    let ctx = world.compensation_context.as_ref().unwrap();
-    let notif = ctx.build_rejection_notification();
-    assert!(!notif.rejection_reason.is_empty());
-}
-
-#[then(expr = "the context should have issuer_type {string}")]
-async fn then_context_issuer_type(world: &mut CompensationWorld, expected: String) {
-    // PM uses "process_manager" issuer type
-    let ctx = world.compensation_context.as_ref().unwrap();
-    let _notif = ctx.build_rejection_notification();
-    // In real impl, issuer_type would be set based on component type
-    // For this test, we're simulating
-    assert!(expected == "saga" || expected == "process_manager");
+        .and_then(|c| c.cover.as_ref())
+        .map(|c| c.correlation_id.clone())
+        .expect("rejected command cover");
+    assert_eq!(source_cid, "workflow-123");
+    assert_eq!(command_cid, source_cid);
 }
 
 // ---------------------------------------------------------------------------
-// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
+// Thens: rejections delivered back to sagas / process managers.
 // ---------------------------------------------------------------------------
 
-// TODO (WIP): Implement this step matcher properly.
-#[when(regex = r"^the compensation context is constructed from the rejection$")]
-async fn wip_when_the_compensation_context_is_constructed_from_the_r(
-    _world: &mut CompensationWorld,
-) {
-    panic!("WIP: step needs implementation");
+fn assert_emitter_received(world: &CompensationWorld, who: &'static str) {
+    assert!(
+        world.dispatch_error.is_none(),
+        "delivery to the {who} failed: {:?}",
+        world.dispatch_error
+    );
+    let handler = world.log.lock().unwrap().handler;
+    assert_eq!(
+        handler,
+        Some(who),
+        "the {who}'s #[rejected] handler did not run"
+    );
+    let ctx = world.received_context();
+    assert_eq!(ctx.rejected_command.as_ref(), world.rejected.as_ref());
+    assert_eq!(ctx.rejection_reason, "insufficient stock");
 }
 
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the context carries the rejected command$")]
-async fn wip_then_the_context_carries_the_rejected_command(_world: &mut CompensationWorld) {
-    panic!("WIP: step needs implementation");
+#[then("saga rejections produce a compensation notification")]
+fn then_saga_notification(world: &mut CompensationWorld) {
+    assert_emitter_received(world, "saga");
 }
 
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the context carries the rejection reason$")]
-async fn wip_then_the_context_carries_the_rejection_reason(_world: &mut CompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the context carries the saga origin$")]
-async fn wip_then_the_context_carries_the_saga_origin(_world: &mut CompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the saga origin is preserved$")]
-async fn wip_then_the_saga_origin_is_preserved(_world: &mut CompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the correlation ID is preserved$")]
-async fn wip_then_the_correlation_id_is_preserved(_world: &mut CompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the notification carries the rejected command$")]
-async fn wip_then_the_notification_carries_the_rejected_command(_world: &mut CompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the notification carries the rejection reason$")]
-async fn wip_then_the_notification_carries_the_rejection_reason(_world: &mut CompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the source aggregate and sequence are recorded$")]
-async fn wip_then_the_source_aggregate_and_sequence_are_recorded(_world: &mut CompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r#"^the notification identifies the issuing saga as "([^"]*)"$"#)]
-async fn wip_then_the_notification_identifies_the_issuing_saga_as_or(
-    _world: &mut CompensationWorld,
-) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the notification has a cover$")]
-async fn wip_then_the_notification_has_a_cover(_world: &mut CompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the notification payload contains a RejectionNotification$")]
-async fn wip_then_the_notification_payload_contains_a_rejectionnotif(
-    _world: &mut CompensationWorld,
-) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the notification carries its dispatch time$")]
-async fn wip_then_the_notification_carries_its_dispatch_time(_world: &mut CompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the command book targets the source aggregate$")]
-async fn wip_then_the_command_book_targets_the_source_aggregate(_world: &mut CompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the command book preserves the correlation ID$")]
-async fn wip_then_the_command_book_preserves_the_correlation_id(_world: &mut CompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r#"^the rejection reason equals "([^"]*)"$"#)]
-async fn wip_then_the_rejection_reason_equals_insufficient_funds(_world: &mut CompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the rejection reason carries the full error details$")]
-async fn wip_then_the_rejection_reason_carries_the_full_error_detail(
-    _world: &mut CompensationWorld,
-) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the rejected command is the original command$")]
-async fn wip_then_the_rejected_command_is_the_original_command(_world: &mut CompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^all command fields are preserved$")]
-async fn wip_then_all_command_fields_are_preserved(_world: &mut CompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the full saga origin chain is preserved$")]
-async fn wip_then_the_full_saga_origin_chain_is_preserved(_world: &mut CompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the root cause can be traced through the chain$")]
-async fn wip_then_the_root_cause_can_be_traced_through_the_chain(_world: &mut CompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^saga rejections produce a compensation notification$")]
-async fn wip_then_saga_rejections_produce_a_compensation_notificatio(
-    _world: &mut CompensationWorld,
-) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^process manager rejections produce a compensation notification$")]
-async fn wip_then_process_manager_rejections_produce_a_compensation(
-    _world: &mut CompensationWorld,
-) {
-    panic!("WIP: step needs implementation");
+#[then("process manager rejections produce a compensation notification")]
+fn then_pm_notification(world: &mut CompensationWorld) {
+    assert_emitter_received(world, "pm");
 }

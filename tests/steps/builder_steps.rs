@@ -1,466 +1,339 @@
-//! Router builder step definitions.
+//! Step definitions for `features/client/builder.feature`.
 //!
-//! Exercises `Router::new(..).with_handler(..).build()` outcomes:
-//! empty, wrong kind, mixed kinds, homogeneous kinds, duplicate
-//! registration, and factory laziness.
+//! Exercises `Router::new(..).with_handler(..).build()` with real
+//! `#[command_handler]` / `#[saga]` types. Registering a type that is not a
+//! handler kind is a compile error in Rust, so that scenario runs a trybuild
+//! compile-fail fixture.
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use angzarr_client::command_handler;
-use angzarr_client::proto::EventBook;
+use angzarr_client::error_codes::codes;
+use angzarr_client::proto::{business_response, EventBook, SagaHandleRequest, SagaResponse};
 use angzarr_client::router::{BuildError, Built, Router};
-use angzarr_client::saga;
-use angzarr_client::{full_type_url, CommandResult};
+use angzarr_client::{command_handler, saga, CommandResult};
 use cucumber::{given, then, when, World};
 
-use crate::common::fixtures::{CreateOrder, OrderCreated};
+use super::deferred::{event_page_of, trigger_book, unsequenced_command};
+use crate::common::fixtures::{CreateOrder, OrderCreated, ProcessPayment, ReserveStock};
 
-// ---------------------------------------------------------------------------
-// Test aggregates for the "Order" and "Payment" and "Alpha/Beta" handlers.
-// ---------------------------------------------------------------------------
+type CallLog = Arc<Mutex<Vec<&'static str>>>;
 
 #[derive(Default)]
-struct OrderState;
+pub struct OrderState;
 
-struct OrderAgg;
+pub struct Order {
+    calls: CallLog,
+}
 
 #[command_handler(domain = "order", state = OrderState)]
-impl OrderAgg {
+impl Order {
     #[handles(CreateOrder)]
-    #[allow(unused_variables, dead_code)]
     fn on_create(
         &self,
-        cmd: CreateOrder,
-        state: &OrderState,
-        seq: u32,
+        _cmd: CreateOrder,
+        _state: &OrderState,
+        _seq: u32,
     ) -> CommandResult<EventBook> {
-        Ok(EventBook::default())
+        self.calls.lock().unwrap().push("Order");
+        Ok(EventBook {
+            pages: vec![event_page_of(&OrderCreated::default())],
+            ..Default::default()
+        })
     }
 }
 
 #[derive(Default)]
-struct PaymentState;
+pub struct PaymentState;
 
-struct PaymentAgg;
+pub struct Payment {
+    calls: CallLog,
+}
 
 #[command_handler(domain = "payment", state = PaymentState)]
-impl PaymentAgg {
-    #[handles(CreateOrder)]
-    #[allow(unused_variables, dead_code)]
-    fn on_create(
+impl Payment {
+    #[handles(ProcessPayment)]
+    fn on_process(
         &self,
-        cmd: CreateOrder,
-        state: &PaymentState,
-        seq: u32,
+        _cmd: ProcessPayment,
+        _state: &PaymentState,
+        _seq: u32,
     ) -> CommandResult<EventBook> {
+        self.calls.lock().unwrap().push("Payment");
         Ok(EventBook::default())
     }
 }
 
-struct AlphaAgg;
+pub struct Alpha;
+
 #[command_handler(domain = "order", state = OrderState)]
-impl AlphaAgg {
+impl Alpha {
     #[handles(CreateOrder)]
-    #[allow(unused_variables, dead_code)]
     fn on_create(
         &self,
-        cmd: CreateOrder,
-        state: &OrderState,
-        seq: u32,
+        _cmd: CreateOrder,
+        _state: &OrderState,
+        _seq: u32,
     ) -> CommandResult<EventBook> {
         Ok(EventBook::default())
     }
 }
 
-struct BetaAgg;
+pub struct Beta;
+
 #[command_handler(domain = "order", state = OrderState)]
-impl BetaAgg {
+impl Beta {
     #[handles(CreateOrder)]
-    #[allow(unused_variables, dead_code)]
     fn on_create(
         &self,
-        cmd: CreateOrder,
-        state: &OrderState,
-        seq: u32,
+        _cmd: CreateOrder,
+        _state: &OrderState,
+        _seq: u32,
     ) -> CommandResult<EventBook> {
         Ok(EventBook::default())
     }
 }
 
-// Saga: "OrderFulfillment" translating from "order" to "inventory".
-struct FulfillmentSaga;
+pub struct OrderFulfillment;
 
 #[saga(name = "OrderFulfillment", source = "order", target = "inventory")]
-impl FulfillmentSaga {
+impl OrderFulfillment {
     #[handles(OrderCreated)]
-    #[allow(unused_variables, dead_code)]
-    fn on_placed(&self, event: OrderCreated) -> CommandResult<angzarr_client::proto::SagaResponse> {
-        Ok(angzarr_client::proto::SagaResponse::default())
+    fn on_created(&self, _event: OrderCreated) -> CommandResult<SagaResponse> {
+        Ok(SagaResponse {
+            commands: vec![unsequenced_command(&ReserveStock::default(), "inventory")],
+            events: vec![],
+        })
     }
 }
 
-// ---------------------------------------------------------------------------
-// World.
-// ---------------------------------------------------------------------------
+/// Registration recipe; `Router` is consumed by `build`, so the world keeps
+/// what to register and assembles the router in the When step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Registration {
+    Order,
+    Payment,
+    Alpha,
+    Beta,
+    Saga,
+}
 
-#[derive(Debug, Default)]
-struct Invocations(Arc<AtomicU32>);
-
-#[derive(World)]
-#[world(init = Self::new)]
+#[derive(Debug, Default, World)]
 pub struct BuilderWorld {
-    router_name: String,
-    has_order_handler: bool,
-    has_payment_handler: bool,
-    has_saga_handler: bool,
-    // "Alpha/Beta" dup scenario.
-    dup_alpha_beta: bool,
-    // Track if factory was invoked at registration+build (must be 0 for C-0065).
-    counted_factory: Option<Arc<AtomicU32>>,
-    // Result of build().
-    build_err: Option<BuildError>,
+    registrations: Vec<Registration>,
+    calls: CallLog,
+    introspections: Arc<AtomicU32>,
+    count_introspections: bool,
+    unmarked_fixture: Option<&'static str>,
     built: Option<Built>,
-    factory_count: u32,
-}
-
-impl std::fmt::Debug for BuilderWorld {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BuilderWorld")
-            .field("router_name", &self.router_name)
-            .field("has_order_handler", &self.has_order_handler)
-            .field("has_payment_handler", &self.has_payment_handler)
-            .field("has_saga_handler", &self.has_saga_handler)
-            .field("dup_alpha_beta", &self.dup_alpha_beta)
-            .field("build_err", &self.build_err)
-            .field("factory_count", &self.factory_count)
-            .finish()
-    }
+    error: Option<BuildError>,
 }
 
 impl BuilderWorld {
-    fn new() -> Self {
-        Self {
-            router_name: "default".to_string(),
-            has_order_handler: false,
-            has_payment_handler: false,
-            has_saga_handler: false,
-            dup_alpha_beta: false,
-            counted_factory: None,
-            build_err: None,
-            built: None,
-            factory_count: 0,
+    fn build(&mut self) {
+        let mut router = Router::new("builder");
+        for r in self.registrations.clone() {
+            let calls = Arc::clone(&self.calls);
+            router = match r {
+                Registration::Order if self.count_introspections => {
+                    let introspections = Arc::clone(&self.introspections);
+                    router.with_handler(move || {
+                        introspections.fetch_add(1, Ordering::SeqCst);
+                        Order {
+                            calls: Arc::clone(&calls),
+                        }
+                    })
+                }
+                Registration::Order => router.with_handler(move || Order {
+                    calls: Arc::clone(&calls),
+                }),
+                Registration::Payment => router.with_handler(move || Payment {
+                    calls: Arc::clone(&calls),
+                }),
+                Registration::Alpha => router.with_handler(|| Alpha),
+                Registration::Beta => router.with_handler(|| Beta),
+                Registration::Saga => router.with_handler(|| OrderFulfillment),
+            };
+        }
+        match router.build() {
+            Ok(built) => self.built = Some(built),
+            Err(e) => self.error = Some(e),
         }
     }
-}
 
-// ---------------------------------------------------------------------------
-// Given steps.
-// ---------------------------------------------------------------------------
-
-#[given(expr = "an empty Router named {string}")]
-async fn given_empty_router(world: &mut BuilderWorld, name: String) {
-    world.router_name = name;
-}
-
-#[given(expr = "a class {string} with no kind decorator")]
-async fn given_undecorated_class(_world: &mut BuilderWorld, _name: String) {
-    // Enforced at compile time; we only acknowledge the scenario. The
-    // corresponding `Then` step passes trivially since Rust's type system
-    // already prevents undecorated types from being passed to `with_handler`.
-}
-
-#[given(expr = "a command handler {string} for domain {string} with state {word}")]
-async fn given_command_handler(
-    world: &mut BuilderWorld,
-    name: String,
-    _domain: String,
-    _state: String,
-) {
-    match name.as_str() {
-        "Order" => world.has_order_handler = true,
-        "Payment" => world.has_payment_handler = true,
-        _ => world.has_order_handler = true,
+    fn error_code(&self) -> &'static str {
+        assert!(
+            self.built.is_none(),
+            "expected a build error, got {:?}",
+            self.built
+        );
+        self.error.as_ref().expect("build error").code()
     }
 }
 
-#[given(expr = "another command handler {string} for domain {string} with state {word}")]
-async fn given_another_handler(
-    world: &mut BuilderWorld,
-    name: String,
-    _domain: String,
-    _state: String,
-) {
-    match name.as_str() {
-        "Order" => world.has_order_handler = true,
-        "Payment" => world.has_payment_handler = true,
-        _ => world.has_payment_handler = true,
-    }
+// --- Given -----------------------------------------------------------------
+
+#[given("an empty handler configuration")]
+fn given_empty(world: &mut BuilderWorld) {
+    world.registrations.clear();
+}
+
+#[given("a component that has not been marked as a handler kind")]
+fn given_unmarked(world: &mut BuilderWorld) {
+    world.unmarked_fixture = Some("tests/router/ui/with_handler_rejects_non_handler.rs");
+}
+
+#[given(expr = "a command handler {string} for domain {string} with order state")]
+fn given_order(world: &mut BuilderWorld, name: String, domain: String) {
+    assert_eq!((name.as_str(), domain.as_str()), ("Order", "order"));
+    world.registrations.push(Registration::Order);
+}
+
+#[given(expr = "another command handler {string} for domain {string} with payment state")]
+fn given_payment(world: &mut BuilderWorld, name: String, domain: String) {
+    assert_eq!((name.as_str(), domain.as_str()), ("Payment", "payment"));
+    world.registrations.push(Registration::Payment);
 }
 
 #[given(expr = "a saga {string} translating from {string} to {string}")]
-async fn given_a_saga(world: &mut BuilderWorld, _name: String, _source: String, _target: String) {
-    world.has_saga_handler = true;
+fn given_saga(world: &mut BuilderWorld, name: String, source: String, target: String) {
+    assert_eq!(
+        (name.as_str(), source.as_str(), target.as_str()),
+        ("OrderFulfillment", "order", "inventory")
+    );
+    world.registrations.push(Registration::Saga);
 }
 
-#[given(expr = "two command handlers Alpha and Beta for domain {string} both handling CreateOrder")]
-async fn given_alpha_beta(world: &mut BuilderWorld, _domain: String) {
-    world.dup_alpha_beta = true;
+#[given(
+    expr = "two command handlers Alpha and Beta for domain {string} both handling the same command"
+)]
+fn given_alpha_beta(world: &mut BuilderWorld, domain: String) {
+    assert_eq!(domain, "order");
+    world.registrations.push(Registration::Alpha);
+    world.registrations.push(Registration::Beta);
 }
 
-#[given("a factory that counts invocations")]
-async fn given_counting_factory(world: &mut BuilderWorld) {
-    world.counted_factory = Some(Arc::new(AtomicU32::new(0)));
+#[given("the handler reports how many times it has been introspected")]
+fn given_counting(world: &mut BuilderWorld) {
+    world.count_introspections = true;
 }
 
-// ---------------------------------------------------------------------------
-// When steps.
-// ---------------------------------------------------------------------------
+// --- When ------------------------------------------------------------------
 
 #[when("I build the router")]
-async fn when_build(world: &mut BuilderWorld) {
-    do_build(world);
+fn when_build(world: &mut BuilderWorld) {
+    world.build();
 }
 
 #[when("I register the handler and build the router")]
-async fn when_register_and_build(world: &mut BuilderWorld) {
-    do_build(world);
+fn when_register_and_build(world: &mut BuilderWorld) {
+    world.build();
 }
 
-#[when("I register it with a factory")]
-async fn when_register_undecorated(_world: &mut BuilderWorld) {
-    // Enforced at compile time; nothing to do at runtime.
+#[when("I attempt to register it")]
+fn when_attempt(world: &mut BuilderWorld) {
+    assert!(world.unmarked_fixture.is_some());
 }
 
-fn do_build(world: &mut BuilderWorld) {
-    let mut router = Router::new(&world.router_name);
+// --- Then ------------------------------------------------------------------
 
-    if world.dup_alpha_beta {
-        router = router.with_handler(|| AlphaAgg).with_handler(|| BetaAgg);
-        world.factory_count = 2;
-    } else {
-        if world.has_order_handler && world.has_payment_handler {
-            // Two distinct command handlers.
-            if let Some(counter) = world.counted_factory.clone() {
-                let c = Arc::clone(&counter);
-                router = router.with_handler(move || {
-                    c.fetch_add(1, Ordering::SeqCst);
-                    OrderAgg
-                });
-            } else {
-                router = router.with_handler(|| OrderAgg);
-            }
-            router = router.with_handler(|| PaymentAgg);
-            world.factory_count = 2;
-        } else if world.has_order_handler && world.has_saga_handler {
-            router = router
-                .with_handler(|| OrderAgg)
-                .with_handler(|| FulfillmentSaga);
-            world.factory_count = 2;
-        } else if world.has_order_handler {
-            if let Some(counter) = world.counted_factory.clone() {
-                let c = Arc::clone(&counter);
-                router = router.with_handler(move || {
-                    c.fetch_add(1, Ordering::SeqCst);
-                    OrderAgg
-                });
-            } else {
-                router = router.with_handler(|| OrderAgg);
-            }
-            world.factory_count = 1;
-        } else if world.has_saga_handler {
-            router = router.with_handler(|| FulfillmentSaga);
-            world.factory_count = 1;
-        }
-    }
-
-    match router.build() {
-        Ok(b) => world.built = Some(b),
-        Err(e) => world.build_err = Some(e),
-    }
+#[then("the configuration is rejected because no handlers are registered")]
+fn then_empty(world: &mut BuilderWorld) {
+    assert_eq!(world.error_code(), codes::ROUTER_NO_HANDLERS);
 }
 
-// ---------------------------------------------------------------------------
-// Then steps.
-// ---------------------------------------------------------------------------
-
-#[then(expr = "the builder raises a BuildError mentioning {string}")]
-async fn then_build_error_mentions(world: &mut BuilderWorld, needle: String) {
-    match &world.build_err {
-        Some(e) => {
-            let msg = format!("{}", e);
-            assert!(
-                msg.contains(&needle) || needle_matches_variant(e, &needle),
-                "BuildError '{}' should mention '{}'",
-                msg,
-                needle
-            );
-        }
-        None => {
-            // For the "NotDecorated" scenario the error surfaces at compile
-            // time, so at runtime we assume the scenario is vacuously satisfied.
-            if needle == "NotDecorated" {
-                return;
-            }
-            panic!("expected BuildError, got Ok ({:?})", world.built);
-        }
-    }
+#[then("the configuration is rejected because the component is not a recognised handler")]
+fn then_unmarked(world: &mut BuilderWorld) {
+    let fixture = world.unmarked_fixture.expect("fixture");
+    // `with_handler` requires `H: Handler`; the fixture passes a plain struct
+    // and must fail to compile with the trait-bound error recorded beside it.
+    trybuild::TestCases::new().compile_fail(fixture);
 }
 
-fn needle_matches_variant(e: &BuildError, needle: &str) -> bool {
-    let lower = needle.to_ascii_lowercase();
-    match e {
-        BuildError::Empty(_) => lower.contains("no handler") || lower.contains("empty"),
-        BuildError::MixedKinds(_) => lower.contains("mix") || lower.contains("cannot mix"),
-        BuildError::DuplicateCommandHandler(_) => {
-            lower.contains("duplicate") || lower.contains("command handler")
-        }
-    }
+#[then("the result routes commands to their handlers")]
+fn then_routes_commands(world: &mut BuilderWorld) {
+    let Some(Built::CommandHandler(router)) = world.built.take() else {
+        panic!(
+            "expected a command-handler router, got {:?} / {:?}",
+            world.built, world.error
+        );
+    };
+    let order = router
+        .dispatch(super::deferred::command_delivery(
+            &CreateOrder::default(),
+            "order",
+        ))
+        .expect("order dispatch");
+    assert!(matches!(
+        order.result,
+        Some(business_response::Result::Events(ref b)) if b.pages.len() == 1
+    ));
+    router
+        .dispatch(super::deferred::command_delivery(
+            &ProcessPayment::default(),
+            "payment",
+        ))
+        .expect("payment dispatch");
+    // The build probe instantiates each command handler once without
+    // dispatching; only the two dispatches above reach handler methods.
+    assert_eq!(*world.calls.lock().unwrap(), vec!["Order", "Payment"]);
 }
 
-#[then("the result is a CommandHandlerRouter")]
-async fn then_is_command_handler_router(world: &mut BuilderWorld) {
-    assert!(
-        matches!(world.built, Some(Built::CommandHandler(_))),
-        "expected CommandHandler, got {:?}",
-        world.built
+#[then("the configuration is rejected for mixing handler kinds")]
+fn then_mixed(world: &mut BuilderWorld) {
+    assert_eq!(world.error_code(), codes::MIXED_HANDLER_KINDS);
+    let details = world.error.as_ref().unwrap().details();
+    assert_eq!(
+        details.get("handler_kind").map(String::as_str),
+        Some("CommandHandler")
     );
+    assert_eq!(details.get("other_kind").map(String::as_str), Some("Saga"));
 }
 
-#[then("the result is a SagaRouter")]
-async fn then_is_saga_router(world: &mut BuilderWorld) {
-    assert!(
-        matches!(world.built, Some(Built::Saga(_))),
-        "expected Saga, got {:?}",
-        world.built
-    );
-}
-
-#[then("the build succeeds")]
-async fn then_build_succeeds(world: &mut BuilderWorld) {
-    assert!(
-        world.built.is_some() && world.build_err.is_none(),
-        "expected build to succeed, err={:?}",
-        world.build_err
-    );
-}
-
-#[then("the router has two factories registered")]
-async fn then_two_factories(world: &mut BuilderWorld) {
-    match &world.built {
-        Some(Built::CommandHandler(ch)) => assert_eq!(ch.handler_count(), 2),
-        other => panic!("expected CommandHandler with 2 factories, got {:?}", other),
-    }
-}
-
-#[then(expr = "the factory invocation count is {int}")]
-async fn then_factory_invocation_count(world: &mut BuilderWorld, n: u32) {
-    let counter = world
-        .counted_factory
-        .as_ref()
-        .expect("counted_factory not set");
-    assert_eq!(counter.load(Ordering::SeqCst), n);
-}
-
-// Trivial no-op step to keep prost::Message and full_type_url used in case the
-// compiler flags unused imports at some point.
-#[allow(dead_code)]
-fn _linker() {
-    use prost::Message;
-    let _ = full_type_url::<CreateOrder>();
-    let _ = OrderCreated::default().encode_to_vec();
-}
-
-// ---------------------------------------------------------------------------
-// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
-// ---------------------------------------------------------------------------
-
-// TODO (WIP): Implement this step matcher properly.
-#[given(regex = r"^an empty handler configuration$")]
-async fn wip_given_an_empty_handler_configuration(_world: &mut BuilderWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the configuration is rejected because no handlers are registered$")]
-async fn wip_then_the_configuration_is_rejected_because_no_handlers(_world: &mut BuilderWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[given(regex = r"^a component that has not been marked as a handler kind$")]
-async fn wip_given_a_component_that_has_not_been_marked_as_a_handler(_world: &mut BuilderWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[when(regex = r"^I attempt to register it$")]
-async fn wip_when_i_attempt_to_register_it(_world: &mut BuilderWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
 #[then(
-    regex = r"^the configuration is rejected because the component is not a recognised handler$"
+    "the configuration is rejected because two command handlers share the same domain and command"
 )]
-async fn wip_then_the_configuration_is_rejected_because_the_componen(_world: &mut BuilderWorld) {
-    panic!("WIP: step needs implementation");
+fn then_duplicate(world: &mut BuilderWorld) {
+    assert_eq!(world.error_code(), codes::DUPLICATE_COMMAND_HANDLER);
+    let details = world.error.as_ref().unwrap().details();
+    assert_eq!(details.get("domain").map(String::as_str), Some("order"));
+    assert_eq!(
+        details.get("type_url").cloned(),
+        Some(angzarr_client::full_type_url::<CreateOrder>())
+    );
 }
 
-// TODO (WIP): Implement this step matcher properly.
-#[given(regex = r#"^a command handler "([^"]*)" for domain "([^"]*)" with order state$"#)]
-async fn wip_given_a_command_handler_order_for_domain_order_with_orde(_world: &mut BuilderWorld) {
-    panic!("WIP: step needs implementation");
+#[then("the handler has been introspected exactly once")]
+fn then_introspected_once(world: &mut BuilderWorld) {
+    assert!(world.built.is_some(), "build failed: {:?}", world.error);
+    assert_eq!(world.introspections.load(Ordering::SeqCst), 1);
 }
 
-// TODO (WIP): Implement this step matcher properly.
-#[given(regex = r#"^another command handler "([^"]*)" for domain "([^"]*)" with payment state$"#)]
-async fn wip_given_another_command_handler_payment_for_domain_payment(_world: &mut BuilderWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the result routes commands to their handlers$")]
-async fn wip_then_the_result_routes_commands_to_their_handlers(_world: &mut BuilderWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the configuration is rejected for mixing handler kinds$")]
-async fn wip_then_the_configuration_is_rejected_for_mixing_handler_k(_world: &mut BuilderWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[given(
-    regex = r#"^two command handlers Alpha and Beta for domain "([^"]*)" both handling the same command$"#
-)]
-async fn wip_given_two_command_handlers_alpha_and_beta_for_domain_ord(_world: &mut BuilderWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(
-    regex = r"^the configuration is rejected because two command handlers share the same domain and command$"
-)]
-async fn wip_then_the_configuration_is_rejected_because_two_command(_world: &mut BuilderWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[given(regex = r"^the handler reports how many times it has been introspected$")]
-async fn wip_given_the_handler_reports_how_many_times_it_has_been_int(_world: &mut BuilderWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the handler has been introspected exactly once$")]
-async fn wip_then_the_handler_has_been_introspected_exactly_once(_world: &mut BuilderWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the result routes saga notifications to their handlers$")]
-async fn wip_then_the_result_routes_saga_notifications_to_their_hand(_world: &mut BuilderWorld) {
-    panic!("WIP: step needs implementation");
+#[then("the result routes saga notifications to their handlers")]
+fn then_routes_saga(world: &mut BuilderWorld) {
+    let Some(Built::Saga(router)) = world.built.take() else {
+        panic!(
+            "expected a saga router, got {:?} / {:?}",
+            world.built, world.error
+        );
+    };
+    let response = router
+        .dispatch(SagaHandleRequest {
+            source: Some(trigger_book(
+                &OrderCreated::default(),
+                "order",
+                "order-1",
+                0,
+            )),
+            ..Default::default()
+        })
+        .expect("saga dispatch");
+    assert_eq!(response.commands.len(), 1);
+    assert_eq!(
+        response.commands[0]
+            .cover
+            .as_ref()
+            .map(|c| c.domain.as_str()),
+        Some("inventory")
+    );
 }

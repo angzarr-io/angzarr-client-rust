@@ -1,192 +1,202 @@
-//! Projector dispatch step definitions.
+//! Step definitions for `features/client/projector.feature`.
+//!
+//! The Output projector is a real `#[projector]` type dispatched through a
+//! `ProjectorRouter`. Each instance gets a distinct id from the factory and
+//! appends `(instance id, order id)` to a shared write log.
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use angzarr_client::proto::{Cover, EventBook};
+use angzarr_client::proto::{event_page, Cover, EventBook, EventPage, PageHeader};
+use angzarr_client::router::runtime::ProjectorRouter;
 use angzarr_client::router::{Built, Router};
 use angzarr_client::{projector, CommandResult};
 use cucumber::{given, then, when, World};
+use prost_types::Any;
 
+use super::deferred::pack;
 use crate::common::fixtures::{OrderCompleted, OrderCreated};
-use crate::common::helpers::{event_book, pack_event_page};
 
-// ---------------------------------------------------------------------------
-// Projector under test.
-// ---------------------------------------------------------------------------
+type WriteLog = Arc<Mutex<Vec<(u32, String)>>>;
 
-struct Output {
-    created: Arc<AtomicU32>,
+pub struct Output {
+    instance: u32,
+    log: WriteLog,
 }
 
 #[projector(name = "Output", domains = ["order"])]
 impl Output {
     #[handles(OrderCreated)]
-    #[allow(unused_variables, dead_code)]
     fn on_created(&self, event: OrderCreated) -> CommandResult<()> {
-        self.created.fetch_add(1, Ordering::SeqCst);
+        self.log
+            .lock()
+            .unwrap()
+            .push((self.instance, event.order_id));
         Ok(())
     }
 }
 
-// ---------------------------------------------------------------------------
-// World.
-// ---------------------------------------------------------------------------
-
-#[derive(World)]
-#[world(init = Self::new)]
+#[derive(Debug, Default, World)]
 pub struct ProjectorWorld {
-    created: Arc<AtomicU32>,
-    factory_invocations: Arc<AtomicU32>,
-    domain: String,
-}
-
-impl std::fmt::Debug for ProjectorWorld {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ProjectorWorld")
-            .field("domain", &self.domain)
-            .finish()
-    }
+    log: WriteLog,
+    instances: Arc<AtomicU32>,
 }
 
 impl ProjectorWorld {
-    fn new() -> Self {
-        Self {
-            created: Arc::new(AtomicU32::new(0)),
-            factory_invocations: Arc::new(AtomicU32::new(0)),
-            domain: "order".into(),
+    fn router(&self) -> ProjectorRouter {
+        let log = Arc::clone(&self.log);
+        let instances = Arc::clone(&self.instances);
+        let built = Router::new("projectors")
+            .with_handler(move || Output {
+                instance: instances.fetch_add(1, Ordering::SeqCst),
+                log: Arc::clone(&log),
+            })
+            .build()
+            .expect("router builds");
+        match built {
+            Built::Projector(r) => r,
+            other => panic!("expected a projector router, got {other:?}"),
         }
+    }
+
+    fn dispatch(&self, domain: &str, events: Vec<Any>) {
+        let pages: Vec<EventPage> = events
+            .into_iter()
+            .enumerate()
+            .map(|(i, any)| EventPage {
+                header: Some(PageHeader {
+                    sequence_type: Some(
+                        angzarr_client::proto::page_header::SequenceType::Sequence(i as u32),
+                    ),
+                    sync_mode: None,
+                }),
+                payload: Some(event_page::Payload::Event(any)),
+                ..Default::default()
+            })
+            .collect();
+        let book = EventBook {
+            cover: Some(Cover {
+                domain: domain.into(),
+                ..Default::default()
+            }),
+            next_sequence: pages.len() as u32,
+            pages,
+            ..Default::default()
+        };
+        let projection = self.router().dispatch(book).expect("projector dispatch");
+        assert_eq!(projection.cover.map(|c| c.domain), Some(domain.to_string()));
+    }
+
+    fn created(n: usize) -> Vec<Any> {
+        (0..n)
+            .map(|i| {
+                pack(&OrderCreated {
+                    order_id: format!("o-{i}"),
+                    ..Default::default()
+                })
+            })
+            .collect()
+    }
+
+    fn entries(&self) -> Vec<(u32, String)> {
+        self.log.lock().unwrap().clone()
     }
 }
 
-// ---------------------------------------------------------------------------
-// Given steps.
-// ---------------------------------------------------------------------------
+// --- Given -----------------------------------------------------------------
 
 #[given(expr = "a projector {string} consuming domains {string}")]
-async fn given_projector(world: &mut ProjectorWorld, _name: String, domain: String) {
-    world.domain = domain;
+fn given_projector(_world: &mut ProjectorWorld, name: String, domain: String) {
+    let config = <Output as angzarr_client::router::HandlerKind>::handler_config();
+    let angzarr_client::router::HandlerConfig::Projector {
+        name: n, domains, ..
+    } = config
+    else {
+        panic!("not a projector config");
+    };
+    assert_eq!(n, name);
+    assert_eq!(domains, vec![domain]);
 }
 
 #[given("the projector handles OrderCreated by appending to a write log")]
-async fn given_handles(_world: &mut ProjectorWorld) {}
-
-#[given("the router is built with the Output projector")]
-async fn given_built(_world: &mut ProjectorWorld) {}
-
-#[given(expr = "a projector {string} whose factory counts invocations")]
-async fn given_counts(world: &mut ProjectorWorld, _name: String) {
-    world.factory_invocations.store(0, Ordering::SeqCst);
+fn given_handles(_world: &mut ProjectorWorld) {
+    // `#[handles(OrderCreated)]` on Output appends to the shared write log.
 }
 
-// ---------------------------------------------------------------------------
-// When steps.
-// ---------------------------------------------------------------------------
+#[given("Output is the active projector")]
+fn given_active(world: &mut ProjectorWorld) {
+    let router = world.router();
+    assert_eq!(router.name(), "Output");
+    assert_eq!(router.handler_count(), 1);
+}
+
+// --- When ------------------------------------------------------------------
 
 #[when("an EventBook with three OrderCreated events is dispatched")]
-async fn when_dispatch_three(world: &mut ProjectorWorld) {
-    dispatch_n_events(world, 3);
+fn when_three(world: &mut ProjectorWorld) {
+    world.dispatch("order", ProjectorWorld::created(3));
 }
 
 #[when("an EventBook with five OrderCreated events is dispatched")]
-async fn when_dispatch_five(world: &mut ProjectorWorld) {
-    dispatch_n_events(world, 5);
+fn when_five(world: &mut ProjectorWorld) {
+    world.dispatch("order", ProjectorWorld::created(5));
 }
 
 #[when("an EventBook mixing OrderCreated and OrderCompleted is dispatched")]
-async fn when_dispatch_mixed(world: &mut ProjectorWorld) {
-    let router = build_projector(world);
-    let mut book = EventBook::default();
-    book.pages = vec![
-        pack_event_page(&OrderCreated::default(), 0),
-        pack_event_page(&OrderCompleted::default(), 1),
-        pack_event_page(&OrderCreated::default(), 2),
-    ];
-    let _ = router.dispatch(book).expect("dispatch");
-}
-
-#[when(expr = "an EventBook in domain {string} is dispatched")]
-async fn when_dispatch_domain(world: &mut ProjectorWorld, domain: String) {
-    let router = build_projector(world);
-    let mut book = event_book(&[OrderCreated::default()], &domain);
-    book.cover = Some(Cover {
-        domain,
-        ..Default::default()
-    });
-    let _ = router.dispatch(book).expect("dispatch");
-}
-
-fn build_projector(world: &ProjectorWorld) -> angzarr_client::router::runtime::ProjectorRouter {
-    let created = Arc::clone(&world.created);
-    let invocations = Arc::clone(&world.factory_invocations);
-    let built = Router::new("pr")
-        .with_handler(move || {
-            invocations.fetch_add(1, Ordering::SeqCst);
-            Output {
-                created: Arc::clone(&created),
-            }
-        })
-        .build()
-        .expect("build");
-    let Built::Projector(router) = built else {
-        panic!("expected Projector");
-    };
-    router
-}
-
-fn dispatch_n_events(world: &mut ProjectorWorld, n: usize) {
-    let router = build_projector(world);
-    let events: Vec<OrderCreated> = (0..n).map(|_| OrderCreated::default()).collect();
-    let book = event_book(&events, "order");
-    let _ = router.dispatch(book).expect("dispatch");
-}
-
-// ---------------------------------------------------------------------------
-// Then steps.
-// ---------------------------------------------------------------------------
-
-#[then(expr = "the write log contains {int} entries")]
-async fn then_log_count(world: &mut ProjectorWorld, n: u32) {
-    assert_eq!(world.created.load(Ordering::SeqCst), n);
-}
-
-#[then("the write log contains only OrderCreated entries")]
-async fn then_only_created(world: &mut ProjectorWorld) {
-    // Mixed dispatch has 2 OrderCreated and 1 OrderCompleted: we only count
-    // OrderCreated.
-    assert_eq!(world.created.load(Ordering::SeqCst), 2);
-}
-
-#[then("the write log remains empty")]
-async fn then_log_empty(world: &mut ProjectorWorld) {
-    assert_eq!(world.created.load(Ordering::SeqCst), 0);
-}
-
-#[then(expr = "the factory was invoked exactly {int} time")]
-async fn then_factory_invoked(world: &mut ProjectorWorld, n: u32) {
-    let got = world.factory_invocations.load(Ordering::SeqCst);
-    // Per dispatch_projector.rs docs, may be 1 or 2 depending on whether the
-    // runtime peeks at config. Accept 1..=2 when the scenario says "1".
-    assert!(
-        got == n || got <= 2,
-        "factory invoked {} time(s), expected ~{}",
-        got,
-        n
+fn when_mixed(world: &mut ProjectorWorld) {
+    world.dispatch(
+        "order",
+        vec![
+            pack(&OrderCreated {
+                order_id: "o-0".into(),
+                ..Default::default()
+            }),
+            pack(&OrderCompleted {
+                order_id: "o-0".into(),
+                ..Default::default()
+            }),
+            pack(&OrderCreated {
+                order_id: "o-1".into(),
+                ..Default::default()
+            }),
+        ],
     );
 }
 
-// ---------------------------------------------------------------------------
-// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
-// ---------------------------------------------------------------------------
-
-// TODO (WIP): Implement this step matcher properly.
-#[given(regex = r"^Output is the active projector$")]
-async fn wip_given_output_is_the_active_projector(_world: &mut ProjectorWorld) {
-    panic!("WIP: step needs implementation");
+#[when(expr = "an EventBook in domain {string} is dispatched")]
+fn when_domain(world: &mut ProjectorWorld, domain: String) {
+    world.dispatch(&domain, ProjectorWorld::created(1));
 }
 
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^every entry was appended by the same projector instance$")]
-async fn wip_then_every_entry_was_appended_by_the_same_projector_ins(_world: &mut ProjectorWorld) {
-    panic!("WIP: step needs implementation");
+// --- Then ------------------------------------------------------------------
+
+#[then(expr = "the write log contains {int} entries")]
+fn then_count(world: &mut ProjectorWorld, n: usize) {
+    let entries = world.entries();
+    assert_eq!(entries.len(), n);
+    let ids: Vec<String> = entries.into_iter().map(|(_, id)| id).collect();
+    let expected: Vec<String> = (0..n).map(|i| format!("o-{i}")).collect();
+    assert_eq!(ids, expected, "events must be projected in page order");
+}
+
+#[then("the write log contains only OrderCreated entries")]
+fn then_only_created(world: &mut ProjectorWorld) {
+    let ids: Vec<String> = world.entries().into_iter().map(|(_, id)| id).collect();
+    assert_eq!(ids, vec!["o-0".to_string(), "o-1".to_string()]);
+}
+
+#[then("the write log remains empty")]
+fn then_empty(world: &mut ProjectorWorld) {
+    assert!(world.entries().is_empty());
+}
+
+#[then("every entry was appended by the same projector instance")]
+fn then_same_instance(world: &mut ProjectorWorld) {
+    let entries = world.entries();
+    assert!(!entries.is_empty());
+    let first = entries[0].0;
+    assert!(
+        entries.iter().all(|(i, _)| *i == first),
+        "entries: {entries:?}"
+    );
 }

@@ -9,63 +9,54 @@
 //! chain stops when no further upcaster matches the running event type.
 
 use cucumber::{given, then, when, World};
-use prost_types::Any;
 
 use angzarr_client::full_type_url;
 use angzarr_client::proto::{event_page, EventPage, UpcastRequest};
-use angzarr_client::router::{Built, Router};
+use angzarr_client::router::{Built, HandlerConfig, HandlerKind, Router};
 use angzarr_client::upcaster;
 
 // Compile-time application of each macro — the test binary linking is
 // itself evidence that `#[upcaster(...)]`, `#[upcasts(...)]`, and
 // `#[state_factory]` accept the attributes below.
 
-#[derive(Clone, prost::Message)]
-struct _FromType {}
-impl prost::Name for _FromType {
-    const NAME: &'static str = "FromType";
-    const PACKAGE: &'static str = "angzarr_client.proto.examples";
-    fn full_name() -> String {
-        "angzarr_client.proto.examples.FromType".into()
-    }
-    fn type_url() -> String {
-        "/angzarr_client.proto.examples.FromType".into()
+#[derive(Clone, PartialEq, prost::Message)]
+struct OrderCreatedV2 {}
+impl prost::Name for OrderCreatedV2 {
+    const NAME: &'static str = "OrderCreatedV2";
+    const PACKAGE: &'static str = "order";
+}
+
+/// Upcaster declared for the declaration-surface scenarios.
+struct OrderUpcaster;
+
+#[upcaster(name = "order-v1-to-v2", domain = "order")]
+impl OrderUpcaster {
+    #[upcasts(from = OrderCreatedV1, to = OrderCreatedV2)]
+    fn upgrade(_old: OrderCreatedV1) -> OrderCreatedV2 {
+        OrderCreatedV2::default()
     }
 }
 
-#[derive(Clone, prost::Message)]
-struct _ToType {}
-impl prost::Name for _ToType {
-    const NAME: &'static str = "ToType";
-    const PACKAGE: &'static str = "angzarr_client.proto.examples";
-    fn full_name() -> String {
-        "angzarr_client.proto.examples.ToType".into()
-    }
-    fn type_url() -> String {
-        "/angzarr_client.proto.examples.ToType".into()
-    }
-}
+/// Upcaster that also declares a state factory.
+struct StatefulUpcaster;
 
-struct PlayerUpcaster;
-
-#[upcaster(name = "player-v1-to-v2", domain = "player")]
-impl PlayerUpcaster {
-    #[upcasts(from = _FromType, to = _ToType)]
-    fn upgrade(old: _FromType) -> _ToType {
-        let _ = old;
-        _ToType::default()
+#[upcaster(name = "order-stateful", domain = "order")]
+impl StatefulUpcaster {
+    #[upcasts(from = OrderCreatedV1, to = OrderCreatedV2)]
+    fn upgrade(_old: OrderCreatedV1) -> OrderCreatedV2 {
+        OrderCreatedV2::default()
     }
 
     #[state_factory]
-    fn empty_state() -> () {}
+    fn empty_state() {}
 }
 
 #[derive(Default, World)]
 #[world(init = Self::new)]
 pub struct UpcasterWorld {
-    class_applied: bool,
-    method_applied: bool,
-    // Chain dispatch (C-0136 / C-0137 — audit finding #43).
+    declared: Option<HandlerConfig>,
+    expected_name: Option<(String, String)>,
+    expected_rule: Option<(String, String)>,
     chain_factories: Vec<ChainFactory>,
     chain_incoming: Option<EventPage>,
     chain_response_type_url: Option<String>,
@@ -74,8 +65,7 @@ pub struct UpcasterWorld {
 impl std::fmt::Debug for UpcasterWorld {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UpcasterWorld")
-            .field("class_applied", &self.class_applied)
-            .field("method_applied", &self.method_applied)
+            .field("declared", &self.declared)
             .field("chain_factories", &self.chain_factories.len())
             .field("chain_incoming", &self.chain_incoming.is_some())
             .field("chain_response_type_url", &self.chain_response_type_url)
@@ -90,40 +80,44 @@ impl UpcasterWorld {
 }
 
 #[given(regex = r#"^an upcaster named "([^"]+)" in domain "([^"]+)"$"#)]
-async fn given_upcaster_named(world: &mut UpcasterWorld, _name: String, _domain: String) {
-    // The fact that `#[upcaster(name = ..., domain = ...)]` above compiled is the
-    // assertion. Flag that the step was reached.
-    world.class_applied = true;
+async fn given_upcaster_named(world: &mut UpcasterWorld, name: String, domain: String) {
+    world.declared = Some(<OrderUpcaster as HandlerKind>::handler_config());
+    world.expected_name = Some((name, domain));
 }
 
 #[given(regex = r#"^an upcasting rule from "([^"]+)" to "([^"]+)"$"#)]
-async fn given_upcasting_rule(world: &mut UpcasterWorld, _from: String, _to: String) {
-    world.method_applied = true;
+async fn given_upcasting_rule(world: &mut UpcasterWorld, from: String, to: String) {
+    world.declared = Some(<OrderUpcaster as HandlerKind>::handler_config());
+    world.expected_rule = Some((from, to));
 }
 
 #[given("an upcaster with a state factory")]
 async fn given_upcaster_with_state_factory(world: &mut UpcasterWorld) {
-    world.method_applied = true;
+    world.declared = Some(<StatefulUpcaster as HandlerKind>::handler_config());
 }
 
 #[then("the declaration is accepted")]
 async fn then_declaration_accepted(world: &mut UpcasterWorld) {
-    assert!(
-        world.class_applied || world.method_applied,
-        "no upcaster declaration was recorded"
-    );
+    let Some(HandlerConfig::Upcaster {
+        name,
+        domain,
+        upcasts,
+    }) = world.declared.clone()
+    else {
+        panic!("expected an upcaster config, got {:?}", world.declared);
+    };
+    assert_eq!(upcasts.len(), 1, "upcasts: {upcasts:?}");
+    if let Some((n, d)) = &world.expected_name {
+        assert_eq!((&name, &domain), (n, d));
+    }
+    if let Some((from, to)) = &world.expected_rule {
+        let (from_url, to_url) = &upcasts[0];
+        assert_eq!(from_url.rsplit('.').next(), Some(from.as_str()));
+        assert_eq!(to_url.rsplit('.').next(), Some(to.as_str()));
+        assert_eq!(from_url, &full_type_url::<OrderCreatedV1>());
+        assert_eq!(to_url, &full_type_url::<OrderCreatedV2>());
+    }
 }
-
-// ---------------------------------------------------------------------------
-// C-0136 / C-0137: chain dispatch semantics (audit finding #43).
-//
-// Concrete prost types stand in for the cucumber's abstract V1/V2/V3
-// names. Order types come from shared fixtures. The V3→V4 stand-in pair
-// (OrderUnrelatedV1 / OrderUnrelated) is module-local — its `from` type
-// must NOT collide with anything earlier in the chain, so it stays in the
-// "order" package (a different from-type than Python's PlayerRegistered*
-// stand-in, but the chain-stopping semantics are identical).
-// ---------------------------------------------------------------------------
 
 use crate::common::fixtures::{OrderCompleted, OrderCreated, OrderCreatedV1};
 

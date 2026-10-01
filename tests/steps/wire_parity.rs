@@ -1,4 +1,4 @@
-//! Step defs for features/client/wire_parity.feature.
+//! Step defs for parity/client/wire_parity.feature.
 //!
 //! Cross-language wire-format parity check — verifies that the Rust client
 //! produces byte-identical proto-encoded output as the Python client for
@@ -21,12 +21,32 @@ use angzarr_client::router::Destinations;
 #[derive(Debug, Default, World)]
 #[world(init = Self::default)]
 pub struct WireParityWorld {
+    source: Option<Cover>,
     book: Option<CommandBook>,
     sequences: HashMap<String, u32>,
 }
 
 #[given(
-    expr = "a CommandBook with cover.domain {string} and cover.root bytes {word} and correlation_id {string}"
+    expr = "a source cover with domain {string}, root bytes {word} and correlation_id {string}"
+)]
+async fn given_source_cover(
+    world: &mut WireParityWorld,
+    domain: String,
+    root_hex: String,
+    correlation_id: String,
+) {
+    world.source = Some(Cover {
+        domain,
+        root: Some(ProtoUuid {
+            value: parse_hex_range(&root_hex),
+        }),
+        correlation_id,
+        ..Default::default()
+    });
+}
+
+#[given(
+    expr = "a CommandBook with cover.domain {string}, cover.root bytes {word} and correlation_id {string}"
 )]
 async fn given_commandbook(
     world: &mut WireParityWorld,
@@ -40,11 +60,9 @@ async fn given_commandbook(
             domain,
             root: Some(ProtoUuid { value: root_bytes }),
             correlation_id,
-            edition: None,
             ..Default::default()
         }),
         pages: Vec::new(),
-        ..Default::default()
     });
 }
 
@@ -67,9 +85,12 @@ async fn given_sequences(world: &mut WireParityWorld, domain: String, seq: u32) 
     world.sequences.insert(domain, seq);
 }
 
-#[when(expr = "I stamp the command for domain {string}")]
-async fn when_stamp(world: &mut WireParityWorld, domain: String) {
+#[when(
+    expr = "I stamp the command for domain {string} from source event sequence {int} at command index {int}"
+)]
+async fn when_stamp(world: &mut WireParityWorld, domain: String, _source_seq: u32, _index: u32) {
     let dest = Destinations::from_sequences(world.sequences.clone());
+    assert!(world.source.is_some(), "source cover must be set");
     let book = world.book.as_mut().expect("CommandBook must be set");
     dest.stamp_command(book, &domain)
         .expect("stamp must succeed");

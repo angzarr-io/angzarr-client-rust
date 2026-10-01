@@ -6,7 +6,7 @@
 
 #![allow(dead_code)]
 
+pub mod backend;
 pub mod fakes;
 pub mod fixtures;
 pub mod helpers;
-pub mod world;

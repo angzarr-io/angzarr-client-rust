@@ -1,706 +1,555 @@
-//! Multi-handler merge step definitions.
+//! Step definitions for `features/client/multi_handler.feature`.
 //!
-//! Exercises fan-out across multiple handlers for the same (domain, type_url),
-//! plus sequence increments and factory-invocation counting.
+//! Command-handler uniqueness is checked at `Router::build`; saga, PM and
+//! projector fan-out is observed by dispatching through the built runtime
+//! routers and counting what each handler did.
 
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
+use angzarr_client::error_codes::codes;
 use angzarr_client::proto::{
-    business_response, CommandBook, Cover, EventBook, ProcessManagerHandleResponse, SagaResponse,
+    EventBook, ProcessManagerHandleRequest, ProcessManagerHandleResponse, SagaHandleRequest,
+    SagaResponse,
 };
-use angzarr_client::router::{Built, Router};
-use angzarr_client::{
-    command_handler, full_type_url, process_manager, projector, saga, CommandResult,
-};
+use angzarr_client::router::{BuildError, Built, Router};
+use angzarr_client::{command_handler, process_manager, projector, saga, CommandResult};
 use cucumber::{given, then, when, World};
 
-use crate::common::fixtures::{
-    CreateOrder, CreateShipment, DepositFunds, OrderCompleted, OrderCreated, RegisterPlayer,
-    ReserveStock,
-};
-use crate::common::helpers::{contextual_command, event_book, pm_request_no_state, saga_request};
+use super::deferred::{command_type_url, trigger_book, unsequenced_command};
+use crate::common::fixtures::{CreateOrder, CreateShipment, OrderCreated, ReserveStock};
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AddItem {
+    #[prost(string, tag = "1")]
+    pub sku: ::prost::alloc::string::String,
+}
+
+impl ::prost::Name for AddItem {
+    const NAME: &'static str = "AddItem";
+    const PACKAGE: &'static str = "examples";
+}
+
+/// Invocation log shared by the handlers of one scenario.
+type Log = Arc<Mutex<Vec<String>>>;
+
+fn record(log: &Log, entry: &str) {
+    log.lock().unwrap().push(entry.to_string());
+}
 
 #[derive(Default)]
-struct S;
+pub struct S;
 
-// ---------------------------------------------------------------------------
-// Aggregates Alpha (emits OrderCreated) and Beta (emits OrderCompleted).
-// ---------------------------------------------------------------------------
+// --- command handlers ------------------------------------------------------
 
-struct Alpha;
+pub struct AlphaOrder;
+
 #[command_handler(domain = "order", state = S)]
-impl Alpha {
+impl AlphaOrder {
     #[handles(CreateOrder)]
-    #[allow(unused_variables, dead_code)]
-    fn on(&self, cmd: CreateOrder, state: &S, seq: u32) -> CommandResult<EventBook> {
-        let mut book = event_book(&[OrderCreated::default()], "order");
-        book.next_sequence = seq + 1;
-        Ok(book)
+    fn on_create(&self, _cmd: CreateOrder, _state: &S, _seq: u32) -> CommandResult<EventBook> {
+        Ok(EventBook::default())
     }
 }
 
-struct Beta;
+pub struct BetaOrder;
+
 #[command_handler(domain = "order", state = S)]
-impl Beta {
+impl BetaOrder {
     #[handles(CreateOrder)]
-    #[allow(unused_variables, dead_code)]
-    fn on(&self, cmd: CreateOrder, state: &S, seq: u32) -> CommandResult<EventBook> {
-        let mut book = event_book(&[OrderCompleted::default()], "order");
-        book.next_sequence = seq + 1;
-        Ok(book)
+    fn on_create(&self, _cmd: CreateOrder, _state: &S, _seq: u32) -> CommandResult<EventBook> {
+        Ok(EventBook::default())
     }
 }
 
-// ---------------------------------------------------------------------------
-// Sagas SagaA and SagaB.
-// ---------------------------------------------------------------------------
+pub struct AlphaOrderA;
 
-struct SagaA;
+#[command_handler(domain = "orderA", state = S)]
+impl AlphaOrderA {
+    #[handles(CreateOrder)]
+    fn on_create(&self, _cmd: CreateOrder, _state: &S, _seq: u32) -> CommandResult<EventBook> {
+        Ok(EventBook::default())
+    }
+}
+
+pub struct BetaOrderB;
+
+#[command_handler(domain = "orderB", state = S)]
+impl BetaOrderB {
+    #[handles(CreateOrder)]
+    fn on_create(&self, _cmd: CreateOrder, _state: &S, _seq: u32) -> CommandResult<EventBook> {
+        Ok(EventBook::default())
+    }
+}
+
+pub struct OrderTwoTypes;
+
+#[command_handler(domain = "order", state = S)]
+impl OrderTwoTypes {
+    #[handles(CreateOrder)]
+    fn on_create(&self, _cmd: CreateOrder, _state: &S, _seq: u32) -> CommandResult<EventBook> {
+        Ok(EventBook::default())
+    }
+
+    #[handles(AddItem)]
+    fn on_add(&self, _cmd: AddItem, _state: &S, _seq: u32) -> CommandResult<EventBook> {
+        Ok(EventBook::default())
+    }
+}
+
+// --- sagas -----------------------------------------------------------------
+
+pub struct SagaA {
+    log: Log,
+}
+
 #[saga(name = "SagaA", source = "order", target = "inventory")]
 impl SagaA {
     #[handles(OrderCreated)]
-    #[allow(unused_variables, dead_code)]
-    fn on(&self, _event: OrderCreated) -> CommandResult<SagaResponse> {
+    fn on_created(&self, _event: OrderCreated) -> CommandResult<SagaResponse> {
+        record(&self.log, "SagaA");
         Ok(SagaResponse {
-            commands: vec![CommandBook {
-                cover: Some(Cover {
-                    domain: "inventory".to_string(),
-                    ..Default::default()
-                }),
-                pages: vec![],
-            }],
+            commands: vec![unsequenced_command(&ReserveStock::default(), "inventory")],
             events: vec![],
         })
     }
 }
 
-struct SagaB;
+pub struct SagaB {
+    log: Log,
+}
+
 #[saga(name = "SagaB", source = "order", target = "fulfillment")]
 impl SagaB {
     #[handles(OrderCreated)]
-    #[allow(unused_variables, dead_code)]
-    fn on(&self, _event: OrderCreated) -> CommandResult<SagaResponse> {
+    fn on_created(&self, _event: OrderCreated) -> CommandResult<SagaResponse> {
+        record(&self.log, "SagaB");
         Ok(SagaResponse {
-            commands: vec![CommandBook {
-                cover: Some(Cover {
-                    domain: "fulfillment".to_string(),
-                    ..Default::default()
-                }),
-                pages: vec![],
-            }],
+            commands: vec![unsequenced_command(
+                &CreateShipment::default(),
+                "fulfillment",
+            )],
             events: vec![],
         })
     }
 }
 
-// ---------------------------------------------------------------------------
-// Process managers PMA and PMB.
-// ---------------------------------------------------------------------------
+// --- process managers ------------------------------------------------------
 
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct PMState {}
-impl ::prost::Name for PMState {
-    const NAME: &'static str = "PMState";
-    const PACKAGE: &'static str = "pm";
+pub struct PMA {
+    log: Log,
 }
 
-struct PMA;
 #[process_manager(
     name = "PMA",
     pm_domain = "pma",
     sources = ["order"],
     targets = ["inventory"],
-    state = PMState
+    state = S
 )]
 impl PMA {
     #[handles(OrderCreated)]
-    #[allow(unused_variables, dead_code)]
-    fn on(
+    fn on_created(
         &self,
-        event: OrderCreated,
-        state: &PMState,
+        _event: OrderCreated,
+        _state: &S,
     ) -> CommandResult<ProcessManagerHandleResponse> {
+        record(&self.log, "PMA");
         Ok(ProcessManagerHandleResponse {
-            commands: vec![CommandBook {
-                cover: Some(Cover {
-                    domain: "inventory".to_string(),
-                    ..Default::default()
-                }),
-                pages: vec![],
-            }],
-            process_events: vec![],
-            facts: vec![],
+            commands: vec![unsequenced_command(&ReserveStock::default(), "inventory")],
             ..Default::default()
         })
     }
 }
 
-struct PMB;
+pub struct PMB {
+    log: Log,
+}
+
 #[process_manager(
     name = "PMB",
     pm_domain = "pmb",
     sources = ["order"],
     targets = ["fulfillment"],
-    state = PMState
+    state = S
 )]
 impl PMB {
     #[handles(OrderCreated)]
-    #[allow(unused_variables, dead_code)]
-    fn on(
+    fn on_created(
         &self,
-        event: OrderCreated,
-        state: &PMState,
+        _event: OrderCreated,
+        _state: &S,
     ) -> CommandResult<ProcessManagerHandleResponse> {
+        record(&self.log, "PMB");
         Ok(ProcessManagerHandleResponse {
-            commands: vec![CommandBook {
-                cover: Some(Cover {
-                    domain: "fulfillment".to_string(),
-                    ..Default::default()
-                }),
-                pages: vec![],
-            }],
-            process_events: vec![],
-            facts: vec![],
+            commands: vec![unsequenced_command(
+                &CreateShipment::default(),
+                "fulfillment",
+            )],
             ..Default::default()
         })
     }
 }
 
-// ---------------------------------------------------------------------------
-// Projectors ProjA and ProjB.
-// ---------------------------------------------------------------------------
+// --- projectors ------------------------------------------------------------
 
-struct ProjA {
-    counter: Arc<AtomicU32>,
+pub struct ProjA {
+    logs: Arc<Mutex<HashMap<&'static str, Vec<String>>>>,
 }
+
 #[projector(name = "ProjA", domains = ["order"])]
 impl ProjA {
     #[handles(OrderCreated)]
-    #[allow(unused_variables, dead_code)]
-    fn on(&self, _event: OrderCreated) -> CommandResult<()> {
-        self.counter.fetch_add(1, Ordering::SeqCst);
+    fn on_created(&self, event: OrderCreated) -> CommandResult<()> {
+        self.logs
+            .lock()
+            .unwrap()
+            .entry("ProjA")
+            .or_default()
+            .push(event.order_id);
         Ok(())
     }
 }
 
-struct ProjB {
-    counter: Arc<AtomicU32>,
+pub struct ProjB {
+    logs: Arc<Mutex<HashMap<&'static str, Vec<String>>>>,
 }
+
 #[projector(name = "ProjB", domains = ["order"])]
 impl ProjB {
     #[handles(OrderCreated)]
-    #[allow(unused_variables, dead_code)]
-    fn on(&self, _event: OrderCreated) -> CommandResult<()> {
-        self.counter.fetch_add(1, Ordering::SeqCst);
+    fn on_created(&self, event: OrderCreated) -> CommandResult<()> {
+        self.logs
+            .lock()
+            .unwrap()
+            .entry("ProjB")
+            .or_default()
+            .push(event.order_id);
         Ok(())
     }
 }
 
-// ---------------------------------------------------------------------------
-// World.
-// ---------------------------------------------------------------------------
+// --- world -----------------------------------------------------------------
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    #[default]
-    Commands,
-    Sagas,
-    PM,
-    Projector,
-}
-
-#[derive(World)]
-#[world(init = Self::new)]
+#[derive(Debug, Default, World)]
 pub struct MultiHandlerWorld {
-    mode: Mode,
-    alpha_calls: Arc<AtomicU32>,
-    beta_calls: Arc<AtomicU32>,
-    proja_counter: Arc<AtomicU32>,
-    projb_counter: Arc<AtomicU32>,
-    next_sequence: u32,
-    response: Option<angzarr_client::proto::BusinessResponse>,
+    log: Log,
+    projector_logs: Arc<Mutex<HashMap<&'static str, Vec<String>>>>,
+    build_result: Option<Result<(), BuildError>>,
+    saga_router: Option<angzarr_client::router::runtime::SagaRouter>,
+    pm_router: Option<angzarr_client::router::runtime::ProcessManagerRouter>,
+    projector_router: Option<angzarr_client::router::runtime::ProjectorRouter>,
     saga_response: Option<SagaResponse>,
     pm_response: Option<ProcessManagerHandleResponse>,
-    // Audit #18: build-result capture for the negative + positive
-    // build scenarios. Thread-locals don't survive cucumber's async
-    // task hops; the World does.
-    build_result: Option<std::result::Result<Built, angzarr_client::router::BuildError>>,
-}
-
-impl std::fmt::Debug for MultiHandlerWorld {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MultiHandlerWorld")
-            .field("mode", &self.mode)
-            .field("next_sequence", &self.next_sequence)
-            .finish()
-    }
 }
 
 impl MultiHandlerWorld {
-    fn new() -> Self {
-        Self {
-            mode: Mode::Commands,
-            alpha_calls: Arc::new(AtomicU32::new(0)),
-            beta_calls: Arc::new(AtomicU32::new(0)),
-            proja_counter: Arc::new(AtomicU32::new(0)),
-            projb_counter: Arc::new(AtomicU32::new(0)),
-            next_sequence: 0,
-            response: None,
-            saga_response: None,
-            pm_response: None,
-            build_result: None,
-        }
+    fn record_build(&mut self, result: Result<Built, BuildError>) {
+        self.build_result = Some(result.map(|built| {
+            assert!(matches!(built, Built::CommandHandler(_)), "got {built:?}");
+        }));
+    }
+
+    fn command_domains(&self) -> Vec<String> {
+        self.saga_response
+            .as_ref()
+            .map(|r| &r.commands)
+            .or(self.pm_response.as_ref().map(|r| &r.commands))
+            .expect("a dispatch response")
+            .iter()
+            .map(|c| {
+                c.cover
+                    .as_ref()
+                    .map(|c| c.domain.clone())
+                    .unwrap_or_default()
+            })
+            .collect()
     }
 }
 
-// ---------------------------------------------------------------------------
-// Given steps.
-// ---------------------------------------------------------------------------
+// --- Given -----------------------------------------------------------------
 
 #[given(expr = "two command handlers Alpha and Beta for domain {string}")]
-async fn given_two_cmd_handlers(world: &mut MultiHandlerWorld, _domain: String) {
-    world.mode = Mode::Commands;
-}
-
-#[given("Alpha handles CreateOrder by emitting OrderCreated")]
-async fn given_alpha_emits(_world: &mut MultiHandlerWorld) {}
-
-#[given("Beta handles CreateOrder by emitting OrderCompleted")]
-async fn given_beta_emits(_world: &mut MultiHandlerWorld) {}
-
-#[given("the router is built with Alpha then Beta")]
-async fn given_built_alpha_beta(_world: &mut MultiHandlerWorld) {}
-
-#[given(expr = "the prior EventBook's next_sequence is {int}")]
-async fn given_next_seq(world: &mut MultiHandlerWorld, n: u32) {
-    world.next_sequence = n;
-}
-
-#[given("Alpha emits two events per call")]
-async fn given_alpha_two(_world: &mut MultiHandlerWorld) {}
-#[given("Beta emits one event per call")]
-async fn given_beta_one(_world: &mut MultiHandlerWorld) {}
-
-#[given("Alpha applies OrderCreated by incrementing counter_a")]
-async fn given_alpha_incr_a(_world: &mut MultiHandlerWorld) {}
-#[given("Beta applies OrderCompleted by incrementing counter_b")]
-async fn given_beta_incr_b(_world: &mut MultiHandlerWorld) {}
-
-#[given("a prior EventBook with [OrderCreated, OrderCreated, OrderCompleted]")]
-async fn given_prior_book_mixed(_world: &mut MultiHandlerWorld) {}
-
-#[given(expr = "two sagas SagaA and SagaB both listening to source {string} for OrderCreated")]
-async fn given_two_sagas(world: &mut MultiHandlerWorld, _src: String) {
-    world.mode = Mode::Sagas;
-}
-
-#[given(expr = "SagaA emits a ReserveStock command for {string}")]
-async fn given_sagaa_emits(_world: &mut MultiHandlerWorld, _domain: String) {}
-#[given(expr = "SagaB emits a CreateShipment command for {string}")]
-async fn given_sagab_emits(_world: &mut MultiHandlerWorld, _domain: String) {}
-
-#[given("the saga router is built with SagaA then SagaB")]
-async fn given_built_saga_router(_world: &mut MultiHandlerWorld) {}
-
-#[given("two process managers PMA and PMB both sourcing from \"order\" and handling OrderCreated")]
-async fn given_two_pms(world: &mut MultiHandlerWorld) {
-    world.mode = Mode::PM;
-}
-#[given("PMA emits a ReserveStock command")]
-async fn given_pma(_world: &mut MultiHandlerWorld) {}
-#[given("PMB emits a CreateShipment command")]
-async fn given_pmb(_world: &mut MultiHandlerWorld) {}
-#[given("the PM router is built with PMA then PMB")]
-async fn given_built_pm(_world: &mut MultiHandlerWorld) {}
-
-#[given(expr = "two projectors ProjA and ProjB both consuming domain {string}")]
-async fn given_two_projectors(world: &mut MultiHandlerWorld, _d: String) {
-    world.mode = Mode::Projector;
-}
-#[given("ProjA appends to a log on OrderCreated")]
-async fn given_proja(_world: &mut MultiHandlerWorld) {}
-#[given("ProjB appends to a different log on OrderCreated")]
-async fn given_projb(_world: &mut MultiHandlerWorld) {}
-#[given("the projector router is built with ProjA then ProjB")]
-async fn given_built_proj(_world: &mut MultiHandlerWorld) {}
-
-#[given(expr = "two command handlers Alpha and Beta for domain {string} both handling CreateOrder")]
-async fn given_both_handling(world: &mut MultiHandlerWorld, _d: String) {
-    world.mode = Mode::Commands;
-}
-#[given("each factory counts invocations")]
-async fn given_each_counts(_world: &mut MultiHandlerWorld) {}
-
-// ---------------------------------------------------------------------------
-// When steps.
-// ---------------------------------------------------------------------------
-
-#[when(expr = "CreateOrder\\(order_id={string}\\) is dispatched")]
-async fn when_dispatch_with_id(world: &mut MultiHandlerWorld, _oid: String) {
-    dispatch_commands(world);
-}
-
-#[when("CreateOrder is dispatched")]
-async fn when_dispatch_no_id(world: &mut MultiHandlerWorld) {
-    dispatch_commands(world);
-}
-
-#[when("a command is dispatched")]
-async fn when_a_command_dispatched(world: &mut MultiHandlerWorld) {
-    dispatch_commands(world);
-}
-
-fn dispatch_commands(world: &mut MultiHandlerWorld) {
-    let a = Arc::clone(&world.alpha_calls);
-    let b = Arc::clone(&world.beta_calls);
-    let built = Router::new("order")
-        .with_handler(move || {
-            a.fetch_add(1, Ordering::SeqCst);
-            Alpha
-        })
-        .with_handler(move || {
-            b.fetch_add(1, Ordering::SeqCst);
-            Beta
-        })
-        .build()
-        .expect("build");
-    let Built::CommandHandler(ch) = built else {
-        panic!("expected CommandHandler");
-    };
-    let prior = EventBook {
-        next_sequence: world.next_sequence,
-        ..Default::default()
-    };
-    let ctx = contextual_command(&CreateOrder::default(), "order", Some(prior));
-    world.response = Some(ch.dispatch(ctx).expect("dispatch"));
-}
-
-#[when("an OrderCreated event is dispatched to the saga router")]
-async fn when_dispatch_saga(world: &mut MultiHandlerWorld) {
-    // Audit #18 reframe: alpha_calls / beta_calls were originally used
-    // by the deleted multi-handler CH scenarios. Now repurposed to
-    // count saga factory invocations for C-0087.
-    let a = Arc::clone(&world.alpha_calls);
-    let b = Arc::clone(&world.beta_calls);
-    let built = Router::new("s")
-        .with_handler(move || {
-            a.fetch_add(1, Ordering::SeqCst);
-            SagaA
-        })
-        .with_handler(move || {
-            b.fetch_add(1, Ordering::SeqCst);
-            SagaB
-        })
-        .build()
-        .expect("build");
-    let Built::Saga(router) = built else {
-        panic!("expected Saga");
-    };
-    let req = saga_request(&[OrderCreated::default()], "order", None);
-    world.saga_response = Some(router.dispatch(req).expect("saga dispatch"));
-}
-
-#[when("an OrderCreated trigger is dispatched to the PM router")]
-async fn when_dispatch_pm(world: &mut MultiHandlerWorld) {
-    let built = Router::new("p")
-        .with_handler(|| PMA)
-        .with_handler(|| PMB)
-        .build()
-        .expect("build");
-    let Built::ProcessManager(router) = built else {
-        panic!("expected PM");
-    };
-    let req = pm_request_no_state(&[OrderCreated::default()], "order", "pma", None);
-    world.pm_response = Some(router.dispatch(req).expect("pm dispatch"));
-}
-
-#[when("an EventBook with one OrderCreated event is dispatched")]
-async fn when_dispatch_projector(world: &mut MultiHandlerWorld) {
-    let a = Arc::clone(&world.proja_counter);
-    let b = Arc::clone(&world.projb_counter);
-    let built = Router::new("pr")
-        .with_handler(move || ProjA {
-            counter: Arc::clone(&a),
-        })
-        .with_handler(move || ProjB {
-            counter: Arc::clone(&b),
-        })
-        .build()
-        .expect("build");
-    let Built::Projector(router) = built else {
-        panic!("expected Projector");
-    };
-    let book = event_book(&[OrderCreated::default()], "order");
-    let _ = router.dispatch(book).expect("projector dispatch");
-}
-
-// ---------------------------------------------------------------------------
-// Then steps.
-// ---------------------------------------------------------------------------
-
-#[then("Alpha was called before Beta")]
-async fn then_alpha_before_beta(world: &mut MultiHandlerWorld) {
-    // Proxy: both factory calls happened (count == 1 each).
-    assert_eq!(world.alpha_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(world.beta_calls.load(Ordering::SeqCst), 1);
-}
-
-#[then("the response contains two events in [OrderCreated, OrderCompleted] order")]
-async fn then_two_events_ordered(world: &mut MultiHandlerWorld) {
-    let resp = world.response.as_ref().expect("response");
-    let book = match &resp.result {
-        Some(business_response::Result::Events(b)) => b,
-        other => panic!("expected Events, got {:?}", other),
-    };
-    assert_eq!(book.pages.len(), 2);
-}
-
-#[then(expr = "Alpha observed seq = {int}")]
-async fn then_alpha_seq(_world: &mut MultiHandlerWorld, _n: u32) {
-    // Implementation-specific; can't easily instrument both handlers without
-    // globals. Treat as a best-effort acknowledgement.
-}
-
-#[then(expr = "Beta observed seq = {int}")]
-async fn then_beta_seq(_world: &mut MultiHandlerWorld, _n: u32) {}
-
-#[then("the emitted pages carry sequences [5, 6, 7]")]
-async fn then_pages_carry_seqs_567(_world: &mut MultiHandlerWorld) {
-    // Sequence-stamping assertion — framework-level; best-effort no-op.
-}
-
-#[then(expr = "Alpha observed counter_a = {int}")]
-async fn then_counter_a(_world: &mut MultiHandlerWorld, _n: u32) {}
-#[then(expr = "Beta observed counter_b = {int}")]
-async fn then_counter_b(_world: &mut MultiHandlerWorld, _n: u32) {}
-
-#[then("the response contains two commands in registration order")]
-async fn then_two_commands(world: &mut MultiHandlerWorld) {
-    if let Some(sr) = &world.saga_response {
-        assert_eq!(sr.commands.len(), 2);
-    } else if let Some(pr) = &world.pm_response {
-        assert_eq!(pr.commands.len(), 2);
-    } else {
-        panic!("no saga/pm response");
-    }
-}
-
-#[then(expr = "the first command targets the {string} domain")]
-async fn then_first_targets(world: &mut MultiHandlerWorld, domain: String) {
-    if let Some(sr) = &world.saga_response {
-        assert_eq!(sr.commands[0].cover.as_ref().unwrap().domain, domain);
-    }
-}
-
-#[then(expr = "the second command targets the {string} domain")]
-async fn then_second_targets(world: &mut MultiHandlerWorld, domain: String) {
-    if let Some(sr) = &world.saga_response {
-        assert_eq!(sr.commands[1].cover.as_ref().unwrap().domain, domain);
-    }
-}
-
-#[then("ProjA's log has 1 entry")]
-async fn then_proja_log(world: &mut MultiHandlerWorld) {
-    assert_eq!(world.proja_counter.load(Ordering::SeqCst), 1);
-}
-#[then("ProjB's log has 1 entry")]
-async fn then_projb_log(world: &mut MultiHandlerWorld) {
-    assert_eq!(world.projb_counter.load(Ordering::SeqCst), 1);
-}
-
-#[then(expr = "Alpha's factory was invoked exactly {int} time")]
-async fn then_alpha_invoked(world: &mut MultiHandlerWorld, n: u32) {
-    assert_eq!(world.alpha_calls.load(Ordering::SeqCst), n);
-}
-#[then(expr = "Beta's factory was invoked exactly {int} time")]
-async fn then_beta_invoked(world: &mut MultiHandlerWorld, n: u32) {
-    assert_eq!(world.beta_calls.load(Ordering::SeqCst), n);
-}
-
-#[allow(dead_code)]
-fn _linker() {
-    let _ = full_type_url::<ReserveStock>();
-    let _ = full_type_url::<CreateShipment>();
-}
-
-// ---------------------------------------------------------------------------
-// Audit #18: forbid multi-handler CH dispatch (C-0010..C-0012 reframed).
-// ---------------------------------------------------------------------------
-
-// Cross-domain CH pair for C-0011: same command type in two different domains.
-struct AlphaA;
-#[command_handler(domain = "orderA", state = S)]
-impl AlphaA {
-    #[handles(CreateOrder)]
-    #[allow(unused_variables, dead_code)]
-    fn on(&self, _cmd: CreateOrder, _state: &S, _seq: u32) -> CommandResult<EventBook> {
-        Ok(EventBook::default())
-    }
-}
-struct BetaB;
-#[command_handler(domain = "orderB", state = S)]
-impl BetaB {
-    #[handles(CreateOrder)]
-    #[allow(unused_variables, dead_code)]
-    fn on(&self, _cmd: CreateOrder, _state: &S, _seq: u32) -> CommandResult<EventBook> {
-        Ok(EventBook::default())
-    }
-}
-
-// Single CH with multiple handled types for C-0012.
-struct Player;
-#[command_handler(domain = "player", state = S)]
-impl Player {
-    #[handles(RegisterPlayer)]
-    #[allow(unused_variables, dead_code)]
-    fn on_register(&self, _cmd: RegisterPlayer, _state: &S, _seq: u32) -> CommandResult<EventBook> {
-        Ok(EventBook::default())
-    }
-    #[handles(DepositFunds)]
-    #[allow(unused_variables, dead_code)]
-    fn on_deposit(&self, _cmd: DepositFunds, _state: &S, _seq: u32) -> CommandResult<EventBook> {
-        Ok(EventBook::default())
-    }
+fn given_alpha_beta(_world: &mut MultiHandlerWorld, domain: String) {
+    assert_eq!(domain, "order");
 }
 
 #[given("both handle CreateOrder")]
-async fn given_both_handle_create_order(_world: &mut MultiHandlerWorld) {}
+fn given_both_handle(_world: &mut MultiHandlerWorld) {
+    // AlphaOrder and BetaOrder both declare `#[handles(CreateOrder)]`.
+}
 
 #[given(expr = "a command handler Alpha for domain {string} handling CreateOrder")]
-async fn given_cross_alpha(_world: &mut MultiHandlerWorld, _domain: String) {}
+fn given_alpha_domain(_world: &mut MultiHandlerWorld, domain: String) {
+    assert_eq!(domain, "orderA");
+}
 
 #[given(expr = "a command handler Beta for domain {string} handling CreateOrder")]
-async fn given_cross_beta(_world: &mut MultiHandlerWorld, _domain: String) {}
+fn given_beta_domain(_world: &mut MultiHandlerWorld, domain: String) {
+    assert_eq!(domain, "orderB");
+}
+
+#[given(expr = "a command handler Order for domain {string} handling CreateOrder and AddItem")]
+fn given_two_types(_world: &mut MultiHandlerWorld, domain: String) {
+    assert_eq!(domain, "order");
+}
+
+#[given(expr = "two sagas SagaA and SagaB both listening to source {string} for OrderCreated")]
+fn given_two_sagas(_world: &mut MultiHandlerWorld, source: String) {
+    assert_eq!(source, "order");
+}
+
+#[given(expr = "SagaA emits a ReserveStock command for {string}")]
+fn given_saga_a(_world: &mut MultiHandlerWorld, domain: String) {
+    assert_eq!(domain, "inventory");
+}
+
+#[given(expr = "SagaB emits a CreateShipment command for {string}")]
+fn given_saga_b(_world: &mut MultiHandlerWorld, domain: String) {
+    assert_eq!(domain, "fulfillment");
+}
+
+#[given("the saga router is built with SagaA then SagaB")]
+fn given_saga_router(world: &mut MultiHandlerWorld) {
+    let (la, lb) = (Arc::clone(&world.log), Arc::clone(&world.log));
+    let built = Router::new("sagas")
+        .with_handler(move || SagaA {
+            log: Arc::clone(&la),
+        })
+        .with_handler(move || SagaB {
+            log: Arc::clone(&lb),
+        })
+        .build()
+        .expect("saga router builds");
+    let Built::Saga(router) = built else {
+        panic!("expected a saga router");
+    };
+    world.saga_router = Some(router);
+}
 
 #[given(
-    expr = "a command handler Player for domain {string} handling RegisterPlayer and DepositFunds"
+    expr = "two process managers PMA and PMB both sourcing from {string} and handling OrderCreated"
 )]
-async fn given_player_two_types(_world: &mut MultiHandlerWorld, _domain: String) {}
+fn given_two_pms(_world: &mut MultiHandlerWorld, source: String) {
+    assert_eq!(source, "order");
+}
+
+#[given("PMA emits a ReserveStock command")]
+fn given_pma(_world: &mut MultiHandlerWorld) {
+    // PMA's OrderCreated handler emits ReserveStock to inventory.
+}
+
+#[given("PMB emits a CreateShipment command")]
+fn given_pmb(_world: &mut MultiHandlerWorld) {
+    // PMB's OrderCreated handler emits CreateShipment to fulfillment.
+}
+
+#[given("the PM router is built with PMA then PMB")]
+fn given_pm_router(world: &mut MultiHandlerWorld) {
+    let (la, lb) = (Arc::clone(&world.log), Arc::clone(&world.log));
+    let built = Router::new("pms")
+        .with_handler(move || PMA {
+            log: Arc::clone(&la),
+        })
+        .with_handler(move || PMB {
+            log: Arc::clone(&lb),
+        })
+        .build()
+        .expect("PM router builds");
+    let Built::ProcessManager(router) = built else {
+        panic!("expected a PM router");
+    };
+    world.pm_router = Some(router);
+}
+
+#[given(expr = "two projectors ProjA and ProjB both consuming domain {string}")]
+fn given_two_projectors(_world: &mut MultiHandlerWorld, domain: String) {
+    assert_eq!(domain, "order");
+}
+
+#[given("ProjA appends to a log on OrderCreated")]
+fn given_proj_a(_world: &mut MultiHandlerWorld) {
+    // ProjA records under its own key.
+}
+
+#[given("ProjB appends to a different log on OrderCreated")]
+fn given_proj_b(_world: &mut MultiHandlerWorld) {
+    // ProjB records under its own key.
+}
+
+#[given("the projector router is built with ProjA then ProjB")]
+fn given_projector_router(world: &mut MultiHandlerWorld) {
+    let (la, lb) = (
+        Arc::clone(&world.projector_logs),
+        Arc::clone(&world.projector_logs),
+    );
+    let built = Router::new("projectors")
+        .with_handler(move || ProjA {
+            logs: Arc::clone(&la),
+        })
+        .with_handler(move || ProjB {
+            logs: Arc::clone(&lb),
+        })
+        .build()
+        .expect("projector router builds");
+    let Built::Projector(router) = built else {
+        panic!("expected a projector router");
+    };
+    world.projector_router = Some(router);
+}
+
+// --- When ------------------------------------------------------------------
 
 #[when("the router is built with Alpha then Beta")]
-async fn when_built_alpha_beta_capture(world: &mut MultiHandlerWorld) {
-    // C-0010: same-domain Alpha/Beta pair (both `domain = "order"` per
-    // their `#[command_handler]` decoration). Builder must reject as
-    // DuplicateCommandHandler.
-    world.build_result = Some(
-        Router::new("multi-ch-test")
-            .with_handler(|| Alpha)
-            .with_handler(|| Beta)
-            .build(),
-    );
+fn when_build_dup(world: &mut MultiHandlerWorld) {
+    let result = Router::new("order")
+        .with_handler(|| AlphaOrder)
+        .with_handler(|| BetaOrder)
+        .build();
+    world.record_build(result);
 }
 
 #[when("the router is built with Alpha then Beta across domains")]
-async fn when_built_alpha_beta_cross(world: &mut MultiHandlerWorld) {
-    // C-0011: AlphaA in "orderA", BetaB in "orderB", both handle
-    // CreateOrder. Different domain keys → no duplicate.
-    world.build_result = Some(
-        Router::new("multi-ch-cross")
-            .with_handler(|| AlphaA)
-            .with_handler(|| BetaB)
-            .build(),
+fn when_build_domains(world: &mut MultiHandlerWorld) {
+    let result = Router::new("orders")
+        .with_handler(|| AlphaOrderA)
+        .with_handler(|| BetaOrderB)
+        .build();
+    world.record_build(result);
+}
+
+#[when("the router is built with Order")]
+fn when_build_order(world: &mut MultiHandlerWorld) {
+    let result = Router::new("order").with_handler(|| OrderTwoTypes).build();
+    world.record_build(result);
+}
+
+#[when("an OrderCreated event is dispatched to the saga router")]
+fn when_saga(world: &mut MultiHandlerWorld) {
+    let router = world.saga_router.as_ref().expect("saga router");
+    let response = router
+        .dispatch(SagaHandleRequest {
+            source: Some(trigger_book(
+                &OrderCreated::default(),
+                "order",
+                "order-1",
+                0,
+            )),
+            ..Default::default()
+        })
+        .expect("saga dispatch");
+    world.saga_response = Some(response);
+}
+
+#[when("an OrderCreated trigger is dispatched to the PM router")]
+fn when_pm(world: &mut MultiHandlerWorld) {
+    let router = world.pm_router.as_ref().expect("PM router");
+    let response = router
+        .dispatch(ProcessManagerHandleRequest {
+            trigger: Some(trigger_book(
+                &OrderCreated::default(),
+                "order",
+                "order-1",
+                0,
+            )),
+            ..Default::default()
+        })
+        .expect("PM dispatch");
+    world.pm_response = Some(response);
+}
+
+#[when("an EventBook with one OrderCreated event is dispatched")]
+fn when_projectors(world: &mut MultiHandlerWorld) {
+    let router = world.projector_router.as_ref().expect("projector router");
+    let book = trigger_book(
+        &OrderCreated {
+            order_id: "o-1".into(),
+            ..Default::default()
+        },
+        "order",
+        "order-1",
+        0,
     );
+    router.dispatch(book).expect("projector dispatch");
 }
 
-#[when("the router is built with Player")]
-async fn when_built_player(world: &mut MultiHandlerWorld) {
-    world.build_result = Some(
-        Router::new("multi-ch-player")
-            .with_handler(|| Player)
-            .build(),
-    );
-}
+// --- Then ------------------------------------------------------------------
 
-#[then(expr = "build fails with DuplicateCommandHandler for domain {string} and {word}")]
-async fn then_build_fails_duplicate(
-    world: &mut MultiHandlerWorld,
-    domain: String,
-    cmd_type: String,
-) {
-    let result = world
-        .build_result
-        .take()
-        .expect("build was not attempted in a When step");
-    let err = result.expect_err("build should have failed");
-    // Audit #72: BuildError variants now carry an `ErrorDetail` with
-    // structured `details` rather than typed struct fields. Assert on
-    // `code` + `details["domain"]` / `details["type_url"]`.
-    let angzarr_client::router::BuildError::DuplicateCommandHandler(detail) = &err else {
-        panic!("expected DuplicateCommandHandler, got {err:?}");
-    };
-    assert_eq!(
-        detail.code,
-        angzarr_client::error_codes::codes::DUPLICATE_COMMAND_HANDLER
-    );
-    assert_eq!(detail.details["domain"], domain);
-    let cmd_full = match cmd_type.as_str() {
-        "CreateOrder" => full_type_url::<CreateOrder>(),
-        other => panic!("test fixture missing for command type {other}"),
-    };
-    assert_eq!(detail.details["type_url"], cmd_full);
-}
-
-#[then("build succeeds with a CommandHandlerRouter")]
-async fn then_build_succeeds_ch(world: &mut MultiHandlerWorld) {
-    let result = world
-        .build_result
-        .take()
-        .expect("build was not attempted in a When step");
-    let built = result.expect("build should have succeeded");
-    assert!(matches!(built, Built::CommandHandler(_)));
-}
-
-// C-0087 (audit #18 reframe — saga factory invocation count).
-
-#[given("each saga factory counts invocations")]
-async fn given_each_saga_factory_counts(_world: &mut MultiHandlerWorld) {
-    // when_dispatch_saga always installs counting closures; the Given
-    // step is documentation here.
-}
-
-#[then(expr = "SagaA's factory was invoked exactly {int} time")]
-async fn then_saga_a_invoked(world: &mut MultiHandlerWorld, n: u32) {
-    assert_eq!(world.alpha_calls.load(Ordering::SeqCst), n);
-}
-
-#[then(expr = "SagaB's factory was invoked exactly {int} time")]
-async fn then_saga_b_invoked(world: &mut MultiHandlerWorld, n: u32) {
-    assert_eq!(world.beta_calls.load(Ordering::SeqCst), n);
-}
-
-// ---------------------------------------------------------------------------
-// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
-// ---------------------------------------------------------------------------
-
-// TODO (WIP): Implement this step matcher properly.
 #[then(
-    regex = r#"^registration is rejected because two command handlers claim CreateOrder in "([^"]*)"$"#
+    expr = "registration is rejected because two command handlers claim CreateOrder in {string}"
 )]
-async fn wip_then_registration_is_rejected_because_two_command_handl(
-    _world: &mut MultiHandlerWorld,
-) {
-    panic!("WIP: step needs implementation");
+fn then_dup_rejected(world: &mut MultiHandlerWorld, domain: String) {
+    let err = match world.build_result.take() {
+        Some(Err(e)) => e,
+        other => panic!("expected a build error, got {other:?}"),
+    };
+    assert_eq!(err.code(), codes::DUPLICATE_COMMAND_HANDLER);
+    assert_eq!(err.details().get("domain"), Some(&domain));
+    assert_eq!(
+        err.details().get("type_url"),
+        Some(&angzarr_client::full_type_url::<CreateOrder>())
+    );
 }
 
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the configuration is accepted$")]
-async fn wip_then_the_configuration_is_accepted(_world: &mut MultiHandlerWorld) {
-    panic!("WIP: step needs implementation");
+#[then("the configuration is accepted")]
+fn then_accepted(world: &mut MultiHandlerWorld) {
+    match world.build_result.take() {
+        Some(Ok(())) => {}
+        other => panic!("expected the build to succeed, got {other:?}"),
+    }
 }
 
-// TODO (WIP): Implement this step matcher properly.
-#[given(
-    regex = r#"^two process managers PMA and PMB both sourcing from "([^"]*)" and handling OrderCreated$"#
-)]
-async fn wip_given_two_process_managers_pma_and_pmb_both_sourcing_fro(
-    _world: &mut MultiHandlerWorld,
-) {
-    panic!("WIP: step needs implementation");
+#[then("the response contains two commands in registration order")]
+fn then_two_in_order(world: &mut MultiHandlerWorld) {
+    let commands = world
+        .saga_response
+        .as_ref()
+        .map(|r| r.commands.clone())
+        .or(world.pm_response.as_ref().map(|r| r.commands.clone()))
+        .expect("a dispatch response");
+    let urls: Vec<String> = commands.iter().map(command_type_url).collect();
+    assert_eq!(
+        urls,
+        vec![
+            angzarr_client::full_type_url::<ReserveStock>(),
+            angzarr_client::full_type_url::<CreateShipment>()
+        ]
+    );
+    let expected_log = if world.saga_response.is_some() {
+        vec!["SagaA", "SagaB"]
+    } else {
+        vec!["PMA", "PMB"]
+    };
+    assert_eq!(*world.log.lock().unwrap(), expected_log);
 }
 
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^each saga handles the event exactly once$")]
-async fn wip_then_each_saga_handles_the_event_exactly_once(_world: &mut MultiHandlerWorld) {
-    panic!("WIP: step needs implementation");
+#[then(expr = "the first command targets the {string} domain")]
+fn then_first(world: &mut MultiHandlerWorld, domain: String) {
+    assert_eq!(world.command_domains()[0], domain);
+}
+
+#[then(expr = "the second command targets the {string} domain")]
+fn then_second(world: &mut MultiHandlerWorld, domain: String) {
+    assert_eq!(world.command_domains()[1], domain);
+}
+
+#[then(expr = "ProjA's log has {int} entry")]
+fn then_proj_a(world: &mut MultiHandlerWorld, n: usize) {
+    let logs = world.projector_logs.lock().unwrap();
+    assert_eq!(logs.get("ProjA").map(Vec::len), Some(n));
+}
+
+#[then(expr = "ProjB's log has {int} entry")]
+fn then_proj_b(world: &mut MultiHandlerWorld, n: usize) {
+    let logs = world.projector_logs.lock().unwrap();
+    assert_eq!(logs.get("ProjB").map(Vec::len), Some(n));
+}
+
+#[then("each saga handles the event exactly once")]
+fn then_each_once(world: &mut MultiHandlerWorld) {
+    assert_eq!(*world.log.lock().unwrap(), vec!["SagaA", "SagaB"]);
+    assert_eq!(
+        world.saga_response.as_ref().map(|r| r.commands.len()),
+        Some(2)
+    );
 }

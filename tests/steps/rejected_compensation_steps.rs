@@ -1,132 +1,124 @@
-//! Rejection-compensation (details) step definitions.
+//! Step definitions for `features/client/rejected_compensation.feature`.
 //!
-//! Covers state rebuild before the @rejected handler, multi-method routing,
-//! sequence stamping on compensation events, and the empty-handler case.
+//! Rejections are delivered as real Notification commands through a
+//! `CommandHandlerRouter` built from `#[command_handler]` types with
+//! `#[rejected]` compensation methods.
+
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 use angzarr_client::proto::{
-    business_response, event_page, BusinessResponse, EventBook, EventPage, Notification,
+    business_response, page_header::SequenceType, BusinessResponse, Cover, EventBook, EventPage,
+    Notification, PageHeader,
 };
+use angzarr_client::router::runtime::CommandHandlerRouter;
 use angzarr_client::router::{Built, Router};
 use angzarr_client::{command_handler, CommandResult};
 use cucumber::{given, then, when, World};
-use prost_types::Any;
 
-use crate::common::fixtures::{CreateShipment, FundsDeposited, ProcessPayment, ReserveStock};
-use crate::common::helpers::{contextual_notification, notification_for, pack_event_page};
-
-// ---------------------------------------------------------------------------
-// Aggregates.
-// ---------------------------------------------------------------------------
+use super::deferred::{event_page_of, events_of, rejection_delivery};
+use crate::common::fixtures::{
+    CreateShipment, FundsDeposited, FundsReleased, ProcessPayment, ReserveStock, WorkflowFailed,
+};
 
 #[derive(Default)]
-struct PaymentState;
+pub struct PaymentState {
+    bankroll: i64,
+}
 
-struct PaymentSingle;
-#[command_handler(domain = "payment", state = PaymentState)]
-impl PaymentSingle {
-    #[applies(FundsDeposited)]
-    #[allow(unused_variables, dead_code)]
-    fn apply_deposit(state: &mut PaymentState, _evt: FundsDeposited) {}
-
-    #[rejected(domain = "inventory", command = "ReserveStock")]
-    #[allow(unused_variables, dead_code)]
-    fn on_rejected(
-        &self,
-        notif: &Notification,
-        state: &PaymentState,
-    ) -> CommandResult<BusinessResponse> {
-        Ok(BusinessResponse {
-            result: Some(business_response::Result::Events(EventBook {
-                pages: vec![tagged_page("FundsReleased")],
-                ..Default::default()
-            })),
-        })
+fn events_response(pages: Vec<EventPage>) -> BusinessResponse {
+    BusinessResponse {
+        result: Some(business_response::Result::Events(EventBook {
+            pages,
+            ..Default::default()
+        })),
     }
 }
 
-struct PaymentDouble;
+/// Payment with a stateful ReserveStock compensation emitting `releases`
+/// FundsReleased events, each carrying the rebuilt bankroll.
+pub struct StatefulPayment {
+    releases: Arc<AtomicU32>,
+}
+
 #[command_handler(domain = "payment", state = PaymentState)]
-impl PaymentDouble {
+impl StatefulPayment {
+    #[applies(FundsDeposited)]
+    fn on_deposit(state: &mut PaymentState, evt: FundsDeposited) {
+        state.bankroll = evt.new_bankroll;
+    }
+
     #[rejected(domain = "inventory", command = "ReserveStock")]
-    #[allow(unused_variables, dead_code)]
-    fn on_reserve_stock(
+    fn on_reserve_stock_rejected(
         &self,
-        notif: &Notification,
+        _notification: &Notification,
         state: &PaymentState,
     ) -> CommandResult<BusinessResponse> {
-        Ok(BusinessResponse {
-            result: Some(business_response::Result::Events(EventBook {
-                pages: vec![tagged_page("FundsReleased")],
-                ..Default::default()
-            })),
-        })
+        let n = self.releases.load(Ordering::SeqCst);
+        let pages = (0..n)
+            .map(|_| {
+                event_page_of(&FundsReleased {
+                    amount: state.bankroll,
+                    reason: "stock rejected".into(),
+                })
+            })
+            .collect();
+        Ok(events_response(pages))
+    }
+}
+
+/// Payment with two compensation methods for different rejections.
+pub struct TwoCompensations;
+
+#[command_handler(domain = "payment", state = PaymentState)]
+impl TwoCompensations {
+    #[rejected(domain = "inventory", command = "ReserveStock")]
+    fn on_reserve_stock_rejected(
+        &self,
+        _notification: &Notification,
+        _state: &PaymentState,
+    ) -> CommandResult<BusinessResponse> {
+        Ok(events_response(vec![event_page_of(&FundsReleased {
+            amount: 0,
+            reason: "stock rejected".into(),
+        })]))
     }
 
     #[rejected(domain = "payment", command = "ProcessPayment")]
-    #[allow(unused_variables, dead_code)]
+    fn on_process_payment_rejected(
+        &self,
+        _notification: &Notification,
+        _state: &PaymentState,
+    ) -> CommandResult<BusinessResponse> {
+        Ok(events_response(vec![event_page_of(&WorkflowFailed {
+            reason: "payment rejected".into(),
+            failed_domain: "payment".into(),
+            failed_command: "ProcessPayment".into(),
+        })]))
+    }
+}
+
+/// Payment with no compensation methods.
+pub struct NoCompensation;
+
+#[command_handler(domain = "payment", state = PaymentState)]
+impl NoCompensation {
+    #[handles(ProcessPayment)]
     fn on_process_payment(
         &self,
-        notif: &Notification,
-        state: &PaymentState,
-    ) -> CommandResult<BusinessResponse> {
-        Ok(BusinessResponse {
-            result: Some(business_response::Result::Events(EventBook {
-                pages: vec![tagged_page("WorkflowFailed")],
-                ..Default::default()
-            })),
-        })
-    }
-}
-
-struct PaymentTwoEvents;
-#[command_handler(domain = "payment", state = PaymentState)]
-impl PaymentTwoEvents {
-    #[rejected(domain = "inventory", command = "ReserveStock")]
-    #[allow(unused_variables, dead_code)]
-    fn on_reserve_stock(
-        &self,
-        notif: &Notification,
-        state: &PaymentState,
-    ) -> CommandResult<BusinessResponse> {
-        Ok(BusinessResponse {
-            result: Some(business_response::Result::Events(EventBook {
-                pages: vec![tagged_page("FundsReleased"), tagged_page("FundsReleased")],
-                ..Default::default()
-            })),
-        })
-    }
-}
-
-struct PaymentNoRejection;
-#[command_handler(domain = "payment", state = PaymentState)]
-impl PaymentNoRejection {
-    #[handles(ProcessPayment)]
-    #[allow(unused_variables, dead_code)]
-    fn on(&self, cmd: ProcessPayment, state: &PaymentState, seq: u32) -> CommandResult<EventBook> {
+        _cmd: ProcessPayment,
+        _state: &PaymentState,
+        _seq: u32,
+    ) -> CommandResult<EventBook> {
         Ok(EventBook::default())
     }
 }
 
-fn tagged_page(tag: &str) -> EventPage {
-    EventPage {
-        payload: Some(event_page::Payload::Event(Any {
-            type_url: tag.to_string(),
-            value: vec![],
-        })),
-        ..Default::default()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// World.
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 enum Variant {
     #[default]
-    Single,
-    Double,
-    TwoEvents,
+    Stateful,
+    Two,
     None,
 }
 
@@ -134,309 +126,223 @@ enum Variant {
 #[world(init = Self::new)]
 pub struct RejectedCompensationWorld {
     variant: Variant,
-    prior_book: EventBook,
+    releases: Arc<AtomicU32>,
+    prior: Option<EventBook>,
     response: Option<BusinessResponse>,
 }
 
 impl RejectedCompensationWorld {
     fn new() -> Self {
         Self {
-            variant: Variant::Single,
-            prior_book: EventBook::default(),
+            variant: Variant::Stateful,
+            releases: Arc::new(AtomicU32::new(1)),
+            prior: None,
             response: None,
         }
     }
-}
 
-fn build(
-    world: &RejectedCompensationWorld,
-) -> angzarr_client::router::runtime::CommandHandlerRouter {
-    let built = match world.variant {
-        Variant::Single => Router::new("payment")
-            .with_handler(|| PaymentSingle)
-            .build(),
-        Variant::Double => Router::new("payment")
-            .with_handler(|| PaymentDouble)
-            .build(),
-        Variant::TwoEvents => Router::new("payment")
-            .with_handler(|| PaymentTwoEvents)
-            .build(),
-        Variant::None => Router::new("payment")
-            .with_handler(|| PaymentNoRejection)
-            .build(),
+    fn router(&self) -> CommandHandlerRouter {
+        let releases = Arc::clone(&self.releases);
+        let built = match self.variant {
+            Variant::Stateful => Router::new("payment")
+                .with_handler(move || StatefulPayment {
+                    releases: Arc::clone(&releases),
+                })
+                .build(),
+            Variant::Two => Router::new("payment")
+                .with_handler(|| TwoCompensations)
+                .build(),
+            Variant::None => Router::new("payment")
+                .with_handler(|| NoCompensation)
+                .build(),
+        }
+        .expect("router builds");
+        match built {
+            Built::CommandHandler(r) => r,
+            other => panic!("expected a command-handler router, got {other:?}"),
+        }
     }
-    .expect("build");
-    let Built::CommandHandler(ch) = built else {
-        panic!("expected CommandHandler");
-    };
-    ch
+
+    fn deliver<M: prost::Message + prost::Name>(&mut self, rejected: &M, domain: &str) {
+        let delivery = rejection_delivery(rejected, domain, "payment", self.prior.clone());
+        self.response = Some(
+            self.router()
+                .dispatch(delivery)
+                .expect("rejection dispatch"),
+        );
+    }
+
+    fn events(&self) -> &EventBook {
+        match self.response.as_ref().and_then(|r| r.result.as_ref()) {
+            Some(business_response::Result::Events(book)) => book,
+            other => panic!("expected an Events response, got {other:?}"),
+        }
+    }
 }
 
-// ---------------------------------------------------------------------------
-// Given steps.
-// ---------------------------------------------------------------------------
+fn prior_page(seq: u32, deposit: i64) -> EventPage {
+    EventPage {
+        header: Some(PageHeader {
+            sequence_type: Some(SequenceType::Sequence(seq)),
+            sync_mode: None,
+        }),
+        ..event_page_of(&FundsDeposited {
+            new_bankroll: deposit,
+        })
+    }
+}
+
+// --- Given -----------------------------------------------------------------
 
 #[given(expr = "a command handler {string} for domain {string} with stateful rejection")]
-async fn given_handler_stateful(world: &mut RejectedCompensationWorld, _name: String, _d: String) {
-    world.variant = Variant::Single;
+fn given_stateful(world: &mut RejectedCompensationWorld, name: String, domain: String) {
+    assert_eq!((name.as_str(), domain.as_str()), ("Payment", "payment"));
+    world.variant = Variant::Stateful;
 }
 
-#[given("Payment @applies FundsDeposited by setting state.bankroll")]
-async fn given_applies_deposit(_world: &mut RejectedCompensationWorld) {}
-
-#[given(
-    "Payment has a @rejected(\"inventory\", \"ReserveStock\") handler that emits FundsReleased carrying state.bankroll"
-)]
-async fn given_rejected_carrying(_world: &mut RejectedCompensationWorld) {}
-
-#[given(expr = "a command handler {string} for domain {string} with two @rejected handlers")]
-async fn given_handler_two_rejected(
-    world: &mut RejectedCompensationWorld,
-    _name: String,
-    _d: String,
-) {
-    world.variant = Variant::Double;
+#[given(expr = "a command handler {string} for domain {string} with two compensation handlers")]
+fn given_two(world: &mut RejectedCompensationWorld, name: String, domain: String) {
+    assert_eq!((name.as_str(), domain.as_str()), ("Payment", "payment"));
+    world.variant = Variant::Two;
 }
 
 #[given(expr = "a command handler {string} for domain {string} with no rejection handlers")]
-async fn given_handler_none(world: &mut RejectedCompensationWorld, _name: String, _d: String) {
+fn given_none(world: &mut RejectedCompensationWorld, name: String, domain: String) {
+    assert_eq!((name.as_str(), domain.as_str()), ("Payment", "payment"));
     world.variant = Variant::None;
 }
 
-#[given("Payment has a @rejected(\"inventory\", \"ReserveStock\") handler emitting FundsReleased")]
-async fn given_rejected_funds(_world: &mut RejectedCompensationWorld) {}
-
-#[given("Payment has a @rejected(\"payment\", \"ProcessPayment\") handler emitting WorkflowFailed")]
-async fn given_rejected_workflow(_world: &mut RejectedCompensationWorld) {}
+#[given("deposits update Payment's bankroll")]
+fn given_deposits(world: &mut RejectedCompensationWorld) {
+    assert_eq!(world.variant, Variant::Stateful);
+}
 
 #[given(
-    "Payment has a @rejected(\"inventory\", \"ReserveStock\") handler emitting two FundsReleased events"
+    "Payment compensates a rejected ReserveStock from inventory by emitting FundsReleased with the current bankroll"
 )]
-async fn given_rejected_two_events(world: &mut RejectedCompensationWorld) {
-    world.variant = Variant::TwoEvents;
+fn given_release_bankroll(world: &mut RejectedCompensationWorld) {
+    world.releases.store(1, Ordering::SeqCst);
 }
 
-#[given("the router is built with the Payment handler")]
-async fn given_built(_world: &mut RejectedCompensationWorld) {}
+#[given("Payment compensates a rejected ReserveStock from inventory by emitting FundsReleased")]
+fn given_release(world: &mut RejectedCompensationWorld) {
+    assert_eq!(world.variant, Variant::Two);
+}
 
-#[given(expr = "a prior EventBook with a FundsDeposited event of bankroll {int}")]
-async fn given_prior_bankroll(world: &mut RejectedCompensationWorld, _amount: u32) {
-    world.prior_book = EventBook {
-        pages: vec![pack_event_page(&FundsDeposited::default(), 0)],
+#[given("Payment compensates a rejected ProcessPayment from payment by emitting WorkflowFailed")]
+fn given_workflow_failed(world: &mut RejectedCompensationWorld) {
+    assert_eq!(world.variant, Variant::Two);
+}
+
+#[given(
+    "Payment compensates a rejected ReserveStock from inventory by emitting two FundsReleased events"
+)]
+fn given_two_releases(world: &mut RejectedCompensationWorld) {
+    world.releases.store(2, Ordering::SeqCst);
+}
+
+#[given("Payment is configured")]
+fn given_configured(world: &mut RejectedCompensationWorld) {
+    let router = world.router();
+    assert_eq!(router.name(), "payment");
+    assert_eq!(router.handler_count(), 1);
+}
+
+#[given(expr = "a prior history with a FundsDeposited event of bankroll {int}")]
+fn given_prior_bankroll(world: &mut RejectedCompensationWorld, bankroll: i64) {
+    world.prior = Some(EventBook {
+        cover: Some(Cover {
+            domain: "payment".into(),
+            ..Default::default()
+        }),
+        pages: vec![prior_page(0, bankroll)],
+        next_sequence: 1,
         ..Default::default()
-    };
+    });
 }
 
-#[given(expr = "a prior EventBook whose next_sequence is {int}")]
-async fn given_prior_next_seq(world: &mut RejectedCompensationWorld, n: u32) {
-    world.prior_book = EventBook {
-        next_sequence: n,
+#[given(expr = "a prior history ending at sequence {int}")]
+fn given_prior_ending(world: &mut RejectedCompensationWorld, last: u32) {
+    world.prior = Some(EventBook {
+        cover: Some(Cover {
+            domain: "payment".into(),
+            ..Default::default()
+        }),
+        pages: (0..=last).map(|seq| prior_page(seq, 10)).collect(),
+        next_sequence: last + 1,
         ..Default::default()
-    };
+    });
 }
 
-// ---------------------------------------------------------------------------
-// When steps.
-// ---------------------------------------------------------------------------
+// --- When ------------------------------------------------------------------
 
-#[when(expr = "a Notification wrapping a rejected ReserveStock in domain {string} is dispatched")]
-async fn when_dispatch_reserve(world: &mut RejectedCompensationWorld, domain: String) {
-    let ch = build(world);
-    let notif = notification_for(&ReserveStock::default(), &domain);
-    let mut ctx = contextual_notification(notif, "payment");
-    ctx.events = Some(world.prior_book.clone());
-    world.response = Some(ch.dispatch(ctx).expect("dispatch"));
+#[when("a rejection of ReserveStock arrives from inventory")]
+fn when_reserve_stock(world: &mut RejectedCompensationWorld) {
+    world.deliver(&ReserveStock::default(), "inventory");
 }
 
-#[when(expr = "a Notification wrapping a rejected ProcessPayment in domain {string} is dispatched")]
-async fn when_dispatch_pp(world: &mut RejectedCompensationWorld, domain: String) {
-    let ch = build(world);
-    let notif = notification_for(&ProcessPayment::default(), &domain);
-    let mut ctx = contextual_notification(notif, "payment");
-    ctx.events = Some(world.prior_book.clone());
-    world.response = Some(ch.dispatch(ctx).expect("dispatch"));
+#[when("a rejection of ProcessPayment arrives from payment")]
+fn when_process_payment(world: &mut RejectedCompensationWorld) {
+    world.deliver(&ProcessPayment::default(), "payment");
 }
 
-#[when(expr = "a Notification wrapping a rejected CreateShipment in domain {string} is dispatched")]
-async fn when_dispatch_cs(world: &mut RejectedCompensationWorld, domain: String) {
-    let ch = build(world);
-    let notif = notification_for(&CreateShipment::default(), &domain);
-    world.response = Some(
-        ch.dispatch(contextual_notification(notif, "payment"))
-            .expect("dispatch"),
-    );
+#[when("a rejection of CreateShipment arrives from fulfillment")]
+fn when_create_shipment(world: &mut RejectedCompensationWorld) {
+    world.deliver(&CreateShipment::default(), "fulfillment");
 }
 
-// ---------------------------------------------------------------------------
-// Then steps.
-// ---------------------------------------------------------------------------
+// --- Then ------------------------------------------------------------------
 
 #[then("the response contains one FundsReleased event")]
-async fn then_one_funds(world: &mut RejectedCompensationWorld) {
-    let r = world.response.as_ref().expect("resp");
-    match &r.result {
-        Some(business_response::Result::Events(b)) => assert_eq!(b.pages.len(), 1),
-        other => panic!("expected Events, got {:?}", other),
-    }
-}
-
-#[then("the response contains one WorkflowFailed event")]
-async fn then_one_workflow_failed(world: &mut RejectedCompensationWorld) {
-    let r = world.response.as_ref().expect("resp");
-    match &r.result {
-        Some(business_response::Result::Events(b)) => {
-            assert_eq!(b.pages.len(), 1);
-        }
-        other => panic!("expected Events, got {:?}", other),
-    }
-}
-
-#[then("no FundsReleased event is emitted")]
-async fn then_no_funds(world: &mut RejectedCompensationWorld) {
-    let r = world.response.as_ref().expect("resp");
-    match &r.result {
-        Some(business_response::Result::Events(b)) => {
-            for p in &b.pages {
-                if let Some(event_page::Payload::Event(a)) = &p.payload {
-                    assert!(!a.type_url.contains("FundsReleased"));
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-#[then("the response contains no events")]
-async fn then_no_events(world: &mut RejectedCompensationWorld) {
-    let r = world.response.as_ref().expect("resp");
-    match &r.result {
-        Some(business_response::Result::Events(b)) => assert!(b.pages.is_empty()),
-        None => {}
-        other => panic!("expected empty events, got {:?}", other),
-    }
+fn then_one_release(world: &mut RejectedCompensationWorld) {
+    let book = world.events();
+    assert_eq!(book.pages.len(), 1);
+    assert_eq!(events_of::<FundsReleased>(book).len(), 1);
 }
 
 #[then(expr = "the FundsReleased event carries amount {int}")]
-async fn then_carries_amount(_world: &mut RejectedCompensationWorld, _n: u32) {
-    // Payload inspection requires decoding; best-effort pass since our
-    // test handler emits an opaque tag without an amount field.
+fn then_amount(world: &mut RejectedCompensationWorld, amount: i64) {
+    let released = events_of::<FundsReleased>(world.events());
+    assert_eq!(
+        released.iter().map(|e| e.amount).collect::<Vec<_>>(),
+        vec![amount]
+    );
 }
 
-#[then("the emitted pages carry sequences [7, 8]")]
-async fn then_pages_carry_78(_world: &mut RejectedCompensationWorld) {
-    // Framework-level stamping; best-effort no-op.
+#[then("the response contains one WorkflowFailed event")]
+fn then_one_workflow_failed(world: &mut RejectedCompensationWorld) {
+    let failed = events_of::<WorkflowFailed>(world.events());
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].failed_command, "ProcessPayment");
 }
 
-// ---------------------------------------------------------------------------
-// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
-// ---------------------------------------------------------------------------
-
-// TODO (WIP): Implement this step matcher properly.
-#[given(regex = r"^deposits update Payment's bankroll$")]
-async fn wip_given_deposits_update_payment_s_bankroll(_world: &mut RejectedCompensationWorld) {
-    panic!("WIP: step needs implementation");
+#[then("no FundsReleased event is emitted")]
+fn then_no_release(world: &mut RejectedCompensationWorld) {
+    assert!(events_of::<FundsReleased>(world.events()).is_empty());
 }
 
-// TODO (WIP): Implement this step matcher properly.
-#[given(
-    regex = r"^Payment compensates a rejected ReserveStock from inventory by emitting FundsReleased with the current bankroll$"
-)]
-async fn wip_given_payment_compensates_a_rejected_reservestock_from_i(
-    _world: &mut RejectedCompensationWorld,
-) {
-    panic!("WIP: step needs implementation");
+#[then("the response contains no events")]
+fn then_no_events(world: &mut RejectedCompensationWorld) {
+    assert!(world.events().pages.is_empty());
 }
 
-// TODO (WIP): Implement this step matcher properly.
-#[given(regex = r"^Payment is configured$")]
-async fn wip_given_payment_is_configured(_world: &mut RejectedCompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[given(regex = r"^a prior history with a FundsDeposited event of bankroll (-?\d+)$")]
-async fn wip_given_a_prior_history_with_a_fundsdeposited_event_of_ban(
-    _world: &mut RejectedCompensationWorld,
-) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[when(regex = r"^a rejection of ReserveStock arrives from inventory$")]
-async fn wip_when_a_rejection_of_reservestock_arrives_from_inventory(
-    _world: &mut RejectedCompensationWorld,
-) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[given(
-    regex = r#"^a command handler "([^"]*)" for domain "([^"]*)" with two compensation handlers$"#
-)]
-async fn wip_given_a_command_handler_payment_for_domain_payment_with(
-    _world: &mut RejectedCompensationWorld,
-) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[given(
-    regex = r"^Payment compensates a rejected ReserveStock from inventory by emitting FundsReleased$"
-)]
-async fn wip_given_payment_compensates_a_rejected_reservestock_from_i_2(
-    _world: &mut RejectedCompensationWorld,
-) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[given(
-    regex = r"^Payment compensates a rejected ProcessPayment from payment by emitting WorkflowFailed$"
-)]
-async fn wip_given_payment_compensates_a_rejected_processpayment_from(
-    _world: &mut RejectedCompensationWorld,
-) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[when(regex = r"^a rejection of ProcessPayment arrives from payment$")]
-async fn wip_when_a_rejection_of_processpayment_arrives_from_payment(
-    _world: &mut RejectedCompensationWorld,
-) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[when(regex = r"^a rejection of CreateShipment arrives from fulfillment$")]
-async fn wip_when_a_rejection_of_createshipment_arrives_from_fulfill(
-    _world: &mut RejectedCompensationWorld,
-) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[given(
-    regex = r"^Payment compensates a rejected ReserveStock from inventory by emitting two FundsReleased events$"
-)]
-async fn wip_given_payment_compensates_a_rejected_reservestock_from_i_3(
-    _world: &mut RejectedCompensationWorld,
-) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[given(regex = r"^a prior history ending at sequence (-?\d+)$")]
-async fn wip_given_a_prior_history_ending_at_sequence_6(_world: &mut RejectedCompensationWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
 #[then(
-    regex = r"^compensation events are appended after sequence (-?\d+), taking sequences (-?\d+) and (-?\d+)$"
+    expr = "compensation events are appended after sequence {int}, taking sequences {int} and {int}"
 )]
-async fn wip_then_compensation_events_are_appended_after_sequence_6(
-    _world: &mut RejectedCompensationWorld,
-) {
-    panic!("WIP: step needs implementation");
+fn then_sequences(world: &mut RejectedCompensationWorld, last: u32, first: u32, second: u32) {
+    let book = world.events();
+    assert_eq!(first, last + 1);
+    let seqs: Vec<Option<SequenceType>> = book
+        .pages
+        .iter()
+        .map(|p| p.header.as_ref().and_then(|h| h.sequence_type.clone()))
+        .collect();
+    assert_eq!(
+        seqs,
+        vec![
+            Some(SequenceType::Sequence(first)),
+            Some(SequenceType::Sequence(second))
+        ]
+    );
+    assert_eq!(book.next_sequence, second + 1);
 }

@@ -1,16 +1,28 @@
-//! Cucumber feature tests for the angzarr-client library.
+//! Cucumber runner for the angzarr client spec.
 //!
-//! These tests verify client library behavior using Gherkin scenarios.
-//! Run with:
+//! Runs every feature in `angzarr-project/features/client/` and
+//! `angzarr-project/parity/client/` against its step world. The process
+//! exits non-zero when any scenario fails, any step is undefined or
+//! skipped, any step match is ambiguous, any feature fails to parse, or a
+//! feature file in those directories has no registered world.
+//!
+//! [`PENDING`] lists scenarios the library does not satisfy yet, each with
+//! the finding that tracks it. They run separately and must fail: a pending
+//! scenario that passes fails the gate until it is removed from the list.
 //!
 //! ```bash
 //! cargo test --test features
+//! ANGZARR_FEATURES=saga,router cargo test --test features   # subset
 //! ```
 
 mod common;
 mod steps;
 
-use cucumber::World;
+use std::collections::BTreeSet;
+use std::path::Path;
+
+use cucumber::{writer::Stats, World};
+
 use steps::aggregate_client_steps::AggregateClientWorld;
 use steps::builder_steps::BuilderWorld;
 use steps::command_builder::CommandBuilderWorld;
@@ -20,12 +32,9 @@ use steps::connection::ConnectionWorld;
 use steps::decorators::DecoratorsWorldCucumber;
 use steps::destinations::DestinationsWorld;
 use steps::domain_client_steps::DomainClientWorld;
-use steps::edition_propagation_steps::EditionPropagationWorld;
 use steps::error_handling::ErrorHandlingWorld;
 use steps::event_decoding::EventDecodingWorld;
-use steps::fact_flow_steps::FactFlowWorld;
 use steps::identity::IdentityWorld;
-use steps::merge_strategy_steps::MergeStrategyWorld;
 use steps::multi_handler_steps::MultiHandlerWorld;
 use steps::parity::ParityWorld;
 use steps::process_manager_steps::ProcessManagerWorld;
@@ -35,241 +44,294 @@ use steps::query_client_steps::QueryClientWorld;
 use steps::rejected_compensation_steps::RejectedCompensationWorld;
 use steps::rejection_steps::RejectionWorld;
 use steps::retry::RetryWorld;
+use steps::router_steps::RouterWorld;
 use steps::saga_steps::SagaWorld;
 use steps::speculative_client_steps::SpeculativeClientWorld;
-use steps::state_building_steps::StateBuildingWorld;
 use steps::testing::TestingWorld;
 use steps::upcaster_steps::UpcasterWorld;
 use steps::validation_steps::ValidationWorld;
 use steps::wire_parity::WireParityWorld;
 
+const CLIENT_DIR: &str = "angzarr-project/features/client";
+const PARITY_DIR: &str = "angzarr-project/parity/client";
+
+/// Scenarios (by `@C-NNNN` tag) the library does not satisfy yet, with the
+/// finding that tracks each.
+const PENDING: &[(&str, &str)] = &[
+    (
+        "C-0001",
+        "X-116 framework sequence stamping of emitted events",
+    ),
+    (
+        "C-0083",
+        "X-116 framework sequence stamping of compensation events",
+    ),
+    ("C-0146", "X-116 Cover.ext propagation onto emitted events"),
+    (
+        "C-0248",
+        "X-116 framework sequence stamping of emitted events",
+    ),
+    ("C-0052", "X-037 saga handlers receive destinations"),
+    ("C-0053", "X-017 router stamps angzarr_deferred basis_seq"),
+    ("C-0177", "X-017 router stamps angzarr_deferred provenance"),
+    (
+        "C-0179",
+        "X-017 router stamps angzarr_deferred command_index",
+    ),
+    ("C-0180", "X-017 router stamps angzarr_deferred basis_seq"),
+    (
+        "C-0181",
+        "X-017 router stamps angzarr_deferred provenance on PM commands",
+    ),
+    (
+        "C-0182",
+        "X-017 Destinations::stamp_command emits angzarr_deferred",
+    ),
+    (
+        "C-0183",
+        "X-017 Destinations::stamp_command emits angzarr_deferred",
+    ),
+    ("C-0251", "X-017 router stamps angzarr_deferred basis_seq"),
+    ("C-0223", "X-167 saga #[rejected] dispatch"),
+    ("C-0224", "X-167 process-manager #[rejected] dispatch"),
+    ("C-0252", "X-167 saga #[rejected] dispatch"),
+    (
+        "C-0303",
+        "CommandBuilder::build requires a sequence; spec defaults it to 0",
+    ),
+    (
+        "C-0304",
+        "CommandBuilder::build requires a sequence; spec defaults it to 0",
+    ),
+    (
+        "C-0305",
+        "CommandBuilder::build requires a sequence; spec defaults it to 0",
+    ),
+    (
+        "C-0306",
+        "CommandBuilder::build requires a sequence; spec defaults it to 0",
+    ),
+    (
+        "C-0308",
+        "CommandBuilder::build requires a sequence; spec defaults it to 0",
+    ),
+    (
+        "C-0312",
+        "CommandBuilder::build requires a sequence; spec defaults it to 0",
+    ),
+    (
+        "C-0313",
+        "CommandBuilder::build requires a sequence; spec defaults it to 0",
+    ),
+    (
+        "C-0314",
+        "CommandBuilder::build requires a sequence; spec defaults it to 0",
+    ),
+    (
+        "C-0315",
+        "CommandBuilder::build requires a sequence; spec defaults it to 0",
+    ),
+    (
+        "C-0316",
+        "CommandBuilder::build requires a sequence; spec defaults it to 0",
+    ),
+    (
+        "C-0317",
+        "CommandBuilder::build requires a sequence; spec defaults it to 0",
+    ),
+    (
+        "C-0318",
+        "CommandBuilder::build requires a sequence; spec defaults it to 0",
+    ),
+    (
+        "C-0310",
+        "CommandBuilder cannot set a type URL without a payload",
+    ),
+    (
+        "C-0323",
+        "connection errors drop the transport error's source chain",
+    ),
+    (
+        "C-0326",
+        "connection errors drop the transport error's source chain",
+    ),
+    (
+        "C-0329",
+        "from_env treats an empty endpoint variable as set",
+    ),
+    ("C-0336", "no configurable connect timeout"),
+    ("C-0337", "no configurable HTTP/2 keep-alive"),
+];
+
+/// Outcome of one feature run.
+struct SuiteResult {
+    path: String,
+    problems: Vec<String>,
+}
+
+fn pending_reason(tags: &[String]) -> Option<&'static str> {
+    PENDING
+        .iter()
+        .find(|(id, _)| tags.iter().any(|t| t == id))
+        .map(|(_, why)| *why)
+}
+
+/// Comma-separated feature stems from `ANGZARR_FEATURES`; `None` runs all.
+fn selected_features() -> Option<BTreeSet<String>> {
+    let raw = std::env::var("ANGZARR_FEATURES").ok()?;
+    Some(
+        raw.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+    )
+}
+
+/// Run one feature file against world `W`; skipped (undefined) steps count
+/// as failures. Pending scenarios are excluded from the main run and then
+/// each re-run alone, where it must fail.
+macro_rules! run_suite {
+    ($selected:expr, $world:ty, $path:expr) => {{
+        let path: String = $path;
+        let stem = Path::new(&path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut problems = Vec::new();
+        if $selected
+            .as_ref()
+            .map_or(true, |s: &BTreeSet<String>| s.contains(&stem))
+        {
+            println!("\n=== {} ===\n", path);
+            let writer = <$world>::cucumber()
+                .fail_on_skipped()
+                .filter_run(path.clone(), |_, _, sc| pending_reason(&sc.tags).is_none())
+                .await;
+            if writer.execution_has_failed()
+                || writer.skipped_steps() > 0
+                || writer.parsing_errors() > 0
+            {
+                problems.push(format!("{path}: failed"));
+            }
+            for (id, why) in PENDING {
+                let tag = id.to_string();
+                let has_tag = std::fs::read_to_string(&path)
+                    .map(|text| text.contains(&format!("@{tag}")))
+                    .unwrap_or(false);
+                if !has_tag {
+                    continue;
+                }
+                println!("\n--- pending {id} ({why}) must fail ---\n");
+                let writer = <$world>::cucumber()
+                    .fail_on_skipped()
+                    .filter_run(path.clone(), move |_, _, sc| sc.tags.contains(&tag))
+                    .await;
+                if !writer.execution_has_failed() {
+                    problems.push(format!(
+                        "{path}: pending {id} passes; remove it from PENDING"
+                    ));
+                }
+            }
+        }
+        SuiteResult { path, problems }
+    }};
+}
+
+/// Feature file names (without `.feature`) present in `dir`.
+fn feature_stems(dir: &str) -> BTreeSet<String> {
+    let entries = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("cannot read feature directory {dir}: {e}"));
+    entries
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if path.extension()? != "feature" {
+                return None;
+            }
+            Some(path.file_stem()?.to_string_lossy().into_owned())
+        })
+        .collect()
+}
+
 #[tokio::main]
 async fn main() {
-    // Run Parity tests
-    println!("\n=== Running Parity Tests ===\n");
-    ParityWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/parity.feature")
-        .await;
+    let client = |stem: &str| format!("{CLIENT_DIR}/{stem}.feature");
+    let parity = |stem: &str| format!("{PARITY_DIR}/{stem}.feature");
 
-    // Run Identity tests
-    println!("\n=== Running Identity Tests ===\n");
-    IdentityWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/identity.feature")
-        .await;
+    let sel = selected_features();
+    let results = vec![
+        // features/client — router / dispatch and client-surface tiers.
+        run_suite!(sel, AggregateClientWorld, client("aggregate_client")),
+        run_suite!(sel, BuilderWorld, client("builder")),
+        run_suite!(sel, CommandHandlerWorld, client("command_handler")),
+        run_suite!(sel, CompensationWorld, client("compensation")),
+        run_suite!(sel, DomainClientWorld, client("domain-client")),
+        run_suite!(sel, MultiHandlerWorld, client("multi_handler")),
+        run_suite!(sel, ProcessManagerWorld, client("process_manager")),
+        run_suite!(sel, ProjectorWorld, client("projector")),
+        run_suite!(sel, QueryClientWorld, client("query_client")),
+        run_suite!(
+            sel,
+            RejectedCompensationWorld,
+            client("rejected_compensation")
+        ),
+        run_suite!(sel, RejectionWorld, client("rejection")),
+        run_suite!(sel, RouterWorld, client("router")),
+        run_suite!(sel, SagaWorld, client("saga")),
+        run_suite!(sel, SpeculativeClientWorld, client("speculative_client")),
+        run_suite!(sel, UpcasterWorld, client("upcaster")),
+        run_suite!(sel, ValidationWorld, client("validation")),
+        // parity/client — cross-language surface parity.
+        run_suite!(sel, CommandBuilderWorld, parity("command_builder")),
+        run_suite!(sel, ConnectionWorld, parity("connection")),
+        run_suite!(sel, DecoratorsWorldCucumber, parity("decorators")),
+        run_suite!(sel, DestinationsWorld, parity("destinations")),
+        run_suite!(sel, ErrorHandlingWorld, parity("error_handling")),
+        run_suite!(sel, EventDecodingWorld, parity("event_decoding")),
+        run_suite!(sel, IdentityWorld, parity("identity")),
+        run_suite!(sel, ParityWorld, parity("parity")),
+        run_suite!(sel, QueryBuilderWorld, parity("query_builder")),
+        run_suite!(sel, RetryWorld, parity("retry")),
+        run_suite!(sel, TestingWorld, parity("testing")),
+        run_suite!(sel, WireParityWorld, parity("wire_parity")),
+    ];
 
-    // Run Testing tests
-    println!("\n=== Running Testing Tests ===\n");
-    TestingWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/testing.feature")
-        .await;
+    let mut problems: Vec<String> = Vec::new();
+    let mut known_ids: BTreeSet<&str> = BTreeSet::new();
+    let covered: BTreeSet<String> = results.iter().map(|r| r.path.clone()).collect();
+    if sel.is_none() {
+        for dir in [CLIENT_DIR, PARITY_DIR] {
+            for stem in feature_stems(dir) {
+                let path = format!("{dir}/{stem}.feature");
+                if !covered.contains(&path) {
+                    problems.push(format!("{path}: no step world registered"));
+                }
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                for (id, _) in PENDING {
+                    if text.contains(&format!("@{id}")) {
+                        known_ids.insert(*id);
+                    }
+                }
+            }
+        }
+        for (id, _) in PENDING {
+            if !known_ids.contains(id) {
+                problems.push(format!("PENDING {id} matches no scenario"));
+            }
+        }
+    }
+    for r in results {
+        if !Path::new(&r.path).is_file() {
+            problems.push(format!("{}: feature file missing", r.path));
+        }
+        problems.extend(r.problems);
+    }
 
-    // Run Connection tests
-    println!("\n=== Running Connection Tests ===\n");
-    ConnectionWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/connection.feature")
-        .await;
-
-    // Run DomainClient tests
-    println!("\n=== Running DomainClient Tests ===\n");
-    DomainClientWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/domain-client.feature")
-        .await;
-
-    // Run AggregateClient tests
-    println!("\n=== Running AggregateClient Tests ===\n");
-    AggregateClientWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/aggregate_client.feature")
-        .await;
-
-    // Run QueryClient tests
-    println!("\n=== Running QueryClient Tests ===\n");
-    QueryClientWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/query_client.feature")
-        .await;
-
-    // Run SpeculativeClient tests
-    println!("\n=== Running SpeculativeClient Tests ===\n");
-    SpeculativeClientWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/speculative_client.feature")
-        .await;
-
-    // Run CommandBuilder tests
-    println!("\n=== Running CommandBuilder Tests ===\n");
-    CommandBuilderWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/command_builder.feature")
-        .await;
-
-    // Run QueryBuilder tests
-    println!("\n=== Running QueryBuilder Tests ===\n");
-    QueryBuilderWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/query_builder.feature")
-        .await;
-
-    // Run ErrorHandling tests
-    println!("\n=== Running ErrorHandling Tests ===\n");
-    ErrorHandlingWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/error_handling.feature")
-        .await;
-
-    // Legacy router.feature is retired in the Rust tier — routing behavior is
-    // covered by the TIER5 suites below (builder / command_handler /
-    // multi_handler / process_manager / projector / rejection / saga /
-    // rejected_compensation / validation). The feature file remains in
-    // angzarr-project for other languages.
-
-    // Run EventDecoding tests
-    println!("\n=== Running EventDecoding Tests ===\n");
-    EventDecodingWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/event_decoding.feature")
-        .await;
-
-    // Run Compensation tests
-    println!("\n=== Running Compensation Tests ===\n");
-    CompensationWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/compensation.feature")
-        .await;
-
-    // ------------------------------------------------------------------
-    // TIER5 Router feature suite.
-    // ------------------------------------------------------------------
-
-    // Run Builder tests
-    println!("\n=== Running Builder Tests ===\n");
-    BuilderWorld::cucumber()
-        .run("angzarr-project/features/client/builder.feature")
-        .await;
-
-    // Run CommandHandler tests
-    println!("\n=== Running CommandHandler Tests ===\n");
-    CommandHandlerWorld::cucumber()
-        .run("angzarr-project/features/client/command_handler.feature")
-        .await;
-
-    // Run MultiHandler tests
-    println!("\n=== Running MultiHandler Tests ===\n");
-    MultiHandlerWorld::cucumber()
-        .run("angzarr-project/features/client/multi_handler.feature")
-        .await;
-
-    // Run ProcessManager tests
-    println!("\n=== Running ProcessManager Tests ===\n");
-    ProcessManagerWorld::cucumber()
-        .run("angzarr-project/features/client/process_manager.feature")
-        .await;
-
-    // Run Projector tests
-    println!("\n=== Running Projector Tests ===\n");
-    ProjectorWorld::cucumber()
-        .run("angzarr-project/features/client/projector.feature")
-        .await;
-
-    // Run Rejection tests
-    println!("\n=== Running Rejection Tests ===\n");
-    RejectionWorld::cucumber()
-        .run("angzarr-project/features/client/rejection.feature")
-        .await;
-
-    // Run Saga tests
-    println!("\n=== Running Saga Tests ===\n");
-    SagaWorld::cucumber()
-        .run("angzarr-project/features/client/saga.feature")
-        .await;
-
-    // Run RejectedCompensation tests
-    println!("\n=== Running RejectedCompensation Tests ===\n");
-    RejectedCompensationWorld::cucumber()
-        .run("angzarr-project/features/client/rejected_compensation.feature")
-        .await;
-
-    // Run Validation tests
-    println!("\n=== Running Validation Tests ===\n");
-    ValidationWorld::cucumber()
-        .run("angzarr-project/features/client/validation.feature")
-        .await;
-
-    // Run Upcaster tests
-    println!("\n=== Running Upcaster Tests ===\n");
-    UpcasterWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/upcaster.feature")
-        .await;
-
-    // Run Retry tests
-    println!("\n=== Running Retry Tests ===\n");
-    RetryWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/retry.feature")
-        .await;
-
-    // Run Decorators tests (kind-declaration parity, C-0121..C-0126)
-    println!("\n=== Running Decorators Tests ===\n");
-    DecoratorsWorldCucumber::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/decorators.feature")
-        .await;
-
-    // Run cross-language wire-format parity tests
-    println!("\n=== Running WireParity Tests ===\n");
-    WireParityWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/wire_parity.feature")
-        .await;
-
-    // ------------------------------------------------------------------
-    // Coordinator-contract simulations.
-    //
-    // These three suites describe coordinator-side behavior that the
-    // client cannot directly exercise (no public API matches the
-    // documented surface). The features moved to
-    // `features/coordinator-contract/` per audit findings #22, #26,
-    // #28; the step files are explicit simulations of the
-    // coordinator's contract — kept here so the cucumber prose
-    // doesn't bit-rot. When a coordinator-tier suite exists in its
-    // own repo, these become the canonical reference. See
-    // PARITY_AUDIT.md for context.
-    // ------------------------------------------------------------------
-
-    println!("\n=== Running FactFlow (coordinator-contract sim) ===\n");
-    FactFlowWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/coordinator-contract/fact_flow.feature")
-        .await;
-
-    println!("\n=== Running MergeStrategy (coordinator-contract sim) ===\n");
-    MergeStrategyWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/coordinator-contract/merge_strategy.feature")
-        .await;
-
-    println!("\n=== Running StateBuilding (coordinator-contract sim) ===\n");
-    StateBuildingWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/coordinator-contract/state_building.feature")
-        .await;
-
-    println!("\n=== Running EditionPropagation (coordinator-contract sim) ===\n");
-    EditionPropagationWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/coordinator-contract/edition_propagation.feature")
-        .await;
-
-    // Run Destinations query-surface tests (C-0132..C-0134)
-    println!("\n=== Running Destinations Tests ===\n");
-    DestinationsWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/destinations.feature")
-        .await;
+    if !problems.is_empty() {
+        eprintln!("\n=== FEATURE GATE FAILED ===");
+        for p in &problems {
+            eprintln!("  {p}");
+        }
+        std::process::exit(1);
+    }
+    println!("\n=== feature gate passed ({} pending) ===", PENDING.len());
 }

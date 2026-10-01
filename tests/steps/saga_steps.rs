@@ -1,74 +1,84 @@
-//! Saga dispatch step definitions.
+//! Step definitions for `features/client/saga.feature`.
+//!
+//! Sagas are real `#[saga]` types dispatched through a `SagaRouter`; what a
+//! saga observed during dispatch is recorded on its [`SagaProbe`].
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
-use angzarr_client::proto::{CommandBook, Cover, SagaHandleRequest, SagaResponse};
+use angzarr_client::proto::{SagaHandleRequest, SagaResponse};
+use angzarr_client::router::runtime::SagaRouter;
 use angzarr_client::router::{Built, Router};
 use angzarr_client::{saga, CommandResult};
 use cucumber::{given, then, when, World};
 
-use crate::common::fixtures::{OrderCreated, StockReserved};
-use crate::common::helpers::saga_request;
+use super::deferred::{
+    command_of, deferred_header, has_explicit_sequence, root_for, trigger_book, unsequenced_command,
+};
+use crate::common::fixtures::{CreateShipment, OrderCreated, ReserveStock, StockReserved};
 
-// ---------------------------------------------------------------------------
-// Sagas.
-// ---------------------------------------------------------------------------
+/// What a saga saw while handling one event.
+#[derive(Debug, Default)]
+pub struct SagaProbe {
+    /// Destination heads the handler observed, by domain.
+    observed_destinations: Mutex<Option<HashMap<String, u32>>>,
+}
 
-struct OrderFulfillment;
+pub struct OrderFulfillment {
+    probe: Arc<SagaProbe>,
+}
+
 #[saga(name = "OrderFulfillment", source = "order", target = "inventory")]
 impl OrderFulfillment {
     #[handles(OrderCreated)]
-    #[allow(unused_variables, dead_code)]
     fn on_created(&self, event: OrderCreated) -> CommandResult<SagaResponse> {
         Ok(SagaResponse {
-            commands: vec![CommandBook {
-                cover: Some(Cover {
-                    domain: "inventory".to_string(),
-                    ..Default::default()
-                }),
-                pages: vec![],
-            }],
+            commands: vec![unsequenced_command(
+                &ReserveStock {
+                    order_id: event.order_id,
+                    sku: "sku-1".into(),
+                    quantity: 1,
+                },
+                "inventory",
+            )],
             events: vec![],
         })
     }
 }
 
-// Saga "OrderSplit" for two targets. We use one saga handler that emits two
-// distinct commands, one per target domain.
-struct OrderSplit;
+pub struct OrderSplit {
+    probe: Arc<SagaProbe>,
+}
+
 #[saga(name = "OrderSplit", source = "order", target = "inventory")]
 impl OrderSplit {
     #[handles(OrderCreated)]
-    #[allow(unused_variables, dead_code)]
     fn on_created(&self, event: OrderCreated) -> CommandResult<SagaResponse> {
         Ok(SagaResponse {
             commands: vec![
-                CommandBook {
-                    cover: Some(Cover {
-                        domain: "inventory".to_string(),
-                        ..Default::default()
-                    }),
-                    pages: vec![],
-                },
-                CommandBook {
-                    cover: Some(Cover {
-                        domain: "fulfillment".to_string(),
-                        ..Default::default()
-                    }),
-                    pages: vec![],
-                },
+                unsequenced_command(
+                    &ReserveStock {
+                        order_id: event.order_id.clone(),
+                        sku: "sku-1".into(),
+                        quantity: 1,
+                    },
+                    "inventory",
+                ),
+                unsequenced_command(
+                    &CreateShipment {
+                        order_id: event.order_id,
+                        address: "addr".into(),
+                    },
+                    "fulfillment",
+                ),
             ],
             events: vec![],
         })
     }
 }
 
-// ---------------------------------------------------------------------------
-// World.
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Default)]
-enum SagaVariant {
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+enum Variant {
     #[default]
     Fulfillment,
     Split,
@@ -77,147 +87,234 @@ enum SagaVariant {
 #[derive(Debug, World)]
 #[world(init = Self::new)]
 pub struct SagaWorld {
-    variant: SagaVariant,
+    variant: Variant,
+    probe: Arc<SagaProbe>,
     destination_sequences: HashMap<String, u32>,
+    trigger_root: String,
+    trigger_seq: u32,
     response: Option<SagaResponse>,
 }
 
 impl SagaWorld {
     fn new() -> Self {
         Self {
-            variant: SagaVariant::Fulfillment,
+            variant: Variant::Fulfillment,
+            probe: Arc::default(),
             destination_sequences: HashMap::new(),
+            trigger_root: "order-1".into(),
+            trigger_seq: 0,
             response: None,
         }
     }
-}
 
-fn build_saga(world: &SagaWorld) -> angzarr_client::router::runtime::SagaRouter {
-    let built = match world.variant {
-        SagaVariant::Fulfillment => Router::new("s").with_handler(|| OrderFulfillment).build(),
-        SagaVariant::Split => Router::new("s").with_handler(|| OrderSplit).build(),
+    fn router(&self) -> SagaRouter {
+        let probe = Arc::clone(&self.probe);
+        let built = match self.variant {
+            Variant::Fulfillment => Router::new("sagas")
+                .with_handler(move || OrderFulfillment {
+                    probe: Arc::clone(&probe),
+                })
+                .build(),
+            Variant::Split => Router::new("sagas")
+                .with_handler(move || OrderSplit {
+                    probe: Arc::clone(&probe),
+                })
+                .build(),
+        }
+        .expect("router builds");
+        match built {
+            Built::Saga(r) => r,
+            other => panic!("expected a saga router, got {other:?}"),
+        }
     }
-    .expect("build");
-    let Built::Saga(r) = built else {
-        panic!("expected Saga");
-    };
-    r
+
+    fn dispatch<M: prost::Message + prost::Name>(&mut self, event: &M) {
+        let request = SagaHandleRequest {
+            source: Some(trigger_book(
+                event,
+                "order",
+                &self.trigger_root,
+                self.trigger_seq,
+            )),
+            destination_sequences: self.destination_sequences.clone(),
+            ..Default::default()
+        };
+        self.response = Some(self.router().dispatch(request).expect("saga dispatch"));
+    }
+
+    fn response(&self) -> &SagaResponse {
+        self.response.as_ref().expect("saga response")
+    }
 }
 
-// ---------------------------------------------------------------------------
-// Given steps.
-// ---------------------------------------------------------------------------
+// --- Given -----------------------------------------------------------------
 
 #[given(expr = "a saga {string} translating from {string} to {string}")]
-async fn given_saga(world: &mut SagaWorld, _name: String, _src: String, _tgt: String) {
-    world.variant = SagaVariant::Fulfillment;
-}
-
-#[given("the saga handles OrderCreated by emitting a ReserveStock command")]
-async fn given_saga_handles(_world: &mut SagaWorld) {}
-
-#[given("the router is built with the OrderFulfillment saga")]
-async fn given_saga_built(_world: &mut SagaWorld) {}
-
-#[given(expr = "destination sequences inventory={int} and fulfillment={int}")]
-async fn given_dest_seqs(world: &mut SagaWorld, inv: u32, ful: u32) {
-    world
-        .destination_sequences
-        .insert("inventory".to_string(), inv);
-    world
-        .destination_sequences
-        .insert("fulfillment".to_string(), ful);
+fn given_saga(world: &mut SagaWorld, name: String, source: String, target: String) {
+    assert_eq!(
+        (name.as_str(), source.as_str(), target.as_str()),
+        ("OrderFulfillment", "order", "inventory")
+    );
+    world.variant = Variant::Fulfillment;
 }
 
 #[given(expr = "a saga {string} translating from {string} to {string} and {string}")]
-async fn given_saga_two_targets(
-    world: &mut SagaWorld,
-    _name: String,
-    _src: String,
-    _t1: String,
-    _t2: String,
-) {
-    world.variant = SagaVariant::Split;
+fn given_split_saga(world: &mut SagaWorld, name: String, source: String, t1: String, t2: String) {
+    assert_eq!(
+        (name.as_str(), source.as_str(), t1.as_str(), t2.as_str()),
+        ("OrderSplit", "order", "inventory", "fulfillment")
+    );
+    world.variant = Variant::Split;
+}
+
+#[given("the saga handles OrderCreated by emitting a ReserveStock command")]
+fn given_handles(world: &mut SagaWorld) {
+    assert_eq!(world.variant, Variant::Fulfillment);
 }
 
 #[given(
     expr = "the saga handles OrderCreated by emitting a ReserveStock for {string} and a CreateShipment for {string}"
 )]
-async fn given_saga_two_cmds(_world: &mut SagaWorld, _d1: String, _d2: String) {}
+fn given_handles_split(world: &mut SagaWorld, d1: String, d2: String) {
+    assert_eq!((d1.as_str(), d2.as_str()), ("inventory", "fulfillment"));
+    assert_eq!(world.variant, Variant::Split);
+}
 
-// ---------------------------------------------------------------------------
-// When steps.
-// ---------------------------------------------------------------------------
+#[given("the router is built with the OrderFulfillment saga")]
+fn given_built(world: &mut SagaWorld) {
+    let router = world.router();
+    assert_eq!(router.name(), "OrderFulfillment");
+    assert_eq!(router.handler_count(), 1);
+}
 
-#[when("an OrderCreated event is dispatched to the saga router")]
-async fn when_dispatch_order(world: &mut SagaWorld) {
-    let r = build_saga(world);
-    let req = saga_request(
-        &[OrderCreated::default()],
-        "order",
-        Some(world.destination_sequences.clone()),
-    );
-    world.response = Some(r.dispatch(req).expect("dispatch"));
+#[given(expr = "destination sequences inventory={int} and fulfillment={int}")]
+fn given_two_heads(world: &mut SagaWorld, inventory: u32, fulfillment: u32) {
+    world.destination_sequences = HashMap::from([
+        ("inventory".to_string(), inventory),
+        ("fulfillment".to_string(), fulfillment),
+    ]);
+}
+
+#[given(expr = "destination sequences {word}={int}")]
+fn given_one_head(world: &mut SagaWorld, domain: String, head: u32) {
+    world.destination_sequences = HashMap::from([(domain, head)]);
+}
+
+#[given(expr = "the OrderCreated event is at sequence {int} of order root {string}")]
+fn given_trigger_position(world: &mut SagaWorld, seq: u32, root: String) {
+    world.trigger_seq = seq;
+    world.trigger_root = root;
+}
+
+// --- When ------------------------------------------------------------------
+
+#[when(regex = r"^(?:an|the) OrderCreated event is dispatched to the saga router$")]
+fn when_order_created(world: &mut SagaWorld) {
+    world.dispatch(&OrderCreated {
+        order_id: "o-1".into(),
+        ..Default::default()
+    });
 }
 
 #[when("a StockReserved event is dispatched to the saga router")]
-async fn when_dispatch_stock(world: &mut SagaWorld) {
-    let r = build_saga(world);
-    // Send through the saga's declared source domain ("order") so the dispatch
-    // reaches per-handler matching (which then fails to find an OrderCreated
-    // handler for StockReserved).
-    let mut req = saga_request(
-        &[StockReserved::default()],
-        "order",
-        Some(world.destination_sequences.clone()),
-    );
-    // Saga's declared source is "order", so source domain stays "order".
-    let _ = &mut req;
-    // No matching handler surfaces as an empty SagaResponse post-#36.
-    world.response = Some(r.dispatch(req).unwrap_or_default());
+fn when_stock_reserved(world: &mut SagaWorld) {
+    world.dispatch(&StockReserved::default());
 }
 
-// ---------------------------------------------------------------------------
-// Then steps.
-// ---------------------------------------------------------------------------
+// --- Then ------------------------------------------------------------------
 
 #[then("the response contains exactly one command")]
-async fn then_exactly_one(world: &mut SagaWorld) {
-    let r = world.response.as_ref().expect("resp");
-    assert_eq!(r.commands.len(), 1);
+fn then_one_command(world: &mut SagaWorld) {
+    assert_eq!(world.response().commands.len(), 1);
 }
 
 #[then("the response contains no commands")]
-async fn then_no_commands(world: &mut SagaWorld) {
-    let r = world.response.as_ref().expect("resp");
-    assert!(r.commands.is_empty());
+fn then_no_commands(world: &mut SagaWorld) {
+    assert!(world.response().commands.is_empty());
+    assert!(world.response().events.is_empty());
 }
 
 #[then(expr = "the command targets the {string} domain")]
-async fn then_targets(world: &mut SagaWorld, d: String) {
-    let r = world.response.as_ref().expect("resp");
-    assert_eq!(r.commands[0].cover.as_ref().unwrap().domain, d);
-}
-
-#[then(expr = "the saga observed destination inventory = {int}")]
-async fn then_saga_observed_inv(world: &mut SagaWorld, n: u32) {
+fn then_command_domain(world: &mut SagaWorld, domain: String) {
+    let cmd = &world.response().commands[0];
     assert_eq!(
-        world.destination_sequences.get("inventory").copied(),
-        Some(n)
-    );
-}
-#[then(expr = "the saga observed destination fulfillment = {int}")]
-async fn then_saga_observed_ful(world: &mut SagaWorld, n: u32) {
-    assert_eq!(
-        world.destination_sequences.get("fulfillment").copied(),
-        Some(n)
+        cmd.cover.as_ref().map(|c| c.domain.as_str()),
+        Some(domain.as_str())
     );
 }
 
-#[then(expr = "the ReserveStock command carries destination sequence {int}")]
-async fn then_reserve_seq(_world: &mut SagaWorld, _n: u32) {
-    // Stamping is framework-level; best-effort no-op (proto default is 0).
+#[then(expr = "the saga observed destination {word} = {int}")]
+fn then_observed(world: &mut SagaWorld, domain: String, head: u32) {
+    let observed = world.probe.observed_destinations.lock().unwrap();
+    let observed = observed.as_ref().expect("saga observed destinations");
+    assert_eq!(observed.get(&domain).copied(), Some(head));
 }
 
-#[then(expr = "the CreateShipment command carries destination sequence {int}")]
-async fn then_create_shipment_seq(_world: &mut SagaWorld, _n: u32) {}
+#[then(expr = "the ReserveStock command carries an angzarr_deferred header with basis_seq {int}")]
+fn then_reserve_basis(world: &mut SagaWorld, basis: u32) {
+    let cmd = command_of::<ReserveStock>(&world.response().commands);
+    assert_eq!(deferred_header(cmd).basis_seq, basis);
+}
+
+#[then(expr = "the CreateShipment command carries an angzarr_deferred header with basis_seq {int}")]
+fn then_shipment_basis(world: &mut SagaWorld, basis: u32) {
+    let cmd = command_of::<CreateShipment>(&world.response().commands);
+    assert_eq!(deferred_header(cmd).basis_seq, basis);
+}
+
+#[then("the ReserveStock command carries an angzarr_deferred header")]
+fn then_reserve_deferred(world: &mut SagaWorld) {
+    let cmd = command_of::<ReserveStock>(&world.response().commands);
+    deferred_header(cmd);
+}
+
+#[then(expr = "the deferred source cover is domain {string} root {string}")]
+fn then_source_cover(world: &mut SagaWorld, domain: String, root: String) {
+    let cmd = command_of::<ReserveStock>(&world.response().commands);
+    let source = deferred_header(cmd)
+        .source
+        .as_ref()
+        .expect("deferred source");
+    assert_eq!(source.domain, domain);
+    assert_eq!(
+        source.root.as_ref().map(|r| r.value.clone()),
+        Some(root_for(&root))
+    );
+}
+
+#[then(expr = "the deferred source_seq is {int}")]
+fn then_source_seq(world: &mut SagaWorld, seq: u32) {
+    let cmd = command_of::<ReserveStock>(&world.response().commands);
+    assert_eq!(deferred_header(cmd).source_seq, seq);
+}
+
+#[then(expr = "the deferred command_index is {int}")]
+fn then_command_index(world: &mut SagaWorld, index: u32) {
+    let cmd = command_of::<ReserveStock>(&world.response().commands);
+    assert_eq!(deferred_header(cmd).command_index, index);
+}
+
+#[then(expr = "the deferred basis_seq is {int}")]
+fn then_basis(world: &mut SagaWorld, basis: u32) {
+    let cmd = command_of::<ReserveStock>(&world.response().commands);
+    assert_eq!(deferred_header(cmd).basis_seq, basis);
+}
+
+#[then("no page of the ReserveStock command has an explicit sequence")]
+fn then_no_explicit(world: &mut SagaWorld) {
+    let cmd = command_of::<ReserveStock>(&world.response().commands);
+    assert!(!cmd.pages.is_empty());
+    assert!(!has_explicit_sequence(cmd), "pages: {:?}", cmd.pages);
+}
+
+#[then(expr = "the ReserveStock command's deferred command_index is {int}")]
+fn then_reserve_index(world: &mut SagaWorld, index: u32) {
+    let cmd = command_of::<ReserveStock>(&world.response().commands);
+    assert_eq!(deferred_header(cmd).command_index, index);
+}
+
+#[then(expr = "the CreateShipment command's deferred command_index is {int}")]
+fn then_shipment_index(world: &mut SagaWorld, index: u32) {
+    let cmd = command_of::<CreateShipment>(&world.response().commands);
+    assert_eq!(deferred_header(cmd).command_index, index);
+}

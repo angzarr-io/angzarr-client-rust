@@ -8,10 +8,7 @@ use std::sync::Arc;
 
 use cucumber::{given, then};
 
-use angzarr_client::proto::{BusinessResponse, CommandBook, ContextualCommand};
-use angzarr_client::{
-    command_handler, saga, upcaster, Handler, HandlerConfig, HandlerRequest, HandlerResponse,
-};
+use angzarr_client::{command_handler, saga, upcaster, Handler, HandlerConfig};
 
 #[derive(Debug, Default)]
 pub struct DecoratorsWorld {
@@ -85,13 +82,7 @@ pub struct OrderState;
 struct FakeCmd {}
 impl prost::Name for FakeCmd {
     const NAME: &'static str = "FakeCmd";
-    const PACKAGE: &'static str = "angzarr_client.proto.examples";
-    fn full_name() -> String {
-        "angzarr_client.proto.examples.FakeCmd".into()
-    }
-    fn type_url() -> String {
-        "/angzarr_client.proto.examples.FakeCmd".into()
-    }
+    const PACKAGE: &'static str = "examples";
 }
 
 struct OrderHandler;
@@ -122,10 +113,10 @@ impl OrderFulfillmentSaga {
     }
 }
 
-struct PlayerUpcaster;
+struct OrderUpcaster;
 
-#[upcaster(name = "player-v1-to-v2", domain = "player")]
-impl PlayerUpcaster {
+#[upcaster(name = "order-v1-to-v2", domain = "order")]
+impl OrderUpcaster {
     #[upcasts(from = FakeCmd, to = FakeCmd)]
     fn noop(old: FakeCmd) -> FakeCmd {
         old
@@ -137,10 +128,15 @@ impl PlayerUpcaster {
 )]
 async fn given_command_handler(
     world: &mut DecoratorsWorldCucumber,
-    _name: String,
+    name: String,
     _domain: String,
-    _state_type: String,
+    state_type: String,
 ) {
+    // The declared domain is read back from the config by the Then steps.
+    assert_eq!(
+        (name.as_str(), state_type.as_str()),
+        ("Order", "OrderState")
+    );
     let cfg = OrderHandler.config();
     world.set_config(cfg);
 }
@@ -150,11 +146,13 @@ async fn given_command_handler(
 )]
 async fn given_saga(
     world: &mut DecoratorsWorldCucumber,
-    _name: String,
+    name: String,
     _saga_name: String,
     _source: String,
     _target: String,
 ) {
+    // Name, source and target are read back from the config by the Thens.
+    assert_eq!(name, "OrderFulfillment");
     let cfg = OrderFulfillmentSaga.config();
     world.set_config(cfg);
 }
@@ -189,11 +187,13 @@ async fn then_saga_target(world: &mut DecoratorsWorldCucumber, expected: String)
 )]
 async fn given_upcaster(
     world: &mut DecoratorsWorldCucumber,
-    _cls: String,
+    cls: String,
     _name: String,
     _domain: String,
 ) {
-    let cfg = PlayerUpcaster.config();
+    // Name and domain are read back from the config by the Then steps.
+    assert_eq!(cls, "OrderUpcaster");
+    let cfg = OrderUpcaster.config();
     world.set_config(cfg);
 }
 
@@ -205,13 +205,4 @@ async fn then_upcaster_name(world: &mut DecoratorsWorldCucumber, expected: Strin
 #[then(regex = r#"^the handler config's upcaster domain is "([^"]+)"$"#)]
 async fn then_upcaster_domain(world: &mut DecoratorsWorldCucumber, expected: String) {
     world.with_upcaster(|_, d| assert_eq!(d, expected.as_str()));
-}
-
-// Silence unused-import warnings on types we intentionally reference via
-// the proc-macro expansion of OrderHandler / OrderFulfillmentSaga.
-#[allow(dead_code)]
-fn _touch() {
-    let _: fn(ContextualCommand) -> HandlerRequest = HandlerRequest::CommandHandler;
-    let _: fn(BusinessResponse) -> HandlerResponse = HandlerResponse::CommandHandler;
-    let _: Option<CommandBook> = None;
 }

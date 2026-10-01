@@ -72,10 +72,13 @@ generate-proto-force:
 build: generate-proto
     cargo build --workspace
 
-# Run all tests: lib tests + cucumber feature suites + trybuild UI snapshots.
+# Run all tests: lib unit tests, the router integration tests (trybuild UI
+# snapshots + fact/replay + mode inference; serial so trybuild's shared build
+# dir is not contended) and the cucumber feature gate.
 test: generate-proto
     cargo test --workspace --lib
-    cargo test --test features --no-fail-fast
+    cargo test --test router -- --test-threads=1
+    cargo test --test features
 
 # Run clippy linter
 lint: generate-proto

@@ -1,287 +1,291 @@
-//! DomainClient step definitions.
+//! Step definitions for `features/client/domain-client.feature`.
+//!
+//! The coordinator for domain "test" is the in-process test backend
+//! (`tests/common/backend.rs`) listening on the Unix socket that
+//! `resolve_ch_endpoint("test", Standalone)` names
+//! (`$ANGZARR_UDS_BASE/ch-test.sock`), so `DomainClient::for_domain`,
+//! `DomainClient::connect` and `DomainClient::from_env` all reach the
+//! same backend over a real socket.
 
+use std::path::PathBuf;
+use std::time::Duration;
+
+use angzarr_client::proto::{CommandResponse, EventPage};
+use angzarr_client::{
+    ClientError, CommandBuilderExt, DomainClient, QueryBuilderExt, TransportMode,
+};
 use cucumber::{given, then, when, World};
-use std::collections::HashMap;
+use uuid::Uuid;
 
-/// Test context for DomainClient scenarios.
+use crate::common::backend::{
+    cover, env_lock, root_for, GenericCommand, Hidden, TestBackend, TYPE_PREFIX,
+};
+
 #[derive(Debug, Default, World)]
 pub struct DomainClientWorld {
+    backend: Option<TestBackend>,
+    uds_base: Option<PathBuf>,
+    client: Hidden<DomainClient>,
     domain: String,
-    /// Captured from `a registered aggregate handler for domain "X"`. Stored
-    /// (rather than discarded) so a Then step can verify the spec contract
-    /// independently of the coordinator's domain capture.
-    handler_domain: String,
-    endpoint: String,
-    domain_client_created: bool,
-    domain_client_connected: bool,
-    domain_client_closed: bool,
-    can_query: bool,
-    can_command: bool,
-    command_sent: bool,
-    query_executed: bool,
-    events_received: u32,
-    command_response_received: bool,
-    same_connection_used: bool,
-    error: Option<String>,
-    env_var: Option<String>,
-    aggregates: HashMap<String, u32>,
+    root: Option<Uuid>,
+    command: Option<Result<CommandResponse, ClientError>>,
+    pages: Option<Result<Vec<EventPage>, ClientError>>,
+    env_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+    env_vars: Vec<String>,
+    accepted_before_close: usize,
 }
 
-// ==========================================================================
-// Background Steps
-// ==========================================================================
-
-#[given(expr = "a running aggregate coordinator for domain {string}")]
-async fn given_running_coordinator(world: &mut DomainClientWorld, domain: String) {
-    world.domain = domain;
-}
-
-#[given(expr = "a registered aggregate handler for domain {string}")]
-async fn given_registered_handler(world: &mut DomainClientWorld, domain: String) {
-    // Capture the spec-named domain so the Then step can verify it
-    // independently of the coordinator's domain capture.
-    world.handler_domain = domain;
-}
-
-// ==========================================================================
-// Given Steps
-// ==========================================================================
-
-#[given(expr = "an aggregate {string} with root {string} has {int} events")]
-async fn given_aggregate_with_events(
-    world: &mut DomainClientWorld,
-    domain: String,
-    root: String,
-    count: u32,
-) {
-    let key = format!("{}:{}", domain, root);
-    world.aggregates.insert(key, count);
-}
-
-#[given("a connected DomainClient")]
-async fn given_connected_domain_client(world: &mut DomainClientWorld) {
-    world.domain_client_created = true;
-    world.domain_client_connected = true;
-}
-
-#[given(expr = "environment variable {string} is set to the coordinator endpoint")]
-async fn given_env_var_set(world: &mut DomainClientWorld, var_name: String) {
-    world.env_var = Some(var_name);
-    world.endpoint = "http://localhost:1310".to_string();
-}
-
-// ==========================================================================
-// When Steps
-// ==========================================================================
-
-#[when("I create a DomainClient for the coordinator endpoint")]
-async fn when_create_domain_client_coordinator(world: &mut DomainClientWorld) {
-    world.domain_client_created = true;
-    world.domain_client_connected = true;
-    world.can_query = true;
-    world.can_command = true;
-}
-
-#[when(expr = "I create a DomainClient for domain {string}")]
-async fn when_create_domain_client_domain(world: &mut DomainClientWorld, domain: String) {
-    world.domain = domain;
-    world.domain_client_created = true;
-    world.domain_client_connected = true;
-    world.can_query = true;
-    world.can_command = true;
-}
-
-#[when("I use the command builder to send a command")]
-async fn when_use_command_builder(world: &mut DomainClientWorld) {
-    world.command_sent = true;
-    world.command_response_received = true;
-}
-
-#[when("I use the query builder to fetch events for that root")]
-async fn when_use_query_builder(world: &mut DomainClientWorld) {
-    world.query_executed = true;
-    // Find the aggregate and return its event count
-    for (key, count) in &world.aggregates {
-        if key.starts_with(&world.domain) {
-            world.events_received = *count;
-            break;
+impl Drop for DomainClientWorld {
+    fn drop(&mut self) {
+        for name in &self.env_vars {
+            std::env::remove_var(name);
+        }
+        if let Some(base) = &self.uds_base {
+            let _ = std::fs::remove_dir_all(base);
         }
     }
 }
 
+impl DomainClientWorld {
+    fn backend(&self) -> &TestBackend {
+        self.backend.as_ref().expect("coordinator running")
+    }
+
+    async fn lock_env(&mut self) {
+        if self.env_guard.is_none() {
+            self.env_guard = Some(env_lock().lock_owned().await);
+        }
+    }
+
+    async fn send(&self) -> Result<CommandResponse, ClientError> {
+        let root = self.root.unwrap_or_else(Uuid::new_v4);
+        self.client
+            .get()
+            .command(&self.domain, root)
+            .with_command(
+                format!("{TYPE_PREFIX}AddItem"),
+                &GenericCommand {
+                    data: "via-domain-client".into(),
+                    count: 1,
+                },
+            )
+            .with_sequence(0)
+            .execute()
+            .await
+    }
+
+    fn command_ok(&self) -> &CommandResponse {
+        match self.command.as_ref().expect("a command was sent") {
+            Ok(r) => r,
+            Err(e) => panic!("command failed: {e:?}"),
+        }
+    }
+}
+
+// --------------------------------------------------------------------------
+// Arrangement
+// --------------------------------------------------------------------------
+
+#[given(expr = "a running aggregate coordinator for domain {string}")]
+async fn given_coordinator(world: &mut DomainClientWorld, domain: String) {
+    let base = std::env::temp_dir().join(format!("angzarr-dc-{}", Uuid::new_v4()));
+    let socket = base.join(format!("ch-{domain}.sock"));
+    world.backend = Some(TestBackend::start_uds(&socket).await);
+    world.uds_base = Some(base);
+    world.domain = domain;
+}
+
+#[given(expr = "a registered aggregate handler for domain {string}")]
+async fn given_handler(world: &mut DomainClientWorld, domain: String) {
+    world.backend().set_known_domains(&[domain.as_str()]);
+}
+
+#[given(expr = "an aggregate {string} with root {string} has {int} events")]
+async fn given_events(world: &mut DomainClientWorld, domain: String, root: String, n: u32) {
+    world
+        .backend()
+        .seed(&cover(&domain, &root, None, ""), "ItemAdded", n);
+    world.root = Some(root_for(&root));
+}
+
+#[given("a connected domain client")]
+async fn given_connected(world: &mut DomainClientWorld) {
+    let client = DomainClient::connect(world.backend().endpoint())
+        .await
+        .expect("domain client connects");
+    world.client.set(client);
+}
+
+#[given(expr = "environment variable {string} is set to the coordinator endpoint")]
+async fn given_env(world: &mut DomainClientWorld, name: String) {
+    world.lock_env().await;
+    std::env::set_var(&name, world.backend().endpoint());
+    world.env_vars.push(name);
+}
+
+// --------------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------------
+
+#[when("I create a domain client for the coordinator endpoint")]
+async fn when_create_endpoint(world: &mut DomainClientWorld) {
+    given_connected(world).await;
+}
+
+#[when(expr = "I create a domain client for domain {string}")]
+async fn when_create_for_domain(world: &mut DomainClientWorld, domain: String) {
+    world.lock_env().await;
+    let base = world.uds_base.clone().expect("coordinator socket base");
+    std::env::set_var(angzarr_client::transport::ENV_UDS_BASE, &base);
+    world
+        .env_vars
+        .push(angzarr_client::transport::ENV_UDS_BASE.to_string());
+    let client = DomainClient::for_domain(&domain, Some(TransportMode::Standalone))
+        .await
+        .expect("for_domain resolves and connects to the coordinator");
+    world.client.set(client);
+    world.domain = domain;
+}
+
+#[when("I use the command builder to send a command")]
+async fn when_builder_send(world: &mut DomainClientWorld) {
+    world.command = Some(world.send().await);
+}
+
+#[when("I use the query builder to fetch events for that root")]
+async fn when_builder_query(world: &mut DomainClientWorld) {
+    let root = world.root.expect("root seeded");
+    world.pages = Some(
+        world
+            .client
+            .get()
+            .query(&world.domain, root)
+            .get_pages()
+            .await,
+    );
+}
+
 #[when("I send a command")]
-async fn when_send_command(world: &mut DomainClientWorld) {
-    world.command_sent = true;
-    world.same_connection_used = true;
+async fn when_send(world: &mut DomainClientWorld) {
+    world.root = Some(Uuid::new_v4());
+    world.command = Some(world.send().await);
 }
 
 #[when("I query for the resulting events")]
-async fn when_query_resulting_events(world: &mut DomainClientWorld) {
-    world.query_executed = true;
-    world.same_connection_used = true;
+async fn when_query_resulting(world: &mut DomainClientWorld) {
+    let root = world.root.expect("command sent");
+    world.pages = Some(
+        world
+            .client
+            .get()
+            .query(&world.domain, root)
+            .get_pages()
+            .await,
+    );
 }
 
-#[when("I close the DomainClient")]
-async fn when_close_domain_client(world: &mut DomainClientWorld) {
-    world.domain_client_closed = true;
-    world.domain_client_connected = false;
+#[when("I close the domain client")]
+async fn when_close(world: &mut DomainClientWorld) {
+    world.accepted_before_close = world.backend().accepted_connections();
+    assert_eq!(world.backend().active_connections(), 1);
+    world.client.take().expect("client connected").close();
 }
 
-#[when(expr = "I create a DomainClient from environment variable {string}")]
-async fn when_create_from_env(world: &mut DomainClientWorld, var_name: String) {
-    world.env_var = Some(var_name);
-    world.domain_client_created = true;
-    world.domain_client_connected = true;
+#[when(expr = "I create a domain client from environment variable {string}")]
+async fn when_from_env(world: &mut DomainClientWorld, name: String) {
+    let client = DomainClient::from_env(&name, "unix:///nonexistent/default.sock")
+        .await
+        .expect("from_env connects to the endpoint in the variable");
+    world.client.set(client);
 }
 
-// ==========================================================================
-// Then Steps
-// ==========================================================================
+// --------------------------------------------------------------------------
+// Outcomes
+// --------------------------------------------------------------------------
 
 #[then("I should be able to query events")]
 async fn then_can_query(world: &mut DomainClientWorld) {
-    assert!(world.can_query);
+    let book = world
+        .client
+        .get()
+        .query(&world.domain, Uuid::new_v4())
+        .get_event_book()
+        .await
+        .expect("query succeeds");
+    assert!(book.pages.is_empty());
+    assert!(world.backend().rpcs().contains(&"GetEventBook"));
 }
 
 #[then("I should be able to send commands")]
-async fn then_can_command(world: &mut DomainClientWorld) {
-    assert!(world.can_command);
+async fn then_can_send(world: &mut DomainClientWorld) {
+    let resp = world.send().await.expect("command succeeds");
+    assert_eq!(resp.events.expect("events").pages.len(), 1);
 }
 
-#[then("I should receive a CommandResponse")]
-async fn then_receive_command_response(world: &mut DomainClientWorld) {
-    assert!(world.command_response_received);
+#[then("I should receive a command response")]
+async fn then_command_response(world: &mut DomainClientWorld) {
+    let events = world.command_ok().events.as_ref().expect("events");
+    assert_eq!(events.pages.len(), 1);
+    assert_eq!(events.cover.as_ref().expect("cover").domain, world.domain);
 }
 
-#[then(expr = "I should receive {int} EventPages")]
-async fn then_receive_event_pages(world: &mut DomainClientWorld, count: u32) {
-    assert_eq!(world.events_received, count);
+#[then(expr = "I should receive {int} event pages")]
+async fn then_n_pages(world: &mut DomainClientWorld, n: usize) {
+    let pages = world
+        .pages
+        .as_ref()
+        .expect("query made")
+        .as_ref()
+        .expect("query succeeds");
+    assert_eq!(pages.len(), n);
 }
 
 #[then("both operations should succeed on the same connection")]
 async fn then_same_connection(world: &mut DomainClientWorld) {
-    assert!(world.same_connection_used);
-    assert!(world.command_sent);
-    assert!(world.query_executed);
+    world.command_ok();
+    let pages = world
+        .pages
+        .as_ref()
+        .expect("query made")
+        .as_ref()
+        .expect("query succeeds");
+    assert_eq!(pages.len(), 1, "query sees the command's event");
+    assert_eq!(world.backend().accepted_connections(), 1);
 }
 
-#[then("subsequent commands should fail with ConnectionError")]
-async fn then_commands_fail_connection_error(world: &mut DomainClientWorld) {
-    assert!(world.domain_client_closed);
-    world.error = Some("ConnectionError".to_string());
+async fn assert_severed(world: &DomainClientWorld) {
+    let backend = world.backend();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while backend.active_connections() > 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "connection still open after close"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!world.client.is_some(), "closed client is consumed");
+    assert_eq!(backend.accepted_connections(), world.accepted_before_close);
 }
 
-#[then("subsequent queries should fail with ConnectionError")]
-async fn then_queries_fail_connection_error(world: &mut DomainClientWorld) {
-    assert!(world.domain_client_closed);
-    world.error = Some("ConnectionError".to_string());
+#[then("subsequent commands should fail with a connection error")]
+async fn then_commands_fail(world: &mut DomainClientWorld) {
+    assert_severed(world).await;
 }
 
-#[then("the DomainClient should be connected")]
-async fn then_domain_client_connected(world: &mut DomainClientWorld) {
-    assert!(world.domain_client_connected);
+#[then("subsequent queries should fail with a connection error")]
+async fn then_queries_fail(world: &mut DomainClientWorld) {
+    assert_severed(world).await;
 }
 
-// --------------------------------------------------------------------------
-// Spec-mutation guards: independent capture from the spec text.
-// --------------------------------------------------------------------------
-
-#[then(expr = "the active domain is {string}")]
-async fn then_active_domain(world: &mut DomainClientWorld, expected: String) {
-    assert_eq!(
-        world.domain, expected,
-        "world.domain={:?} expected={:?}",
-        world.domain, expected
-    );
-}
-
-#[then(expr = "the registered handler is for domain {string}")]
-async fn then_handler_domain(world: &mut DomainClientWorld, expected: String) {
-    assert_eq!(
-        world.handler_domain, expected,
-        "world.handler_domain={:?} expected={:?}",
-        world.handler_domain, expected
-    );
-}
-
-#[then(expr = "the env var name was {string}")]
-async fn then_env_var_name(world: &mut DomainClientWorld, expected: String) {
-    let actual = world.env_var.as_deref().unwrap_or("");
-    assert_eq!(
-        actual, expected,
-        "world.env_var={:?} expected={:?}",
-        actual, expected
-    );
-}
-
-// ---------------------------------------------------------------------------
-// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
-// ---------------------------------------------------------------------------
-
-// TODO (WIP): Implement this step matcher properly.
-#[when(regex = r"^I create a domain client for the coordinator endpoint$")]
-async fn wip_when_i_create_a_domain_client_for_the_coordinator_endpo(
-    _world: &mut DomainClientWorld,
-) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[when(regex = r#"^I create a domain client for domain "([^"]*)"$"#)]
-async fn wip_when_i_create_a_domain_client_for_domain_test(_world: &mut DomainClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^I should receive a command response$")]
-async fn wip_then_i_should_receive_a_command_response(_world: &mut DomainClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^I should receive (-?\d+) event pages$")]
-async fn wip_then_i_should_receive_5_event_pages(_world: &mut DomainClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[given(regex = r"^a connected domain client$")]
-async fn wip_given_a_connected_domain_client(_world: &mut DomainClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[when(regex = r"^I close the domain client$")]
-async fn wip_when_i_close_the_domain_client(_world: &mut DomainClientWorld) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^subsequent commands should fail with a connection error$")]
-async fn wip_then_subsequent_commands_should_fail_with_a_connection(
-    _world: &mut DomainClientWorld,
-) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^subsequent queries should fail with a connection error$")]
-async fn wip_then_subsequent_queries_should_fail_with_a_connection_e(
-    _world: &mut DomainClientWorld,
-) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[when(regex = r#"^I create a domain client from environment variable "([^"]*)"$"#)]
-async fn wip_when_i_create_a_domain_client_from_environment_variable(
-    _world: &mut DomainClientWorld,
-) {
-    panic!("WIP: step needs implementation");
-}
-
-// TODO (WIP): Implement this step matcher properly.
-#[then(regex = r"^the domain client should be connected$")]
-async fn wip_then_the_domain_client_should_be_connected(_world: &mut DomainClientWorld) {
-    panic!("WIP: step needs implementation");
+#[then("the domain client should be connected")]
+async fn then_connected(world: &mut DomainClientWorld) {
+    let book = world
+        .client
+        .get()
+        .query(&world.domain, Uuid::new_v4())
+        .get_event_book()
+        .await
+        .expect("query over the env-resolved endpoint succeeds");
+    assert!(book.pages.is_empty());
+    assert_eq!(world.backend().accepted_connections(), 1);
 }
