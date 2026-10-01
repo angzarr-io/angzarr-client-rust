@@ -243,6 +243,26 @@ pub trait Handler: Send + Sync {
     fn config(&self) -> HandlerConfig;
 }
 
+/// Compile-time kind marker and dispatch-table constructor.
+///
+/// `Router::with_handler::<H, F>` reads `H::KIND` and `H::handler_config()`
+/// without invoking the factory, and `Router::build` turns the factory into
+/// the component's angzarr-router dispatch table through
+/// [`HandlerKind::component`].
+pub trait HandlerKind: Sized + Send + Sync + 'static {
+    const KIND: Kind;
+
+    /// Static handler config — no instance required.
+    fn handler_config() -> HandlerConfig;
+
+    /// The component's angzarr-router dispatch table. Handler methods run
+    /// on a fresh instance from `factory` per dispatch.
+    #[doc(hidden)]
+    fn component(
+        factory: crate::router::component::Factory<Self>,
+    ) -> crate::router::component::Component;
+}
+
 #[cfg(test)]
 mod kind_str_tests {
     use super::Kind;
@@ -272,24 +292,4 @@ mod kind_str_tests {
             assert_eq!(kind.to_string(), kind.as_str());
         }
     }
-}
-
-/// Compile-time kind marker and dispatch-table constructor.
-///
-/// `Router::with_handler::<H, F>` reads `H::KIND` and `H::handler_config()`
-/// without invoking the factory, and `Router::build` turns the factory into
-/// the component's angzarr-router dispatch table through
-/// [`HandlerKind::component`].
-pub trait HandlerKind: Sized + Send + Sync + 'static {
-    const KIND: Kind;
-
-    /// Static handler config — no instance required.
-    fn handler_config() -> HandlerConfig;
-
-    /// The component's angzarr-router dispatch table. Handler methods run
-    /// on a fresh instance from `factory` per dispatch.
-    #[doc(hidden)]
-    fn component(
-        factory: crate::router::component::Factory<Self>,
-    ) -> crate::router::component::Component;
 }

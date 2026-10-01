@@ -47,6 +47,8 @@ impl StatefulUpcaster {
         OrderCreatedV2::default()
     }
 
+    // Declared for the macro to accept; upcasters never call it.
+    #[allow(dead_code)]
     #[state_factory]
     fn empty_state() {}
 }

@@ -632,7 +632,7 @@ mod tests {
 
         let details = status.details();
         assert!(!details.is_empty(), "binary details trailer must be set");
-        let (code, metadata, cover) = unpack_status_details(&details).expect("decode");
+        let (code, metadata, cover) = unpack_status_details(details).expect("decode");
         assert_eq!(code, "ALREADY_OPEN");
         assert_eq!(metadata.get("field").map(String::as_str), Some("status"));
         assert!(cover.is_none());
@@ -656,7 +656,7 @@ mod tests {
             ..Default::default()
         });
         let status: Status = rej.into();
-        let (code, _metadata, unpacked) = unpack_status_details(&status.details()).expect("decode");
+        let (code, _metadata, unpacked) = unpack_status_details(status.details()).expect("decode");
         assert_eq!(code, "ENTITY_NOT_FOUND");
         let cover = unpacked.expect("cover roundtripped");
         assert_eq!(cover.domain, "player");
@@ -674,7 +674,7 @@ mod tests {
             std::iter::empty::<(String, String)>(),
         );
         let status: Status = rej.into();
-        let (code, _metadata, cover) = unpack_status_details(&status.details()).expect("decode");
+        let (code, _metadata, cover) = unpack_status_details(status.details()).expect("decode");
         assert_eq!(code, "X");
         assert!(cover.is_none());
     }

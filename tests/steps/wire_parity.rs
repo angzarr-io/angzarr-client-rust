@@ -123,7 +123,11 @@ fn parse_hex_range(s: &str) -> Vec<u8> {
 
 /// Parse a contiguous hex string like `01020304` into bytes.
 fn parse_hex_bytes(s: &str) -> Vec<u8> {
-    assert!(s.len() % 2 == 0, "hex string must be even length: {:?}", s);
+    assert!(
+        s.len().is_multiple_of(2),
+        "hex string must be even length: {:?}",
+        s
+    );
     (0..s.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("invalid hex"))

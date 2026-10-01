@@ -291,7 +291,6 @@ impl Origin {
                     source_seq: self.source_seq,
                     source_component: self.saga_name.clone(),
                     command_index: 0,
-                    ..Default::default()
                 },
             )),
             sync_mode: None,

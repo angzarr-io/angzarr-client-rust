@@ -251,14 +251,16 @@ fn dispatch_replay_round_trips_state_through_any() {
 
     // Base snapshot: order_id="initial", apply_count=5.
     let mut req = ReplayRequest::default();
-    let mut snap = Snapshot::default();
-    snap.state = Some(Any {
-        type_url: full_type_url::<OrderState>(),
-        value: ::prost::Message::encode_to_vec(&OrderState {
-            order_id: "initial".into(),
-            apply_count: 5,
+    let snap = Snapshot {
+        state: Some(Any {
+            type_url: full_type_url::<OrderState>(),
+            value: ::prost::Message::encode_to_vec(&OrderState {
+                order_id: "initial".into(),
+                apply_count: 5,
+            }),
         }),
-    });
+        ..Default::default()
+    };
     req.base_snapshot = Some(snap);
 
     // One OrderCreated event to apply.

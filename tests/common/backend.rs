@@ -479,7 +479,6 @@ impl TestBackend {
                     name,
                     &format!("{name}-{seq}"),
                 ))),
-                ..Default::default()
             });
         }
         if !cover.correlation_id.is_empty() {
@@ -502,7 +501,6 @@ impl TestBackend {
             }),
             created_at: Some(at.unwrap_or_else(now)),
             payload: Some(event_page::Payload::Event(event_any(name, data))),
-            ..Default::default()
         });
         if !cover.correlation_id.is_empty() {
             agg.correlations.insert(cover.correlation_id.clone());
@@ -633,7 +631,6 @@ fn build_pages(decided: &Decided, first_seq: u32) -> Vec<EventPage> {
             }),
             created_at: Some(now()),
             payload: Some(event_page::Payload::Event(event_any(name, data))),
-            ..Default::default()
         })
         .collect()
 }

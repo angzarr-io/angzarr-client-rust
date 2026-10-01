@@ -577,6 +577,9 @@ mod tests {
 
     /// Readiness flips to SERVING as soon as the listener is bound, not on
     /// the next supervisor interval (30s by default).
+    // ENV_LOCK stays held across the yield so the spawned runner reads the
+    // bind address before another test changes it.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn readiness_serves_promptly_after_bind() {
         let port = {
@@ -618,6 +621,9 @@ mod tests {
 
     /// A TCP bind failure is reported as a structured error from the
     /// runner, before anything is marked bound.
+    // ENV_LOCK stays held across the yield so the spawned runner reads the
+    // bind address before another test changes it.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn tcp_bind_failure_is_a_structured_error() {
         let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

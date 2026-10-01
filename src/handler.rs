@@ -327,7 +327,7 @@ mod tests {
         let status = client_error_to_status(err);
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
         assert_eq!(status.message(), "value must be positive");
-        let (code, _meta, _cover) = unpack_status_details(&status.details()).expect("decode");
+        let (code, _meta, _cover) = unpack_status_details(status.details()).expect("decode");
         assert_eq!(code, "BAD_INPUT");
     }
 
@@ -339,7 +339,7 @@ mod tests {
             [("field", "amount"), ("expected", "positive")],
         );
         let status = client_error_to_status(err);
-        let (_code, metadata, _cover) = unpack_status_details(&status.details()).expect("decode");
+        let (_code, metadata, _cover) = unpack_status_details(status.details()).expect("decode");
         assert_eq!(metadata.get("field").map(String::as_str), Some("amount"));
         assert_eq!(
             metadata.get("expected").map(String::as_str),
@@ -355,7 +355,7 @@ mod tests {
             [("field", "amount")],
         );
         let status = client_error_to_status(ClientError::Rejected(rej));
-        let (code, metadata, _cover) = unpack_status_details(&status.details()).expect("decode");
+        let (code, metadata, _cover) = unpack_status_details(status.details()).expect("decode");
         assert_eq!(code, "VALUE_NOT_POSITIVE");
         assert_eq!(metadata.get("field").map(String::as_str), Some("amount"));
     }
@@ -368,7 +368,7 @@ mod tests {
         );
         assert_eq!(status.code(), tonic::Code::Unimplemented);
         assert_eq!(status.message(), messages::HANDLER_DOES_NOT_SUPPORT_FACT);
-        let (code, _meta, _cover) = unpack_status_details(&status.details()).expect("decode");
+        let (code, _meta, _cover) = unpack_status_details(status.details()).expect("decode");
         assert_eq!(code, codes::HANDLER_DOES_NOT_SUPPORT_FACT);
     }
 

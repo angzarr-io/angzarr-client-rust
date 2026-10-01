@@ -53,7 +53,7 @@ async fn then_domains_contains(world: &mut DestinationsWorld, domain: String) {
         .expect("Destinations must be set");
     let found: Vec<&str> = dest.domains().iter().map(String::as_str).collect();
     assert!(
-        found.iter().any(|d| *d == domain.as_str()),
+        found.contains(&domain.as_str()),
         "domain {:?} not in {:?}",
         domain,
         found

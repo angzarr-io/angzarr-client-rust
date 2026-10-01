@@ -76,7 +76,7 @@ pub fn command_type_url(cmd: &CommandBook) -> String {
 }
 
 /// The emitted command whose payload is of type `M`.
-pub fn command_of<'a, M: Name>(commands: &'a [CommandBook]) -> &'a CommandBook {
+pub fn command_of<M: Name>(commands: &[CommandBook]) -> &CommandBook {
     let url = angzarr_client::full_type_url::<M>();
     commands
         .iter()

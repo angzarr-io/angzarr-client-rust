@@ -136,6 +136,7 @@ impl SagaB {
 
 // --- process managers ------------------------------------------------------
 
+#[allow(clippy::upper_case_acronyms)]
 pub struct PMA {
     log: Log,
 }
@@ -162,6 +163,7 @@ impl PMA {
     }
 }
 
+#[allow(clippy::upper_case_acronyms)]
 pub struct PMB {
     log: Log,
 }

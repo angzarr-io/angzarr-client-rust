@@ -82,7 +82,7 @@ test: generate-proto
 
 # Run clippy linter
 lint: generate-proto
-    cargo clippy --workspace -- -D warnings
+    cargo clippy --workspace --all-targets --features testing -- -D warnings
 
 # Check formatting (use fmt-fix to auto-format)
 fmt: generate-proto
