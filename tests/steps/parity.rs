@@ -189,9 +189,8 @@ async fn then_testing_not_at_root(_world: &mut ParityWorld) {
             "\"{name}\" is re-exported from the angzarr_client root"
         );
     }
-    // Importing them from the root must not compile.
-    let t = trybuild::TestCases::new();
-    t.compile_fail("tests/router/ui/testing_helpers_at_root.rs");
+    // `root_probe` compiles only while the crate root exports none of them.
+    root_probe::check();
 }
 
 #[then(expr = "the {string} constant is exported")]
@@ -243,4 +242,45 @@ mod compile_probe {
         META_ANGZARR_DOMAIN, PROJECTION_DOMAIN_PREFIX, PROJECTION_TYPE_URL, TYPE_URL_PREFIX,
         UNKNOWN_DOMAIN, WILDCARD_DOMAIN,
     };
+}
+
+/// Compiles only while the crate root exports none of the testing helpers:
+/// each name below is also provided by `fallback`, and a name both glob
+/// imports provide is ambiguous at its use site.
+#[allow(non_upper_case_globals, dead_code)]
+mod root_probe {
+    mod fallback {
+        pub const make_timestamp: u8 = 0;
+        pub const make_cover: u8 = 0;
+        pub const make_event_page: u8 = 0;
+        pub const make_event_book: u8 = 0;
+        pub const make_command_page: u8 = 0;
+        pub const make_command_book: u8 = 0;
+        pub const uuid_for: u8 = 0;
+        pub const uuid_str_for: u8 = 0;
+        pub const uuid_obj_for: u8 = 0;
+        pub const DEFAULT_TEST_NAMESPACE: u8 = 0;
+        pub struct ScenarioContext;
+    }
+
+    #[allow(unused_imports)]
+    use angzarr_client::*;
+    use fallback::*;
+
+    pub fn check() {
+        let names: [u8; 10] = [
+            make_timestamp,
+            make_cover,
+            make_event_page,
+            make_event_book,
+            make_command_page,
+            make_command_book,
+            uuid_for,
+            uuid_str_for,
+            uuid_obj_for,
+            DEFAULT_TEST_NAMESPACE,
+        ];
+        assert_eq!(names, [0; 10]);
+        let _: fallback::ScenarioContext = ScenarioContext;
+    }
 }
