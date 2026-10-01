@@ -89,15 +89,31 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
         self
     }
 
+    /// Set the command type URL alone; pair with
+    /// [`with_payload`](Self::with_payload).
+    pub fn with_type_url(mut self, type_url: impl Into<String>) -> Self {
+        self.type_url = Some(type_url.into());
+        self
+    }
+
+    /// Set the already-encoded command payload; pair with
+    /// [`with_type_url`](Self::with_type_url).
+    pub fn with_payload(mut self, payload: Vec<u8>) -> Self {
+        self.payload = Some(payload);
+        self
+    }
+
     /// Build the CommandBook without executing.
     ///
-    /// Required setters: [`with_command`](Self::with_command) (type
-    /// URL + payload) and [`with_sequence`](Self::with_sequence)
-    /// (optimistic-lock sequence). Without either, `build()` returns
-    /// `COMMAND_*_MISSING`. `correlation_id` defaults to a fresh
-    /// random UUID v4 when unset; `sync_mode` rides into the page
-    /// header iff [`with_sync_mode`](Self::with_sync_mode) was called.
-    /// Matches Python's `CommandBuilder.build` contract.
+    /// Requires a type URL and payload ([`with_command`](Self::with_command),
+    /// or [`with_type_url`](Self::with_type_url) plus
+    /// [`with_payload`](Self::with_payload)); without either `build()`
+    /// returns `COMMAND_TYPE_URL_MISSING` / `COMMAND_PAYLOAD_MISSING`.
+    /// The sequence defaults to 0 (a new aggregate) when
+    /// [`with_sequence`](Self::with_sequence) is not called.
+    /// `correlation_id` defaults to a fresh random UUID v4; `sync_mode`
+    /// rides into the page header iff [`with_sync_mode`](Self::with_sync_mode)
+    /// was called.
     pub fn build(self) -> Result<CommandBook> {
         let type_url = self.type_url.ok_or_else(|| {
             ClientError::invalid_argument(
@@ -113,13 +129,7 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
                 std::iter::empty::<(String, String)>(),
             )
         })?;
-        let sequence = self.sequence.ok_or_else(|| {
-            ClientError::invalid_argument(
-                codes::COMMAND_SEQUENCE_MISSING,
-                messages::COMMAND_SEQUENCE_MISSING,
-                std::iter::empty::<(String, String)>(),
-            )
-        })?;
+        let sequence = self.sequence.unwrap_or(0);
         let correlation_id = self
             .correlation_id
             .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -527,26 +537,45 @@ mod tests {
     }
 
     #[test]
-    fn test_command_builder_build_missing_sequence_is_invalid_argument() {
-        // Sequence is required, matching Python builder.py:83-84 which
-        // raises InvalidArgumentError("sequence not set (call with_sequence)").
+    fn test_command_builder_build_without_sequence_defaults_to_zero() {
         let client = MockGatewayClient::new(CommandResponse::default());
-        let root = Uuid::new_v4();
         let msg = prost_types::Duration {
             seconds: 42,
             nanos: 0,
         };
-        let result = CommandBuilder::new(&client, "orders", root)
+        let book = CommandBuilder::new(&client, "orders", Uuid::new_v4())
             .with_command("type.googleapis.com/test.Command", &msg)
-            .build();
+            .build()
+            .expect("sequence defaults to 0");
+        let header = book.pages[0].header.as_ref().expect("header");
+        assert_eq!(header.sequence_type, Some(SequenceType::Sequence(0)));
+    }
 
-        let err = result.expect_err("build should fail when sequence is unset");
-        assert!(
-            err.is_invalid_argument(),
-            "expected InvalidArgument, got {:?}",
-            err
-        );
-        assert!(err.to_string().contains("sequence not set"));
+    #[test]
+    fn test_command_builder_type_url_without_payload_is_payload_missing() {
+        let client = MockGatewayClient::new(CommandResponse::default());
+        let err = CommandBuilder::new(&client, "orders", Uuid::new_v4())
+            .with_type_url("type.googleapis.com/test.Command")
+            .build()
+            .expect_err("payload is required");
+        assert_eq!(err.code(), codes::COMMAND_PAYLOAD_MISSING);
+    }
+
+    #[test]
+    fn test_command_builder_type_url_and_payload_set_separately() {
+        let client = MockGatewayClient::new(CommandResponse::default());
+        let book = CommandBuilder::new(&client, "orders", Uuid::new_v4())
+            .with_payload(vec![1, 2, 3])
+            .with_type_url("type.googleapis.com/test.Command")
+            .build()
+            .expect("type URL and payload set");
+        match &book.pages[0].payload {
+            Some(crate::proto::command_page::Payload::Command(any)) => {
+                assert_eq!(any.type_url, "type.googleapis.com/test.Command");
+                assert_eq!(any.value, vec![1, 2, 3]);
+            }
+            other => panic!("expected a command payload, got {other:?}"),
+        }
     }
 
     #[tokio::test]

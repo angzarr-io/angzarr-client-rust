@@ -40,6 +40,10 @@ struct Recipe {
     merge: Option<MergeStrategy>,
     /// Payload passed to `with_command`.
     command: Option<Payload>,
+    /// Type URL set on its own via `with_type_url`.
+    type_url: Option<String>,
+    /// Encoded payload set on its own via `with_payload`.
+    payload: Option<Vec<u8>>,
 }
 
 /// Typed payload a recipe passes to `with_command`.
@@ -67,6 +71,12 @@ fn apply<'a, C: GatewayClient>(client: &'a C, r: &Recipe) -> angzarr_client::Com
         Some(Payload::CreateOrder(m)) => b = b.with_command(full_type_url::<CreateOrder>(), m),
         Some(Payload::Test(m)) => b = b.with_command(TEST_COMMAND_URL, m),
         None => {}
+    }
+    if let Some(url) = &r.type_url {
+        b = b.with_type_url(url.clone());
+    }
+    if let Some(bytes) = &r.payload {
+        b = b.with_payload(bytes.clone());
     }
     b
 }
@@ -201,15 +211,15 @@ async fn when_new_aggregate(world: &mut CommandBuilderWorld, domain: String) {
 #[when(expr = "I set the command type to {string}")]
 async fn when_set_type(world: &mut CommandBuilderWorld, name: String) {
     assert_eq!(name, "CreateOrder", "fixtures provide CreateOrder");
-    world.recipe.command = Some(create_order_command());
+    world.recipe.type_url = Some(full_type_url::<CreateOrder>());
 }
 
 #[when("I set the command payload")]
 async fn when_set_payload(world: &mut CommandBuilderWorld) {
-    assert!(
-        world.recipe.command.is_some(),
-        "with_command sets type and payload together"
-    );
+    let Payload::CreateOrder(cmd) = create_order_command() else {
+        unreachable!("create_order_command builds a CreateOrder");
+    };
+    world.recipe.payload = Some(prost::Message::encode_to_vec(&cmd));
     world.build();
 }
 
@@ -240,6 +250,7 @@ async fn when_no_type(world: &mut CommandBuilderWorld) {
 /// and the builder reports what is missing.
 #[when("I do NOT set the payload")]
 async fn when_no_payload(world: &mut CommandBuilderWorld) {
+    world.recipe.payload = None;
     world.recipe.command = None;
     world.build();
 }
@@ -462,7 +473,28 @@ async fn then_sent(world: &mut CommandBuilderWorld) {
         .last_call("execute")
         .expect("gateway received execute");
     let built = world.built();
-    assert_eq!(call.command.cover, built.cover);
+    // build() and execute() each mint a fresh correlation id, so compare
+    // the addressing and the command itself.
+    let sent = call.command.cover.as_ref().expect("sent cover");
+    let expected = built.cover.as_ref().expect("built cover");
+    assert_eq!(
+        (&sent.domain, &sent.root),
+        (&expected.domain, &expected.root)
+    );
+    assert!(!sent.correlation_id.is_empty());
+    // execute() additionally stamps its sync mode into the page header.
+    assert_eq!(call.command.pages.len(), 1);
+    assert_eq!(call.command.pages[0].payload, built.pages[0].payload);
+    assert_eq!(
+        call.command.pages[0]
+            .header
+            .as_ref()
+            .map(|h| h.sequence_type.clone()),
+        built.pages[0]
+            .header
+            .as_ref()
+            .map(|h| h.sequence_type.clone())
+    );
 }
 
 #[then("the response should be returned")]

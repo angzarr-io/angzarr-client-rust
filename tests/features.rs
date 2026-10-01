@@ -96,58 +96,6 @@ const PENDING: &[(&str, &str)] = &[
     ("C-0224", "X-167 process-manager #[rejected] dispatch"),
     ("C-0252", "X-167 saga #[rejected] dispatch"),
     (
-        "C-0303",
-        "CommandBuilder::build requires a sequence; spec defaults it to 0",
-    ),
-    (
-        "C-0304",
-        "CommandBuilder::build requires a sequence; spec defaults it to 0",
-    ),
-    (
-        "C-0305",
-        "CommandBuilder::build requires a sequence; spec defaults it to 0",
-    ),
-    (
-        "C-0306",
-        "CommandBuilder::build requires a sequence; spec defaults it to 0",
-    ),
-    (
-        "C-0308",
-        "CommandBuilder::build requires a sequence; spec defaults it to 0",
-    ),
-    (
-        "C-0312",
-        "CommandBuilder::build requires a sequence; spec defaults it to 0",
-    ),
-    (
-        "C-0313",
-        "CommandBuilder::build requires a sequence; spec defaults it to 0",
-    ),
-    (
-        "C-0314",
-        "CommandBuilder::build requires a sequence; spec defaults it to 0",
-    ),
-    (
-        "C-0315",
-        "CommandBuilder::build requires a sequence; spec defaults it to 0",
-    ),
-    (
-        "C-0316",
-        "CommandBuilder::build requires a sequence; spec defaults it to 0",
-    ),
-    (
-        "C-0317",
-        "CommandBuilder::build requires a sequence; spec defaults it to 0",
-    ),
-    (
-        "C-0318",
-        "CommandBuilder::build requires a sequence; spec defaults it to 0",
-    ),
-    (
-        "C-0310",
-        "CommandBuilder cannot set a type URL without a payload",
-    ),
-    (
         "C-0323",
         "connection errors drop the transport error's source chain",
     ),
