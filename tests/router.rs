@@ -29,3 +29,6 @@ mod mode_inference;
 
 #[path = "router/blocking.rs"]
 mod blocking;
+
+#[path = "router/markers.rs"]
+mod markers;

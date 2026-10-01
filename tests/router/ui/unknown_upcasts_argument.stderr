@@ -1,0 +1,5 @@
+error: unknown #[upcasts] argument: expected `from` or `to`
+  --> tests/router/ui/unknown_upcasts_argument.rs:24:26
+   |
+24 |     #[upcasts(from = V1, into = V2)]
+   |                          ^^^^

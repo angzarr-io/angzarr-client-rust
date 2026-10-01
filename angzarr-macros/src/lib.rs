@@ -211,7 +211,10 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
     let self_ty_for_applies = input.self_ty.clone();
     let supports_replay = args.supports_replay;
 
-    let meta = collect_method_metadata(&input);
+    let meta = match collect_method_metadata(&input) {
+        Ok(meta) => meta,
+        Err(e) => return e.to_compile_error(),
+    };
 
     // Strip method-level marker attributes so rustc doesn't see them as unknown attrs.
     strip_method_markers(&mut input);
@@ -707,90 +710,146 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
 /// Metadata harvested from method-level attribute markers inside a kind-impl.
 struct MethodMetadata {
     /// Types named in `#[handles(T)]` (kept for config emission).
-    handled: Vec<Ident>,
+    handled: Vec<syn::Path>,
     /// `(method name, command type)` pairs for dispatch-arm generation.
-    handled_with_methods: Vec<(Ident, Ident)>,
+    handled_with_methods: Vec<(Ident, syn::Path)>,
     /// `(domain, command)` pairs from `#[rejected(domain = "...", command = "...")]`.
     rejected: Vec<(String, String)>,
     /// `(method name, domain, command)` triples for rejection-arm generation.
     rejected_with_methods: Vec<(Ident, String, String)>,
     /// Types named in `#[applies(T)]` (kept for config emission).
-    applies: Vec<Ident>,
+    applies: Vec<syn::Path>,
     /// `(method name, event type)` pairs for state-rebuild-arm generation.
-    applies_with_methods: Vec<(Ident, Ident)>,
+    applies_with_methods: Vec<(Ident, syn::Path)>,
     /// Name of the method annotated with `#[state_factory]`, if any.
     state_factory: Option<Ident>,
     /// `(method name, from type, to type)` triples for upcaster dispatch arms.
-    upcasts_with_methods: Vec<(Ident, Ident, Ident)>,
-    /// Audit #45: types named in `#[handles_fact(T)]` for config emission.
-    handles_fact: Vec<Ident>,
-    /// Audit #45: `(method name, fact event type)` pairs for HandleFact
+    upcasts_with_methods: Vec<(Ident, syn::Path, syn::Path)>,
+    /// Types named in `#[handles_fact(T)]` for config emission.
+    handles_fact: Vec<syn::Path>,
+    /// `(method name, fact event type)` pairs for HandleFact
     /// dispatch-arm generation.
-    handles_fact_with_methods: Vec<(Ident, Ident)>,
+    handles_fact_with_methods: Vec<(Ident, syn::Path)>,
 }
 
-fn collect_method_metadata(input: &ItemImpl) -> MethodMetadata {
-    let mut handled = Vec::new();
-    let mut handled_with_methods = Vec::new();
-    let mut rejected = Vec::new();
-    let mut rejected_with_methods = Vec::new();
-    let mut applies = Vec::new();
-    let mut applies_with_methods = Vec::new();
-    let mut state_factory = None;
-    let mut upcasts_with_methods = Vec::new();
-    let mut handles_fact = Vec::new();
-    let mut handles_fact_with_methods = Vec::new();
+/// Method-level markers a kind macro consumes. A method carries at most one
+/// of them: a handler, applier, compensator, state factory and upcast are
+/// different roles with different signatures.
+const METHOD_MARKERS: &[&str] = &[
+    "handles",
+    "handles_fact",
+    "applies",
+    "rejected",
+    "state_factory",
+    "upcasts",
+];
+
+fn marker_name(attr: &Attribute) -> Option<&'static str> {
+    METHOD_MARKERS
+        .iter()
+        .copied()
+        .find(|m| attr.path().is_ident(m))
+}
+
+/// Collect every method marker of a kind impl. A malformed marker, or a
+/// method carrying two different markers, is a compile error (all such
+/// errors are reported together) rather than a silently unrouted method.
+fn collect_method_metadata(input: &ItemImpl) -> syn::Result<MethodMetadata> {
+    let mut meta = MethodMetadata {
+        handled: Vec::new(),
+        handled_with_methods: Vec::new(),
+        rejected: Vec::new(),
+        rejected_with_methods: Vec::new(),
+        applies: Vec::new(),
+        applies_with_methods: Vec::new(),
+        state_factory: None,
+        upcasts_with_methods: Vec::new(),
+        handles_fact: Vec::new(),
+        handles_fact_with_methods: Vec::new(),
+    };
+    let mut errors: Option<syn::Error> = None;
+    let mut push_err = |e: syn::Error| match errors.as_mut() {
+        Some(acc) => acc.combine(e),
+        None => errors = Some(e),
+    };
 
     for item in &input.items {
         let ImplItem::Fn(method) = item else { continue };
+        let name = &method.sig.ident;
+        let mut role: Option<&'static str> = None;
         for attr in &method.attrs {
-            if attr.path().is_ident("handles") {
-                if let Ok(ty) = get_attr_ident(attr) {
-                    handled.push(ty.clone());
-                    handled_with_methods.push((method.sig.ident.clone(), ty));
+            let Some(marker) = marker_name(attr) else {
+                continue;
+            };
+            match role {
+                Some(first) if first != marker => push_err(syn::Error::new_spanned(
+                    attr,
+                    format!(
+                        "#[{marker}] conflicts with #[{first}] on `{name}`: a method takes exactly one role"
+                    ),
+                )),
+                _ => role = Some(marker),
+            }
+            match marker {
+                "handles" => match get_attr_path(attr) {
+                    Ok(ty) => {
+                        meta.handled.push(ty.clone());
+                        meta.handled_with_methods.push((name.clone(), ty));
+                    }
+                    Err(e) => push_err(e),
+                },
+                "handles_fact" => match get_attr_path(attr) {
+                    Ok(ty) => {
+                        meta.handles_fact.push(ty.clone());
+                        meta.handles_fact_with_methods.push((name.clone(), ty));
+                    }
+                    Err(e) => push_err(e),
+                },
+                "applies" => match get_attr_path(attr) {
+                    Ok(ty) => {
+                        meta.applies.push(ty.clone());
+                        meta.applies_with_methods.push((name.clone(), ty));
+                    }
+                    Err(e) => push_err(e),
+                },
+                "rejected" => match get_rejected_args(attr) {
+                    Ok((d, c)) => {
+                        meta.rejected.push((d.clone(), c.clone()));
+                        meta.rejected_with_methods.push((name.clone(), d, c));
+                    }
+                    Err(e) => push_err(e),
+                },
+                "state_factory" => {
+                    if !matches!(attr.meta, Meta::Path(_)) {
+                        push_err(syn::Error::new_spanned(
+                            attr,
+                            "#[state_factory] takes no arguments",
+                        ));
+                    } else if let Some(prev) = &meta.state_factory {
+                        push_err(syn::Error::new_spanned(
+                            attr,
+                            format!("#[state_factory] is already declared on `{prev}`"),
+                        ));
+                    } else {
+                        meta.state_factory = Some(name.clone());
+                    }
                 }
-            } else if attr.path().is_ident("handles_fact") {
-                // Audit #45: fact-event handler. Same shape as
-                // `#[handles]` but routed through HandleFact RPC.
-                if let Ok(ty) = get_attr_ident(attr) {
-                    handles_fact.push(ty.clone());
-                    handles_fact_with_methods.push((method.sig.ident.clone(), ty));
-                }
-            } else if attr.path().is_ident("applies") {
-                if let Ok(ty) = get_attr_ident(attr) {
-                    applies.push(ty.clone());
-                    applies_with_methods.push((method.sig.ident.clone(), ty));
-                }
-            } else if attr.path().is_ident("rejected") {
-                if let Ok((d, c)) = get_rejected_args(attr) {
-                    rejected.push((d.clone(), c.clone()));
-                    rejected_with_methods.push((method.sig.ident.clone(), d, c));
-                }
-            } else if attr.path().is_ident("state_factory") {
-                state_factory = Some(method.sig.ident.clone());
-            } else if attr.path().is_ident("upcasts") {
-                if let Ok((from, to)) = get_upcasts_args(attr) {
-                    upcasts_with_methods.push((method.sig.ident.clone(), from, to));
-                }
+                "upcasts" => match get_upcasts_args(attr) {
+                    Ok((from, to)) => meta.upcasts_with_methods.push((name.clone(), from, to)),
+                    Err(e) => push_err(e),
+                },
+                _ => {}
             }
         }
     }
 
-    MethodMetadata {
-        handled,
-        handled_with_methods,
-        rejected,
-        rejected_with_methods,
-        applies,
-        applies_with_methods,
-        state_factory,
-        upcasts_with_methods,
-        handles_fact,
-        handles_fact_with_methods,
+    match errors {
+        Some(e) => Err(e),
+        None => Ok(meta),
     }
 }
 
-fn get_upcasts_args(attr: &Attribute) -> syn::Result<(Ident, Ident)> {
+fn get_upcasts_args(attr: &Attribute) -> syn::Result<(syn::Path, syn::Path)> {
     let meta = attr.meta.clone();
     match meta {
         Meta::List(list) => {
@@ -805,8 +864,8 @@ fn get_upcasts_args(attr: &Attribute) -> syn::Result<(Ident, Ident)> {
 }
 
 struct UpcastsArgsParse {
-    from: Ident,
-    to: Ident,
+    from: syn::Path,
+    to: syn::Path,
 }
 
 impl syn::parse::Parse for UpcastsArgsParse {
@@ -817,12 +876,17 @@ impl syn::parse::Parse for UpcastsArgsParse {
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
             input.parse::<Token![=]>()?;
-            let value: Ident = input.parse()?;
+            let value: syn::Path = input.parse()?;
 
             match ident.to_string().as_str() {
                 "from" => from = Some(value),
                 "to" => to = Some(value),
-                _ => return Err(syn::Error::new(ident.span(), "unknown attribute")),
+                _ => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        "unknown #[upcasts] argument: expected `from` or `to`",
+                    ))
+                }
             }
 
             if input.peek(Token![,]) {
@@ -1052,7 +1116,10 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
     let target = &args.target;
     let sync = args.sync;
 
-    let meta = collect_method_metadata(&input);
+    let meta = match collect_method_metadata(&input) {
+        Ok(meta) => meta,
+        Err(e) => return e.to_compile_error(),
+    };
     strip_method_markers(&mut input);
 
     let handled_exprs = meta
@@ -1328,7 +1395,10 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
     let sync_targets = &args.sync_targets;
     let self_ty_for_applies = input.self_ty.clone();
 
-    let meta = collect_method_metadata(&input);
+    let meta = match collect_method_metadata(&input) {
+        Ok(meta) => meta,
+        Err(e) => return e.to_compile_error(),
+    };
     strip_method_markers(&mut input);
 
     let handled_exprs = meta
@@ -1591,7 +1661,10 @@ fn expand_projector(args: ProjectorArgs, mut input: ItemImpl) -> TokenStream2 {
     let name = &args.name;
     let domains = &args.domains;
 
-    let meta = collect_method_metadata(&input);
+    let meta = match collect_method_metadata(&input) {
+        Ok(meta) => meta,
+        Err(e) => return e.to_compile_error(),
+    };
     strip_method_markers(&mut input);
 
     let handled_exprs = meta
@@ -1700,14 +1773,24 @@ fn expand_projector(args: ProjectorArgs, mut input: ItemImpl) -> TokenStream2 {
 
 // Helper functions
 
-fn get_attr_ident(attr: &Attribute) -> syn::Result<Ident> {
-    let meta = attr.meta.clone();
-    match meta {
-        Meta::List(list) => {
-            let ident: Ident = syn::parse2(list.tokens)?;
-            Ok(ident)
-        }
-        _ => Err(syn::Error::new_spanned(attr, "expected #[attr(Type)]")),
+fn get_attr_path(attr: &Attribute) -> syn::Result<syn::Path> {
+    match &attr.meta {
+        Meta::List(list) => syn::parse2::<syn::Path>(list.tokens.clone()).map_err(|_| {
+            syn::Error::new_spanned(
+                &list.tokens,
+                format!(
+                    "expected a message type, e.g. #[{}(MyMessage)]",
+                    attr.path()
+                        .get_ident()
+                        .map(|i| i.to_string())
+                        .unwrap_or_default()
+                ),
+            )
+        }),
+        _ => Err(syn::Error::new_spanned(
+            attr,
+            "expected a message type argument, e.g. #[handles(MyMessage)]",
+        )),
     }
 }
 
@@ -1715,7 +1798,8 @@ fn get_rejected_args(attr: &Attribute) -> syn::Result<(String, String)> {
     let meta = attr.meta.clone();
     match meta {
         Meta::List(list) => {
-            let args: RejectedArgs = syn::parse2(list.tokens)?;
+            let args: RejectedArgs = syn::parse2(list.tokens)
+                .map_err(|e| syn::Error::new_spanned(attr, format!("#[rejected]: {e}")))?;
             Ok((args.domain, args.command))
         }
         _ => Err(syn::Error::new_spanned(
@@ -1886,7 +1970,10 @@ fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
     let domain = &args.domain;
     let self_ty = input.self_ty.clone();
 
-    let meta = collect_method_metadata(&input);
+    let meta = match collect_method_metadata(&input) {
+        Ok(meta) => meta,
+        Err(e) => return e.to_compile_error(),
+    };
     strip_method_markers(&mut input);
 
     // (from_url, to_url) pairs for HandlerConfig::Upcaster.upcasts
