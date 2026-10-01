@@ -50,6 +50,7 @@ pub mod codes {
     pub const INVALID_PORT: &str = "INVALID_PORT";
     pub const INVALID_BIND_ADDRESS: &str = "INVALID_BIND_ADDRESS";
     pub const UDS_BIND_FAILED: &str = "UDS_BIND_FAILED";
+    pub const TCP_BIND_FAILED: &str = "TCP_BIND_FAILED";
     pub const UDS_DIRECTORY_CREATE_FAILED: &str = "UDS_DIRECTORY_CREATE_FAILED";
     pub const STREAM_LIMIT_EXCEEDED: &str = "STREAM_LIMIT_EXCEEDED";
 
@@ -142,6 +143,7 @@ pub mod messages {
     pub const INVALID_PORT: &str = "invalid port env value";
     pub const INVALID_BIND_ADDRESS: &str = "invalid TCP bind address";
     pub const UDS_BIND_FAILED: &str = "failed to bind unix domain socket";
+    pub const TCP_BIND_FAILED: &str = "failed to bind tcp listener";
     pub const UDS_DIRECTORY_CREATE_FAILED: &str =
         "failed to create unix domain socket parent directory";
     pub const STREAM_LIMIT_EXCEEDED: &str = "server stream exceeded the configured maximum";

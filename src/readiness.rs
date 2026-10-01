@@ -89,19 +89,35 @@ pub trait Probe: Send + Sync + 'static {
 
 /// One-shot transport probe — flipped `true` once the listener has bound and
 /// the server is accepting traffic. From that point its result never changes.
+/// Marking it bound also wakes the supervisor (see [`TransportProbe::wake`])
+/// so readiness flips without waiting out the probe interval.
 pub struct TransportProbe {
-    bound: Arc<AtomicBool>,
+    state: Arc<TransportState>,
+}
+
+struct TransportState {
+    bound: AtomicBool,
+    wake: Arc<tokio::sync::Notify>,
 }
 
 impl TransportProbe {
     pub fn new() -> (Self, TransportSignal) {
-        let bound = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(TransportState {
+            bound: AtomicBool::new(false),
+            wake: Arc::new(tokio::sync::Notify::new()),
+        });
         (
             Self {
-                bound: bound.clone(),
+                state: state.clone(),
             },
-            TransportSignal { bound },
+            TransportSignal { state },
         )
+    }
+
+    /// Notified when the transport is marked bound; pass it to
+    /// [`run_supervisor_with_wake`].
+    pub fn wake(&self) -> Arc<tokio::sync::Notify> {
+        self.state.wake.clone()
     }
 }
 
@@ -117,19 +133,20 @@ impl Probe for TransportProbe {
         "transport"
     }
     async fn check(&self) -> bool {
-        self.bound.load(Ordering::SeqCst)
+        self.state.bound.load(Ordering::SeqCst)
     }
 }
 
 /// Side of the [`TransportProbe`] used by the runner to mark "bound and serving".
 pub struct TransportSignal {
-    bound: Arc<AtomicBool>,
+    state: Arc<TransportState>,
 }
 
 impl TransportSignal {
-    /// Mark the transport as accepting traffic.
+    /// Mark the transport as accepting traffic and wake the supervisor.
     pub fn mark_bound(&self) {
-        self.bound.store(true, Ordering::SeqCst);
+        self.state.bound.store(true, Ordering::SeqCst);
+        self.state.wake.notify_one();
     }
 }
 
@@ -228,6 +245,21 @@ pub async fn run_supervisor(
     interval: Duration,
     timeout: Duration,
 ) {
+    let never = Arc::new(tokio::sync::Notify::new());
+    run_supervisor_with_wake(probes, reporter, service_names, interval, timeout, never).await
+}
+
+/// [`run_supervisor`] that also re-ticks as soon as `wake` is notified
+/// (e.g. by [`TransportSignal::mark_bound`]) instead of only every
+/// `interval`.
+pub async fn run_supervisor_with_wake(
+    probes: Vec<Box<dyn Probe>>,
+    reporter: HealthReporter,
+    service_names: Vec<String>,
+    interval: Duration,
+    timeout: Duration,
+    wake: Arc<tokio::sync::Notify>,
+) {
     loop {
         let all_ok = supervisor_tick(&probes, timeout).await;
         let status = if all_ok {
@@ -238,7 +270,10 @@ pub async fn run_supervisor(
         for name in &service_names {
             reporter.set_service_status(name, status).await;
         }
-        tokio::time::sleep(interval).await;
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => {}
+            _ = wake.notified() => {}
+        }
     }
 }
 
@@ -433,6 +468,52 @@ mod tests {
         })];
         let ok = supervisor_tick(&probes, Duration::from_millis(20)).await;
         assert!(!ok);
+    }
+
+    async fn status(svc: &tonic_health::server::HealthService) -> Option<i32> {
+        use tonic_health::pb::health_server::Health;
+        let req = tonic::Request::new(tonic_health::pb::HealthCheckRequest {
+            service: "svc".into(),
+        });
+        svc.check(req).await.ok().map(|r| r.into_inner().status)
+    }
+
+    /// Marking the transport bound re-evaluates readiness immediately
+    /// instead of waiting out the supervisor interval.
+    #[tokio::test]
+    async fn mark_bound_publishes_serving_without_waiting_for_the_interval() {
+        let (reporter, _server) = tonic_health::server::health_reporter();
+        let service = tonic_health::server::HealthService::from_health_reporter(reporter.clone());
+        let (probe, signal) = TransportProbe::new();
+        let wake = probe.wake();
+        let handle = tokio::spawn(run_supervisor_with_wake(
+            vec![boxed(probe)],
+            reporter,
+            vec!["svc".to_string()],
+            Duration::from_secs(3600),
+            Duration::from_millis(100),
+            wake,
+        ));
+        let not_serving = tonic_health::pb::health_check_response::ServingStatus::NotServing as i32;
+        let serving = tonic_health::pb::health_check_response::ServingStatus::Serving as i32;
+        for _ in 0..100 {
+            if status(&service).await == Some(not_serving) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(status(&service).await, Some(not_serving));
+        signal.mark_bound();
+        let mut last = None;
+        for _ in 0..200 {
+            last = status(&service).await;
+            if last == Some(serving) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        handle.abort();
+        assert_eq!(last, Some(serving));
     }
 
     #[tokio::test]

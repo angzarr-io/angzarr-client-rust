@@ -41,7 +41,8 @@ use crate::proto::projector_service_server::ProjectorServiceServer;
 use crate::proto::saga_service_server::SagaServiceServer;
 use crate::proto::upcaster_service_server::UpcasterServiceServer;
 use crate::readiness::{
-    probe_config_from_env, run_supervisor, BusProbe, OutputDomainProbe, Probe, TransportProbe,
+    probe_config_from_env, run_supervisor_with_wake, BusProbe, OutputDomainProbe, Probe,
+    TransportProbe,
 };
 use crate::router::runtime::{CommandHandlerRouter, ProcessManagerRouter, SagaRouter};
 
@@ -229,6 +230,26 @@ pub(crate) fn bind_uds_listener(uds_path: &Path) -> Result<tokio::net::UnixListe
     })
 }
 
+/// A bound listener for either transport.
+enum Listener {
+    Tcp(tokio::net::TcpListener),
+    Uds(tokio::net::UnixListener),
+}
+
+/// Bind a TCP listener, surfacing a structured `TCP_BIND_FAILED` error.
+pub(crate) async fn bind_tcp_listener(addr: SocketAddr) -> Result<tokio::net::TcpListener> {
+    tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+        ClientError::connection(
+            codes::TCP_BIND_FAILED,
+            messages::TCP_BIND_FAILED,
+            [
+                (keys::INPUT, addr.to_string()),
+                (keys::CAUSE, e.to_string()),
+            ],
+        )
+    })
+}
+
 /// Future that resolves on the first SIGINT (Ctrl+C) or, on Unix, SIGTERM.
 ///
 /// Wired into `Server::serve_with_shutdown` so the server drains in-flight
@@ -396,7 +417,40 @@ where
             .await;
     }
 
+    // Bind before anything else is started so a bind failure returns a
+    // structured error with no supervisor left running, and so "bound"
+    // is only ever published for a listener that exists.
+    let uds_to_cleanup = config.uds_path.clone();
+    let listener = match config.uds_path.as_ref() {
+        Some(uds_path) => {
+            ensure_uds_parent_dir(uds_path)?;
+            cleanup_socket(uds_path);
+            info!(
+                service = health_service_name,
+                name = %instance_name,
+                transport = "uds",
+                address = %uds_path.display(),
+                "server_started",
+            );
+            Listener::Uds(bind_uds_listener(uds_path)?)
+        }
+        None => {
+            let addr_str = resolve_bind_address(config.port);
+            let addr = parse_bind_address(&addr_str)?;
+            let listener = bind_tcp_listener(addr).await?;
+            info!(
+                service = health_service_name,
+                name = %instance_name,
+                transport = "tcp",
+                address = %addr_str,
+                "server_started",
+            );
+            Listener::Tcp(listener)
+        }
+    };
+
     let (transport_probe, transport_signal) = TransportProbe::new();
+    let wake = transport_probe.wake();
     let mut probes: Vec<Box<dyn Probe>> = vec![Box::new(transport_probe)];
     // Audit #74: probe sync targets directly; if any handler emits async,
     // add a single BusProbe iff the operator configured `ANGZARR_BUS_ENDPOINT`.
@@ -414,57 +468,31 @@ where
     // `Clone`; `service_names` is owned by the supervisor task.
     let shutdown_reporter = health_reporter.clone();
     let shutdown_service_names = service_names.clone();
-    let supervisor = tokio::spawn(run_supervisor(
+    let supervisor = tokio::spawn(run_supervisor_with_wake(
         probes,
         health_reporter,
         service_names,
         interval,
         timeout,
+        wake,
     ));
 
     let server = Server::builder().add_service(health_service);
     let router = add_kind_service(server);
 
-    // Resolve listener / address up front so binding errors surface
-    // immediately as structured `ClientError`s instead of unwinding
-    // the runtime from inside `run_kind`. Track the UDS path so we can
-    // remove it after `serve` resolves.
-    let uds_to_cleanup = config.uds_path.clone();
-    let result = match config.uds_path.as_ref() {
-        Some(uds_path) => {
-            ensure_uds_parent_dir(uds_path)?;
-            cleanup_socket(uds_path);
-            // Audit #89: cross-language log shape. Same event name +
-            // field set as Python `_run_server_async` so operators
-            // querying logs by `service` / `name` / `transport` /
-            // `address` see equivalent records from pods of either
-            // language.
-            info!(
-                service = health_service_name,
-                name = %instance_name,
-                transport = "uds",
-                address = %uds_path.display(),
-                "server_started",
-            );
-            let listener = bind_uds_listener(uds_path)?;
+    transport_signal.mark_bound();
+    let result = match listener {
+        Listener::Uds(listener) => {
             let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
-            transport_signal.mark_bound();
             router
                 .serve_with_incoming_shutdown(incoming, shutdown_signal())
                 .await
         }
-        None => {
-            let addr_str = resolve_bind_address(config.port);
-            let addr = parse_bind_address(&addr_str)?;
-            info!(
-                service = health_service_name,
-                name = %instance_name,
-                transport = "tcp",
-                address = %addr_str,
-                "server_started",
-            );
-            transport_signal.mark_bound();
-            router.serve_with_shutdown(addr, shutdown_signal()).await
+        Listener::Tcp(listener) => {
+            let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+            router
+                .serve_with_incoming_shutdown(incoming, shutdown_signal())
+                .await
         }
     };
 
@@ -516,6 +544,98 @@ mod tests {
 
     fn clear_bind_env() {
         env::remove_var(ENV_BIND_ADDRESS);
+    }
+
+    async fn health_status(port: u16, service: &str) -> Option<i32> {
+        use tonic_health::pb::health_client::HealthClient;
+        use tonic_health::pb::HealthCheckRequest;
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
+            .ok()?
+            .connect()
+            .await
+            .ok()?;
+        let mut client = HealthClient::new(channel);
+        let resp = client
+            .check(HealthCheckRequest {
+                service: service.to_string(),
+            })
+            .await
+            .ok()?;
+        Some(resp.into_inner().status)
+    }
+
+    /// Readiness flips to SERVING as soon as the listener is bound, not on
+    /// the next supervisor interval (30s by default).
+    #[tokio::test]
+    async fn readiness_serves_promptly_after_bind() {
+        let port = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            probe.local_addr().unwrap().port()
+        };
+        let server = {
+            let _g = ENV_LOCK.lock().unwrap();
+            env::set_var(ENV_BIND_ADDRESS, format!("127.0.0.1:{port}"));
+            let server = tokio::spawn(run_kind(
+                "ready".into(),
+                ServerConfig {
+                    port,
+                    uds_path: None,
+                },
+                Vec::new(),
+                false,
+                HEALTH_NAME_PROJECTOR,
+                |r| r,
+            ));
+            // run_kind resolves the bind address before its first await.
+            tokio::task::yield_now().await;
+            clear_bind_env();
+            server
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let serving = tonic_health::pb::health_check_response::ServingStatus::Serving as i32;
+        let mut last = None;
+        while std::time::Instant::now() < deadline {
+            last = health_status(port, HEALTH_NAME_PROJECTOR).await;
+            if last == Some(serving) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        server.abort();
+        assert_eq!(last, Some(serving), "health never reported SERVING");
+    }
+
+    /// A TCP bind failure is reported as a structured error from the
+    /// runner, before anything is marked bound.
+    #[tokio::test]
+    async fn tcp_bind_failure_is_a_structured_error() {
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = occupied.local_addr().unwrap().port();
+        let fut = {
+            let _g = ENV_LOCK.lock().unwrap();
+            env::set_var(ENV_BIND_ADDRESS, format!("127.0.0.1:{port}"));
+            let fut = tokio::spawn(run_kind(
+                "busy".into(),
+                ServerConfig {
+                    port,
+                    uds_path: None,
+                },
+                Vec::new(),
+                false,
+                HEALTH_NAME_PROJECTOR,
+                |r| r,
+            ));
+            tokio::task::yield_now().await;
+            clear_bind_env();
+            fut
+        };
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), fut)
+            .await
+            .expect("runner returns instead of serving")
+            .expect("runner task");
+        let err = result.expect_err("bind on an occupied port fails");
+        assert_eq!(err.code(), codes::TCP_BIND_FAILED);
+        drop(occupied);
     }
 
     /// Health keys are the fully-qualified gRPC service names of the
