@@ -84,7 +84,6 @@ pub enum HandlerConfig {
         /// reachable for traffic to be safe.
         sync: bool,
         handled: Vec<String>,
-        rejected: Vec<(String, String)>,
     },
     ProcessManager {
         name: String,

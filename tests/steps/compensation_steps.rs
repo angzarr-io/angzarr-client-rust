@@ -7,9 +7,11 @@
 //! addressed to that source (types.proto, RejectionNotification). The
 //! scenarios build that delivery as fixture data and exercise the client
 //! library on it: `CompensationContext::from_notification`, and the
-//! command-handler / saga / process-manager routers dispatching the
-//! delivery to `#[rejected]` handlers, which record what they received.
+//! command-handler / process-manager routers dispatching the delivery to
+//! `#[rejected]` handlers, which record what they received. A saga never
+//! receives a rejection: its source aggregate compensates (C-0483).
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use angzarr_client::proto::{
@@ -138,22 +140,67 @@ impl InventoryAggregate {
     }
 }
 
-struct FulfillmentSaga {
-    log: Log,
+#[derive(Clone, PartialEq, Message)]
+pub struct OrderCancelled {
+    #[prost(string, tag = "1")]
+    pub reason: String,
+}
+impl Name for OrderCancelled {
+    const PACKAGE: &'static str = "compensation";
+    const NAME: &'static str = "OrderCancelled";
 }
 
-#[saga(name = "order-fulfillment", source = "orders", target = "inventory")]
-impl FulfillmentSaga {
+/// Saga translating `order` OrderCreated into an `inventory` ReserveStock;
+/// counts its invocations.
+struct OrderFulfillmentSaga {
+    calls: Arc<AtomicU32>,
+}
+
+#[saga(name = "OrderFulfillment", source = "order", target = "inventory")]
+impl OrderFulfillmentSaga {
     #[handles(OrderCreated)]
     fn on_created(&self, _evt: OrderCreated) -> CommandResult<SagaResponse> {
-        Ok(SagaResponse::default())
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(SagaResponse {
+            commands: vec![CommandBook {
+                cover: Some(Cover {
+                    domain: "inventory".into(),
+                    ..Default::default()
+                }),
+                pages: vec![CommandPage {
+                    payload: Some(command_page::Payload::Command(pack(&ReserveStock {
+                        order_id: "o-1".into(),
+                        quantity: 1,
+                    }))),
+                    ..Default::default()
+                }],
+            }],
+            events: vec![],
+        })
     }
+}
 
+/// Order aggregate: the saga's source, compensating its rejected
+/// ReserveStock.
+struct OrderAggregate;
+
+#[command_handler(domain = "order", state = NoState)]
+impl OrderAggregate {
     #[rejected(domain = "inventory", command = "ReserveStock")]
-    #[allow(dead_code)]
-    fn on_reserve_rejected(&self, notification: &Notification) -> CommandResult<SagaResponse> {
-        receive(&self.log, "saga", notification);
-        Ok(SagaResponse::default())
+    fn on_reserve_rejected(
+        &self,
+        _notification: &Notification,
+        _state: &NoState,
+    ) -> CommandResult<BusinessResponse> {
+        Ok(emit_compensation_events(EventBook {
+            pages: vec![EventPage {
+                payload: Some(event_page::Payload::Event(pack(&OrderCancelled {
+                    reason: "stock rejected".into(),
+                }))),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }))
     }
 }
 
@@ -319,6 +366,12 @@ pub struct CompensationWorld {
     envelope: Option<CommandBook>,
     dispatch_error: Option<ClientError>,
     saga_mode: Option<&'static str>,
+    /// OrderFulfillment saga invocations (C-0483).
+    saga_calls: Arc<AtomicU32>,
+    /// Saga invocations when the rejection was dispatched (C-0483).
+    saga_calls_at_rejection: Option<u32>,
+    /// The order aggregate's compensation response (C-0483).
+    source_response: Option<BusinessResponse>,
 }
 
 impl CompensationWorld {
@@ -333,6 +386,9 @@ impl CompensationWorld {
             envelope: None,
             dispatch_error: None,
             saga_mode: None,
+            saga_calls: Arc::new(AtomicU32::new(0)),
+            saga_calls_at_rejection: None,
+            source_response: None,
         }
     }
 
@@ -528,11 +584,6 @@ fn given_inner_rejected(world: &mut CompensationWorld) {
     world.reason = "carrier_unavailable".into();
 }
 
-#[given("a saga router handling rejections")]
-fn given_saga_router(world: &mut CompensationWorld) {
-    world.saga_mode = Some("saga");
-}
-
 #[given("a process manager router")]
 fn given_pm_router(world: &mut CompensationWorld) {
     world.saga_mode = Some("pm");
@@ -591,20 +642,6 @@ fn reject_and_deliver_to_emitter(world: &mut CompensationWorld) {
     };
     let log = world.log.clone();
     let result = match world.saga_mode {
-        Some("saga") => {
-            let Ok(Built::Saga(router)) = Router::new("saga")
-                .with_handler(move || FulfillmentSaga { log: log.clone() })
-                .build()
-            else {
-                panic!("expected a saga router");
-            };
-            router
-                .dispatch(SagaHandleRequest {
-                    source: Some(book),
-                    ..Default::default()
-                })
-                .map(|_| ())
-        }
         Some("pm") => {
             let Ok(Built::ProcessManager(router)) = Router::new("pm")
                 .with_handler(move || WorkflowPm { log: log.clone() })
@@ -624,11 +661,6 @@ fn reject_and_deliver_to_emitter(world: &mut CompensationWorld) {
     if let Err(e) = result {
         world.dispatch_error = Some(e);
     }
-}
-
-#[when("a command execution fails with precondition error")]
-fn when_precondition_fails(world: &mut CompensationWorld) {
-    reject_and_deliver_to_emitter(world);
 }
 
 #[when("a PM command is rejected")]
@@ -879,12 +911,149 @@ fn assert_emitter_received(world: &CompensationWorld, who: &'static str) {
     assert_eq!(ctx.rejection_reason, "insufficient stock");
 }
 
-#[then("saga rejections produce a compensation notification")]
-fn then_saga_notification(world: &mut CompensationWorld) {
-    assert_emitter_received(world, "saga");
-}
-
 #[then("process manager rejections produce a compensation notification")]
 fn then_pm_notification(world: &mut CompensationWorld) {
     assert_emitter_received(world, "pm");
+}
+
+// ---------------------------------------------------------------------------
+// C-0483: the source aggregate compensates a rejected saga command.
+// ---------------------------------------------------------------------------
+
+#[given(
+    expr = "a saga {string} translating OrderCreated from {string} into ReserveStock for {string}"
+)]
+fn given_fulfillment_saga(
+    _world: &mut CompensationWorld,
+    name: String,
+    source: String,
+    target: String,
+) {
+    let config = <OrderFulfillmentSaga as angzarr_client::router::HandlerKind>::handler_config();
+    let angzarr_client::router::HandlerConfig::Saga {
+        name: n,
+        source: s,
+        target: t,
+        ..
+    } = config
+    else {
+        panic!("OrderFulfillment is not a saga");
+    };
+    assert_eq!((n, s, t), (name, source, target));
+}
+
+#[given("the order aggregate compensates a rejected ReserveStock by emitting OrderCancelled")]
+fn given_order_compensates(_world: &mut CompensationWorld) {
+    let config = <OrderAggregate as angzarr_client::router::HandlerKind>::handler_config();
+    let angzarr_client::router::HandlerConfig::CommandHandler {
+        domain, rejected, ..
+    } = config
+    else {
+        panic!("OrderAggregate is not a command handler");
+    };
+    assert_eq!(domain, "order");
+    assert_eq!(
+        rejected,
+        vec![("inventory".to_string(), "ReserveStock".to_string())]
+    );
+}
+
+#[when(
+    expr = "a RejectionNotification for the saga's ReserveStock command with source {string} is dispatched to the order aggregate's router"
+)]
+fn when_rejection_to_source(world: &mut CompensationWorld, source: String) {
+    // The saga emits the command from an OrderCreated in `source`...
+    let calls = world.saga_calls.clone();
+    let Ok(Built::Saga(saga)) = Router::new("saga")
+        .with_handler(move || OrderFulfillmentSaga {
+            calls: calls.clone(),
+        })
+        .build()
+    else {
+        panic!("expected a saga router");
+    };
+    let source_cover = Cover {
+        domain: source.clone(),
+        root: Some(root_for("order-1")),
+        correlation_id: "corr-1".into(),
+        ..Default::default()
+    };
+    let emitted = saga
+        .dispatch(SagaHandleRequest {
+            source: Some(EventBook {
+                cover: Some(source_cover.clone()),
+                pages: vec![EventPage {
+                    header: Some(PageHeader {
+                        sequence_type: Some(page_header::SequenceType::Sequence(0)),
+                        sync_mode: None,
+                    }),
+                    payload: Some(event_page::Payload::Event(pack(&OrderCreated {}))),
+                    ..Default::default()
+                }],
+                next_sequence: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .expect("saga dispatch");
+    let mut rejected = emitted
+        .commands
+        .into_iter()
+        .next()
+        .expect("saga emitted a command");
+    angzarr_client::Destinations::new(["inventory"])
+        .stamp_command(&mut rejected, "inventory", &source_cover, 0, 0)
+        .expect("stamp deferred provenance");
+    world.saga_calls_at_rejection = Some(world.saga_calls.load(Ordering::SeqCst));
+
+    // ...inventory rejects it, and the rejection goes to its source.
+    let notification = Notification {
+        cover: Some(source_cover.clone()),
+        payload: Some(pack(&RejectionNotification {
+            rejected_command: Some(rejected),
+            rejection_reason: "insufficient stock".into(),
+        })),
+        sent_at: None,
+    };
+    let Ok(Built::CommandHandler(order)) =
+        Router::new("order").with_handler(|| OrderAggregate).build()
+    else {
+        panic!("expected a command-handler router");
+    };
+    let response = order
+        .dispatch(ContextualCommand {
+            command: Some(CommandBook {
+                cover: Some(source_cover),
+                pages: vec![CommandPage {
+                    payload: Some(command_page::Payload::Command(pack(&notification))),
+                    ..Default::default()
+                }],
+            }),
+            events: None,
+        })
+        .expect("order aggregate dispatch");
+    world.source_response = Some(response);
+}
+
+#[then("the response contains one OrderCancelled event")]
+fn then_one_order_cancelled(world: &mut CompensationWorld) {
+    let response = world.source_response.as_ref().expect("source response");
+    let Some(angzarr_client::proto::business_response::Result::Events(book)) = &response.result
+    else {
+        panic!("expected events, got {response:?}");
+    };
+    assert_eq!(book.pages.len(), 1);
+    match &book.pages[0].payload {
+        Some(event_page::Payload::Event(any)) => {
+            assert!(angzarr_client::type_url_is::<OrderCancelled>(&any.type_url));
+        }
+        other => panic!("expected an event, got {other:?}"),
+    }
+}
+
+#[then("no OrderFulfillment saga handler is invoked")]
+fn then_no_saga_invoked(world: &mut CompensationWorld) {
+    let at_rejection = world.saga_calls_at_rejection.expect("rejection dispatched");
+    assert_eq!(at_rejection, 1, "the saga emitted the command once");
+    assert_eq!(world.saga_calls.load(Ordering::SeqCst), at_rejection);
 }

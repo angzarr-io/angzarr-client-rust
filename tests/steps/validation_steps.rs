@@ -45,6 +45,20 @@ async fn when_declare_saga_no_target(world: &mut ValidationWorld, _name: String,
     world.scenario_tag = "C-0071".into();
 }
 
+// --- @C-0484 saga declaring a rejection handler ---
+#[when(
+    expr = "I declare a saga named {string} from {string} to {string} that compensates a rejected ReserveStock"
+)]
+async fn when_declare_saga_with_rejected(
+    world: &mut ValidationWorld,
+    _name: String,
+    _src: String,
+    _tgt: String,
+) {
+    world.fixture = Some("tests/router/ui/saga_with_rejected.rs");
+    world.scenario_tag = "C-0484".into();
+}
+
 // --- @C-0072 process manager without pm_domain ---
 #[when(expr = "I declare a process manager for name {string} without pm_domain")]
 async fn when_declare_pm_no_pm_domain(world: &mut ValidationWorld, _name: String) {

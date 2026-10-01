@@ -981,8 +981,8 @@ pub fn handles_fact(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn rejected(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    // The actual work is done by the #[command_handler] or #[process_manager] macro
-    // This is just a marker attribute
+    // Marker consumed by #[command_handler] / #[process_manager]; a #[saga]
+    // rejects it at compile time.
     item
 }
 
@@ -1107,7 +1107,36 @@ impl syn::parse::Parse for SagaArgs {
     }
 }
 
+/// A saga never receives a rejection: a rejected saga-emitted command is
+/// compensated by the component whose event triggered the saga (its
+/// `angzarr_deferred.source`). `#[rejected]` on a saga is a compile error.
+fn reject_saga_compensation(input: &ItemImpl) -> Option<TokenStream2> {
+    let mut errors: Option<syn::Error> = None;
+    for item in &input.items {
+        let ImplItem::Fn(method) = item else { continue };
+        for attr in method
+            .attrs
+            .iter()
+            .filter(|a| a.path().is_ident("rejected"))
+        {
+            let e = syn::Error::new_spanned(
+                attr,
+                "#[rejected] is not allowed on a #[saga]: a saga never receives rejections; \
+                 declare the compensation on the component whose event triggered the saga",
+            );
+            match errors.as_mut() {
+                Some(acc) => acc.combine(e),
+                None => errors = Some(e),
+            }
+        }
+    }
+    errors.map(|e| e.to_compile_error())
+}
+
 fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
+    if let Some(err) = reject_saga_compensation(&input) {
+        return err;
+    }
     let name = &args.name;
     let source = &args.source;
     let target = &args.target;
@@ -1123,9 +1152,6 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
         .handled
         .iter()
         .map(|ty| quote! { ::angzarr_client::full_type_url::<#ty>() });
-    let rejected_exprs = meta.rejected.iter().map(|(d, c)| {
-        quote! { (#d.to_string(), #c.to_string()) }
-    });
 
     let dispatch_arms: Vec<TokenStream2> = meta
         .handled_with_methods
@@ -1166,7 +1192,6 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
                     target: #target.to_string(),
                     sync: #sync,
                     handled: ::std::vec![#(#handled_exprs),*],
-                    rejected: ::std::vec![#(#rejected_exprs),*],
                 }
             }
         }

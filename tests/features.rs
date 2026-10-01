@@ -81,10 +81,7 @@ const PENDING: &[(&str, &str)] = &[
         "C-0181",
         "X-017 router stamps angzarr_deferred provenance on PM commands",
     ),
-    ("C-0251", "X-017 router stamps angzarr_deferred provenance"),
-    ("C-0223", "X-167 saga #[rejected] dispatch"),
     ("C-0224", "X-167 process-manager #[rejected] dispatch"),
-    ("C-0252", "X-167 saga #[rejected] dispatch"),
     (
         "C-0477",
         "router: PM process events addressed to the PM domain",

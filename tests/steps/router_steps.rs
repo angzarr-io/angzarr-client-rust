@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use angzarr_client::proto::{
     business_response, command_page, event_page, page_header, BusinessResponse, CommandBook,
-    CommandPage, ContextualCommand, Cover, EventBook, EventPage, Notification, PageHeader,
-    ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, RejectionNotification,
-    ReplayRequest, SagaHandleRequest, SagaResponse,
+    CommandPage, ContextualCommand, Cover, EventBook, EventPage, PageHeader,
+    ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, ReplayRequest,
+    SagaHandleRequest, SagaResponse,
 };
 use angzarr_client::router::runtime::{
     CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter,
@@ -139,8 +139,6 @@ pub struct Observed {
     commands: Vec<CreateOrder>,
     /// `(instance id, per-instance invocation count)` for saga statelessness.
     saga_instances: Vec<(usize, u32)>,
-    /// Notifications delivered to a saga `#[rejected]` handler.
-    rejections: Vec<Notification>,
 }
 
 type Log = Arc<Mutex<Observed>>;
@@ -381,18 +379,6 @@ impl FulfillmentSaga {
         record(&self.log, "OrderShipped");
         Ok(SagaResponse::default())
     }
-
-    #[rejected(domain = "inventory", command = "ReserveStock")]
-    #[allow(dead_code)]
-    fn on_reserve_rejected(&self, notification: &Notification) -> CommandResult<SagaResponse> {
-        record(&self.log, "ReserveStockRejected");
-        self.log
-            .lock()
-            .unwrap()
-            .rejections
-            .push(notification.clone());
-        Ok(SagaResponse::default())
-    }
 }
 
 struct OutputProjector {
@@ -499,9 +485,7 @@ pub struct RouterWorld {
     projection: Option<Projection>,
     error: Option<ClientError>,
     replayed: Option<OrderState>,
-    sent: Option<CreateOrder>,
     sent_event: Option<OrderCreated>,
-    rejected_command: Option<CommandBook>,
     /// Type URL of the last command sent with an explicit type URL.
     sent_type_url: Option<String>,
 }
@@ -520,9 +504,7 @@ impl RouterWorld {
             projection: None,
             error: None,
             replayed: None,
-            sent: None,
             sent_event: None,
-            rejected_command: None,
             sent_type_url: None,
         }
     }
@@ -883,111 +865,6 @@ fn when_receive_event(world: &mut RouterWorld, name: String) {
             Err(e) => world.error = Some(e),
         }
     }
-}
-
-#[when(expr = "I receive an event that triggers command to {string}")]
-fn when_event_triggers_command(world: &mut RouterWorld, domain: String) {
-    assert_eq!(domain, "inventory");
-    world.dispatch_saga_event(event_page(
-        &OrderCreated {
-            order_id: "o-1".into(),
-            customer_id: "c-1".into(),
-        },
-        3,
-    ));
-}
-
-#[then(expr = "the emitted command should be sequenced to follow the current history of {string}")]
-fn then_command_sequenced(world: &mut RouterWorld, domain: String) {
-    assert!(world.error.is_none(), "dispatch failed: {:?}", world.error);
-    let resp = world.saga_responses.last().expect("saga response");
-    let cmd = resp
-        .commands
-        .iter()
-        .find(|c| c.cover.as_ref().map(|c| c.domain.as_str()) == Some(domain.as_str()))
-        .expect("command for domain");
-    // Deferred: the destination appends it at its head; the header records
-    // the triggering event (sequence 3) instead of an expected version.
-    assert!(!cmd.pages.is_empty());
-    for page in &cmd.pages {
-        match page.header.as_ref().and_then(|h| h.sequence_type.as_ref()) {
-            Some(page_header::SequenceType::AngzarrDeferred(d)) => {
-                assert_eq!(
-                    d.source_seq, 3,
-                    "source_seq should be the trigger's sequence"
-                );
-            }
-            other => panic!("expected an angzarr_deferred header, got {other:?}"),
-        }
-    }
-}
-
-#[given("a saga router with a rejected command")]
-fn given_saga_rejected(world: &mut RouterWorld) {
-    world.saga = Some(saga_router(&world.log));
-    world.rejected_command = Some(CommandBook {
-        cover: Some(cover("inventory")),
-        pages: vec![CommandPage {
-            payload: Some(command_page::Payload::Command(pack(&ReserveStock {
-                order_id: "o-1".into(),
-            }))),
-            ..Default::default()
-        }],
-    });
-}
-
-#[when("the router processes the rejection")]
-fn when_router_processes_rejection(world: &mut RouterWorld) {
-    let rejection = RejectionNotification {
-        rejected_command: world.rejected_command.clone(),
-        rejection_reason: "out_of_stock".into(),
-    };
-    let notification = Notification {
-        cover: Some(cover("order")),
-        payload: Some(pack(&rejection)),
-        sent_at: Some(angzarr_client::now()),
-    };
-    world.dispatch_saga_event(EventPage {
-        payload: Some(event_page::Payload::Event(Any {
-            type_url: full_type_url::<Notification>(),
-            value: notification.encode_to_vec(),
-        })),
-        ..Default::default()
-    });
-}
-
-#[then("a rejection notification should be emitted")]
-fn then_rejection_notification_emitted(world: &mut RouterWorld) {
-    let obs = world.log.lock().unwrap();
-    let notification = obs.rejections.first().unwrap_or_else(|| {
-        panic!(
-            "saga #[rejected] handler not invoked; calls = {:?}",
-            obs.calls
-        )
-    });
-    let payload = notification.payload.as_ref().expect("payload");
-    assert_eq!(payload.type_url, full_type_url::<RejectionNotification>());
-}
-
-#[then("compensation should be initiated for the rejected command")]
-fn then_compensation_initiated(world: &mut RouterWorld) {
-    let obs = world.log.lock().unwrap();
-    assert!(
-        obs.calls.contains(&"ReserveStockRejected".to_string()),
-        "compensation handler not invoked; calls = {:?}",
-        obs.calls
-    );
-    let notification = obs.rejections.first().expect("notification");
-    let rejection = RejectionNotification::decode(
-        notification
-            .payload
-            .as_ref()
-            .expect("payload")
-            .value
-            .as_slice(),
-    )
-    .expect("rejection decodes");
-    assert_eq!(rejection.rejected_command, world.rejected_command);
 }
 
 #[when("I process two events with same type")]

@@ -54,7 +54,6 @@ fn stub_saga_config() -> HandlerConfig {
         target: "tgt".into(),
         sync: false,
         handled: vec![],
-        rejected: vec![],
     }
 }
 impl HandlerKind for StubSaga {
