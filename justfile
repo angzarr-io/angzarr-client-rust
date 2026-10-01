@@ -232,6 +232,10 @@ test-verbose: generate-proto
 lint: generate-proto
     just _container lint
 
+# Run angzarr-router's conformance suite against the pinned engine
+router-conformance:
+    just _container router-conformance
+
 # Check formatting
 fmt: generate-proto
     just _container fmt

@@ -80,6 +80,30 @@ test: generate-proto
     cargo test --test router -- --test-threads=1
     cargo test --test features
 
+# Run angzarr-router's conformance suite against the engine this crate
+# depends on: the router repository at the rev pinned in Cargo.toml, tested
+# with its own Rust harness (crates/conformance; Rust is the router's native
+# API). Runs from the router checkout so its own angzarr-project pin and
+# cargo config apply.
+router-conformance:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rev=$(sed -n 's/^angzarr-router = .*rev = "\([0-9a-f]*\)".*/\1/p' "{{ROOT}}/Cargo.toml")
+    if [ -z "$rev" ]; then
+        echo "[router-conformance] no pinned angzarr-router rev in Cargo.toml" >&2
+        exit 1
+    fi
+    dir="{{ROOT}}/target/angzarr-router-conformance"
+    if [ ! -d "$dir/.git" ]; then
+        git clone --quiet https://github.com/angzarr-io/angzarr-router.git "$dir"
+    fi
+    git -C "$dir" fetch --quiet origin "$rev"
+    git -C "$dir" checkout --quiet --detach "$rev"
+    git -C "$dir" submodule update --init angzarr-project
+    echo "[router-conformance] angzarr-router $rev"
+    cd "$dir"
+    env -u ANGZARR_PROJECT_PROTO -u CARGO_TARGET_DIR cargo test -p angzarr-router-conformance
+
 # Run clippy linter
 lint: generate-proto
     cargo clippy --workspace --all-targets --features testing -- -D warnings

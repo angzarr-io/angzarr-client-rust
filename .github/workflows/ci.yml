@@ -74,6 +74,11 @@ jobs:
       - name: Test
         run: just -f justfile.container test
 
+      # Dispatch is specified by angzarr-router's conformance suite; run it
+      # against the router rev this crate pins.
+      - name: Router conformance
+        run: just -f justfile.container router-conformance
+
       - name: Lint
         run: just -f justfile.container lint
 
