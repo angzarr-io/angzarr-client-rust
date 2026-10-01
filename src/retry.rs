@@ -85,9 +85,15 @@ impl ExponentialBackoffRetry {
         self
     }
 
+    /// Total attempts including the first; 0 is treated as 1.
     pub fn with_max_attempts(mut self, n: u32) -> Self {
-        self.max_attempts = n;
+        self.max_attempts = n.max(1);
         self
+    }
+
+    /// Attempts actually made: `max_attempts`, at least 1.
+    pub(crate) fn attempts(&self) -> u32 {
+        self.max_attempts.max(1)
     }
 
     pub fn with_jitter(mut self, j: bool) -> Self {
@@ -142,13 +148,13 @@ impl ExponentialBackoffRetry {
         F: FnMut() -> Result<T, E>,
         E: std::fmt::Display,
     {
-        debug_assert!(self.max_attempts > 0);
+        let attempts = self.attempts();
         let mut last_err: Option<E> = None;
-        for attempt in 0..self.max_attempts {
+        for attempt in 0..attempts {
             match op() {
                 Ok(value) => return Ok(value),
                 Err(e) => {
-                    let is_last = attempt + 1 >= self.max_attempts;
+                    let is_last = attempt + 1 >= attempts;
                     if !is_last {
                         if let Some(cb) = &self.on_retry {
                             cb(attempt, &e.to_string());
@@ -159,7 +165,7 @@ impl ExponentialBackoffRetry {
                 }
             }
         }
-        Err(last_err.expect("max_attempts >= 1 implies last_err is Some"))
+        Err(last_err.expect("at least one attempt ran and failed"))
     }
 
     /// Async-friendly variant of [`Self::execute_blocking`]. The
@@ -172,13 +178,13 @@ impl ExponentialBackoffRetry {
         Fut: std::future::Future<Output = Result<T, E>>,
         E: std::fmt::Display,
     {
-        debug_assert!(self.max_attempts > 0);
+        let attempts = self.attempts();
         let mut last_err: Option<E> = None;
-        for attempt in 0..self.max_attempts {
+        for attempt in 0..attempts {
             match op().await {
                 Ok(value) => return Ok(value),
                 Err(e) => {
-                    let is_last = attempt + 1 >= self.max_attempts;
+                    let is_last = attempt + 1 >= attempts;
                     if !is_last {
                         if let Some(cb) = &self.on_retry {
                             cb(attempt, &e.to_string());
@@ -189,7 +195,7 @@ impl ExponentialBackoffRetry {
                 }
             }
         }
-        Err(last_err.expect("max_attempts >= 1 implies last_err is Some"))
+        Err(last_err.expect("at least one attempt ran and failed"))
     }
 }
 
@@ -207,6 +213,45 @@ pub fn default_retry_policy() -> ExponentialBackoffRetry {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Zero attempts is clamped to one: the operation runs once and its
+    /// error comes back instead of a panic.
+    #[test]
+    fn zero_max_attempts_runs_once() {
+        let policy = ExponentialBackoffRetry::default().with_max_attempts(0);
+        assert_eq!(policy.max_attempts, 1);
+        let calls = AtomicU32::new(0);
+        let r: Result<(), String> = policy.execute_blocking(|| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err("boom".to_string())
+        });
+        assert_eq!(r, Err("boom".to_string()));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let raw = ExponentialBackoffRetry {
+            max_attempts: 0,
+            ..Default::default()
+        };
+        let r: Result<(), String> = raw.execute_blocking(|| Err("raw".to_string()));
+        assert_eq!(r, Err("raw".to_string()));
+    }
+
+    #[tokio::test]
+    async fn zero_max_attempts_runs_once_async() {
+        let raw = ExponentialBackoffRetry {
+            max_attempts: 0,
+            ..Default::default()
+        };
+        let calls = AtomicU32::new(0);
+        let r: Result<(), String> = raw
+            .execute_async(|| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async { Err("raw".to_string()) }
+            })
+            .await;
+        assert_eq!(r, Err("raw".to_string()));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn default_matches_cross_language_spec() {

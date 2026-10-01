@@ -197,7 +197,7 @@ async fn create_channel(endpoint: &str, retry: &RetryPolicy) -> Result<Channel> 
 
     let mut last_error: Option<ClientError> = None;
 
-    for attempt in 0..retry.max_attempts {
+    for attempt in 0..retry.attempts() {
         if attempt > 0 {
             // RetryPolicy::compute_delay(N) = the delay before the N+1-th
             // attempt. attempt=1 sleeps compute_delay(0) = min_delay,
@@ -210,6 +210,9 @@ async fn create_channel(endpoint: &str, retry: &RetryPolicy) -> Result<Channel> 
                 backoff_ms = %delay.as_millis(),
                 "gRPC connection failed, retrying after backoff"
             );
+            if let (Some(cb), Some(err)) = (&retry.on_retry, &last_error) {
+                cb(attempt - 1, &err.to_string());
+            }
             tokio::time::sleep(delay).await;
         }
 
@@ -366,7 +369,7 @@ impl QueryClient {
         let mut results = Vec::with_capacity(max_books.min(1024));
         while let Some(book) = stream.message().await? {
             if results.len() >= max_books {
-                return Err(ClientError::connection(
+                return Err(ClientError::invalid_argument(
                     codes::STREAM_LIMIT_EXCEEDED,
                     messages::STREAM_LIMIT_EXCEEDED,
                     [
@@ -775,6 +778,103 @@ impl traits::SpeculativeClient for SpeculativeClient {
 
 #[cfg(test)]
 mod tests {
+    /// Connection retries report through the policy's on_retry hook, and a
+    /// zero-attempt policy still tries once.
+    #[tokio::test]
+    async fn create_channel_fires_on_retry_and_tries_at_least_once() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+        let seen = Arc::new(AtomicU32::new(0));
+        let s = Arc::clone(&seen);
+        let policy = crate::retry::RetryPolicy::default()
+            .with_max_attempts(3)
+            .with_min_delay(std::time::Duration::from_millis(1))
+            .with_max_delay(std::time::Duration::from_millis(2))
+            .with_on_retry(move |_, _| {
+                s.fetch_add(1, Ordering::SeqCst);
+            });
+        let missing = "/nonexistent/angzarr-on-retry.sock";
+        let err = super::create_channel(missing, &policy)
+            .await
+            .expect_err("no socket");
+        assert_eq!(err.code(), crate::error_codes::codes::CONNECTION_FAILED);
+        assert_eq!(seen.load(Ordering::SeqCst), 2);
+
+        let zero = crate::retry::RetryPolicy {
+            max_attempts: 0,
+            ..Default::default()
+        };
+        let err = super::create_channel(missing, &zero)
+            .await
+            .expect_err("no socket");
+        assert_eq!(err.code(), crate::error_codes::codes::CONNECTION_FAILED);
+    }
+
+    /// Exceeding the caller's stream cap is a caller-limit error, not a
+    /// (retryable) connection failure.
+    #[tokio::test]
+    async fn stream_limit_is_not_a_connection_error() {
+        use super::QueryClient;
+        use crate::proto::event_query_service_server::{
+            EventQueryService, EventQueryServiceServer,
+        };
+        use crate::proto::{AggregateRoot, EventBook, Query};
+        use futures::stream::{self, BoxStream};
+        use tonic::{Request, Response, Status, Streaming};
+
+        struct ThreeBooks;
+        #[tonic::async_trait]
+        impl EventQueryService for ThreeBooks {
+            async fn get_event_book(
+                &self,
+                _: Request<Query>,
+            ) -> Result<Response<EventBook>, Status> {
+                Ok(Response::new(EventBook::default()))
+            }
+            type GetEventsStream = BoxStream<'static, Result<EventBook, Status>>;
+            async fn get_events(
+                &self,
+                _: Request<Query>,
+            ) -> Result<Response<Self::GetEventsStream>, Status> {
+                let books = (0..3).map(|_| Ok(EventBook::default()));
+                Ok(Response::new(Box::pin(stream::iter(books))))
+            }
+            type SynchronizeStream = BoxStream<'static, Result<EventBook, Status>>;
+            async fn synchronize(
+                &self,
+                _: Request<Streaming<Query>>,
+            ) -> Result<Response<Self::SynchronizeStream>, Status> {
+                Err(Status::unimplemented("synchronize"))
+            }
+            type GetAggregateRootsStream = BoxStream<'static, Result<AggregateRoot, Status>>;
+            async fn get_aggregate_roots(
+                &self,
+                _: Request<()>,
+            ) -> Result<Response<Self::GetAggregateRootsStream>, Status> {
+                Err(Status::unimplemented("get_aggregate_roots"))
+            }
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(EventQueryServiceServer::new(ThreeBooks))
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
+        );
+        let client = QueryClient::connect(&format!("http://{addr}"))
+            .await
+            .expect("connect");
+        let err = client
+            .get_events_with_limit(Query::default(), 2)
+            .await
+            .expect_err("three books exceed a cap of two");
+        server.abort();
+        assert_eq!(err.code(), codes::STREAM_LIMIT_EXCEEDED);
+        assert!(!err.is_connection_error());
+        assert!(err.is_invalid_argument());
+    }
+
     #[test]
     fn endpoint_from_env_treats_unset_and_empty_as_default() {
         let var = "ANGZARR_CLIENT_TEST_ENDPOINT_FROM_ENV";

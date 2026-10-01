@@ -14,4 +14,5 @@ fn malformed_and_conflicting_markers_fail_to_compile() {
 fn marker_types_may_be_paths() {
     let t = trybuild::TestCases::new();
     t.pass("tests/router/ui/handles_path_marker.rs");
+    t.pass("tests/router/ui/upcaster_hygiene.rs");
 }

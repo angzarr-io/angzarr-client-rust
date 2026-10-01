@@ -2011,7 +2011,7 @@ fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
                     out_pages.push(::angzarr_client::proto::EventPage {
                         header: page.header.clone(),
                         created_at: page.created_at,
-                        payload: Some(::angzarr_client::proto::event_page::Payload::Event(new_any)),
+                        payload: ::std::option::Option::Some(::angzarr_client::proto::event_page::Payload::Event(new_any)),
                         no_commit: page.no_commit,
                         cascade_id: page.cascade_id.clone(),
                     });
@@ -2029,7 +2029,7 @@ fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
                 ::angzarr_client::HandlerConfig::Upcaster {
                     name: #name.to_string(),
                     domain: #domain.to_string(),
-                    upcasts: vec![#( #upcast_pairs ),*],
+                    upcasts: ::std::vec![#( #upcast_pairs ),*],
                 }
             }
         }
@@ -2049,7 +2049,7 @@ fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
                 let req = match request {
                     ::angzarr_client::HandlerRequest::Upcaster(r) => r,
                     _ => {
-                        return Err(::angzarr_client::ClientError::invalid_argument(
+                        return ::std::result::Result::Err(::angzarr_client::ClientError::invalid_argument(
                             ::angzarr_client::error_codes::codes::HANDLER_WRONG_REQUEST_KIND,
                             ::angzarr_client::error_codes::messages::HANDLER_WRONG_REQUEST_KIND,
                             [(
@@ -2060,13 +2060,13 @@ fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
                     }
                 };
 
-                let mut out_pages: Vec<::angzarr_client::proto::EventPage> =
-                    Vec::with_capacity(req.events.len());
+                let mut out_pages: ::std::vec::Vec<::angzarr_client::proto::EventPage> =
+                    ::std::vec::Vec::with_capacity(req.events.len());
 
                 'page: for page in req.events.iter() {
                     // Only event payloads are candidates for upcasting; external
                     // payloads and headerless pages pass through untouched.
-                    let Some(::angzarr_client::proto::event_page::Payload::Event(ref event_any)) =
+                    let ::std::option::Option::Some(::angzarr_client::proto::event_page::Payload::Event(ref event_any)) =
                         page.payload
                     else {
                         out_pages.push(page.clone());
@@ -2079,7 +2079,7 @@ fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
                     out_pages.push(page.clone());
                 }
 
-                Ok(::angzarr_client::HandlerResponse::Upcaster(
+                ::std::result::Result::Ok(::angzarr_client::HandlerResponse::Upcaster(
                     ::angzarr_client::proto::UpcastResponse { events: out_pages },
                 ))
             }

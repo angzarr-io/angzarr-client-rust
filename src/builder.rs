@@ -239,10 +239,15 @@ impl<'a, C: traits::QueryClient> QueryBuilder<'a, C> {
             Bound::Excluded(&n) => n.saturating_add(1),
             Bound::Unbounded => 0,
         };
-        let upper = match range.end_bound() {
-            Bound::Included(&n) => Some(n),
-            Bound::Excluded(&n) => Some(n.saturating_sub(1)),
-            Bound::Unbounded => None,
+        // The wire range is `[lower, upper]` with an inclusive upper. An
+        // exclusive end at or below `lower` selects nothing, which is
+        // encoded as `upper < lower` (`..0` needs `lower` raised to 1,
+        // since no upper is below 0).
+        let (lower, upper) = match range.end_bound() {
+            Bound::Included(&n) => (lower, Some(n)),
+            Bound::Excluded(&0) => (lower.max(1), Some(0)),
+            Bound::Excluded(&n) => (lower, Some(n - 1)),
+            Bound::Unbounded => (lower, None),
         };
         self.selection = Some(Selection::Range(SequenceRange { lower, upper }));
         self
@@ -850,6 +855,36 @@ mod tests {
             }
             _ => panic!("expected Range selection"),
         }
+    }
+
+    /// The coordinator reads a range as `[lower, upper + 1)`; an empty
+    /// Rust range must select nothing, never sequence 0.
+    #[test]
+    fn test_query_builder_empty_ranges_select_nothing() {
+        let client = MockQueryClient {
+            event_book: EventBook::default(),
+        };
+        let selects = |r: Option<Selection>, seq: u32| match r {
+            Some(Selection::Range(r)) => seq >= r.lower && r.upper.is_none_or(|u| seq <= u),
+            other => panic!("expected Range selection, got {other:?}"),
+        };
+        #[allow(clippy::reversed_empty_ranges)]
+        for builder in [
+            QueryBuilder::new(&client, "orders", None).range(..0),
+            QueryBuilder::new(&client, "orders", None).range(0..0),
+            QueryBuilder::new(&client, "orders", None).range(5..5),
+            QueryBuilder::new(&client, "orders", None).range(7..3),
+        ] {
+            let sel = builder.selection;
+            for seq in 0..10 {
+                assert!(!selects(sel.clone(), seq), "{sel:?} selects {seq}");
+            }
+        }
+        let sel = QueryBuilder::new(&client, "orders", None)
+            .range(..1)
+            .selection;
+        assert!(selects(sel.clone(), 0));
+        assert!(!selects(sel, 1));
     }
 
     #[test]
