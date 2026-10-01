@@ -114,7 +114,9 @@ test-verbose: generate-proto
 mutation-test: generate-proto
     #!/usr/bin/env bash
     set -euo pipefail
-    output=$(cargo mutants --jobs 4 2>&1) || true
+    # Unset CARGO_TARGET_DIR: a shared target dir across cargo-mutants'
+    # per-job build dirs lets a job test another job's (or no) mutation.
+    output=$(env -u CARGO_TARGET_DIR cargo mutants --jobs 4 2>&1) || true
     echo "$output"
     total=$(echo "$output" | grep -oP '(\d+) mutants tested' | grep -oP '^\d+' || echo "0")
     killed=$(echo "$output" | grep -oP '(\d+) killed' | grep -oP '^\d+' || echo "0")
@@ -141,7 +143,10 @@ mutants +FILES: generate-proto
     for f in {{FILES}}; do args+=(--file "$f"); done
     # shellcheck disable=SC2086
     eval "extra=(${MUTANTS_ARGS:-})"
-    cargo mutants --jobs 4 "${args[@]}" "${extra[@]}" -- ${MUTANTS_TEST_ARGS:-}
+    # cargo-mutants gives each job its own build dir; a shared
+    # CARGO_TARGET_DIR (the ephemeral runner sets one) lets jobs reuse each
+    # other's artifacts and test unmutated code.
+    env -u CARGO_TARGET_DIR cargo mutants --jobs 4 "${args[@]}" "${extra[@]}" -- ${MUTANTS_TEST_ARGS:-}
     status=$?
     out=mutants.out
     caught=$(wc -l < "$out/caught.txt" 2>/dev/null || echo 0)

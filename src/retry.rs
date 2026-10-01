@@ -368,6 +368,29 @@ mod tests {
         assert_eq!(fired.load(Ordering::SeqCst), 2);
     }
 
+    #[tokio::test]
+    async fn async_on_retry_fires_between_attempts_only() {
+        let fired = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let f = fired.clone();
+        let policy = ExponentialBackoffRetry::default()
+            .with_max_attempts(3)
+            .with_min_delay(Duration::from_nanos(1))
+            .with_jitter(false)
+            .with_on_retry(move |attempt, _msg| {
+                f.lock().unwrap().push(attempt);
+            });
+        let calls = AtomicU32::new(0);
+        let r: Result<u32, &'static str> = policy
+            .execute_async(|| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async { Err("nope") }
+            })
+            .await;
+        assert_eq!(r, Err("nope"));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(*fired.lock().unwrap(), vec![0, 1]);
+    }
+
     #[test]
     fn compute_delay_caps_at_max_delay() {
         let policy = ExponentialBackoffRetry::default()

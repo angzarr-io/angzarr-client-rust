@@ -873,10 +873,30 @@ mod tests {
             .get_events_with_limit(Query::default(), 2)
             .await
             .expect_err("three books exceed a cap of two");
+        let books = client
+            .get_events_with_limit(Query::default(), 3)
+            .await
+            .expect("exactly the cap is allowed");
+        assert_eq!(books.len(), 3);
         server.abort();
         assert_eq!(err.code(), codes::STREAM_LIMIT_EXCEEDED);
         assert!(!err.is_connection_error());
         assert!(err.is_invalid_argument());
+    }
+
+    /// The first retry waits the policy's minimum delay (compute_delay(0)).
+    #[tokio::test(start_paused = true)]
+    async fn create_channel_first_retry_waits_min_delay() {
+        let policy = crate::retry::RetryPolicy::default()
+            .with_max_attempts(2)
+            .with_jitter(false)
+            .with_min_delay(std::time::Duration::from_millis(50))
+            .with_max_delay(std::time::Duration::from_secs(10));
+        let start = tokio::time::Instant::now();
+        super::create_channel("/nonexistent/angzarr-delay.sock", &policy)
+            .await
+            .expect_err("no socket");
+        assert_eq!(start.elapsed(), std::time::Duration::from_millis(50));
     }
 
     #[test]
