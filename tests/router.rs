@@ -41,3 +41,6 @@ mod composition;
 
 #[path = "router/metadata.rs"]
 mod metadata;
+
+#[path = "router/host.rs"]
+mod host;

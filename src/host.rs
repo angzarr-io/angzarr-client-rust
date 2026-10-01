@@ -367,13 +367,12 @@ pub struct RunningHost {
     drain_period: Duration,
 }
 
+/// Stops the readiness supervisor. Dropping the stop sender ends the
+/// server's shutdown signal, so the server stops accepting too.
 impl Drop for RunningHost {
     fn drop(&mut self) {
         if let Some(supervisor) = self.supervisor.take() {
             supervisor.abort();
-        }
-        if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
         }
     }
 }

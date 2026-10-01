@@ -462,6 +462,14 @@ mod tests {
     }
 
     #[test]
+    fn configure_logging_installs_the_global_subscriber() {
+        configure_logging();
+        assert!(tracing::dispatcher::has_been_set());
+        // A second call is a no-op rather than a panic.
+        configure_logging();
+    }
+
+    #[test]
     fn parse_bind_address_accepts_ipv4_and_ipv6() {
         assert!(parse_bind_address("127.0.0.1:8080").is_ok());
         assert!(parse_bind_address("[::1]:9090").is_ok());
