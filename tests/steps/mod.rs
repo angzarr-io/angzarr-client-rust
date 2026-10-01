@@ -1,31 +1,16 @@
 //! Step definition modules for Cucumber feature tests.
 
 pub mod aggregate_client_steps;
-pub mod builder_steps;
 pub mod command_builder;
-pub mod command_handler_steps;
-pub mod compensation_steps;
 pub mod connection;
-pub mod decorators;
-pub mod deferred;
-pub mod destinations;
 pub mod domain_client_steps;
 pub mod error_handling;
 pub mod event_decoding;
+pub mod hosting;
 pub mod identity;
-pub mod multi_handler_steps;
 pub mod parity;
-pub mod process_manager_steps;
-pub mod projector_steps;
 pub mod query_builder;
 pub mod query_client_steps;
-pub mod rejected_compensation_steps;
-pub mod rejection_steps;
 pub mod retry;
-pub mod router_steps;
-pub mod saga_steps;
 pub mod speculative_client_steps;
 pub mod testing;
-pub mod upcaster_steps;
-pub mod validation_steps;
-pub mod wire_parity;

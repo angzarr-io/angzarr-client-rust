@@ -3,35 +3,18 @@
 //! # Command-handler Example
 //!
 //! ```rust,ignore
-//! use angzarr_macros::{command_handler, handles, applies, rejected};
+//! use angzarr_client::router::{applies, command_handler, handles};
 //!
-//! #[command_handler(domain = "player", state = PlayerState)]
-//! impl PlayerAggregate {
-//!     type State = PlayerState;
-//!
-//!     #[applies(PlayerRegistered)]
-//!     fn apply_registered(state: &mut PlayerState, event: PlayerRegistered) {
-//!         state.player_id = format!("player_{}", event.email);
-//!         state.display_name = event.display_name;
-//!         state.exists = true;
+//! #[command_handler(domain = "counter", state = CounterState)]
+//! impl Counter {
+//!     #[applies(Increased)]
+//!     fn apply_increased(state: &mut CounterState, event: Increased) {
+//!         state.value += event.by;
 //!     }
 //!
-//!     #[applies(FundsDeposited)]
-//!     fn apply_deposited(state: &mut PlayerState, event: FundsDeposited) {
-//!         if let Some(balance) = event.new_balance {
-//!             state.bankroll = balance.amount;
-//!         }
-//!     }
-//!
-//!     #[handles(RegisterPlayer)]
-//!     fn register(&self, cmd: RegisterPlayer, state: &PlayerState, seq: u32)
+//!     #[handles(Increase)]
+//!     fn increase(&self, cmd: Increase, state: &CounterState, seq: u32)
 //!         -> CommandResult<EventBook> {
-//!         // ...
-//!     }
-//!
-//!     #[rejected(domain = "payment", command = ProcessPayment)]
-//!     fn handle_payment_rejected(&self, notification: &Notification, state: &PlayerState)
-//!         -> CommandResult<BusinessResponse> {
 //!         // ...
 //!     }
 //! }
@@ -133,10 +116,10 @@ fn reject_stacked_kinds(this_kind: &str, attrs: &[Attribute]) -> Option<TokenStr
 ///
 /// # Example
 /// ```rust,ignore
-/// #[command_handler(domain = "player", state = PlayerState)]
-/// impl PlayerAggregate {
-///     #[handles(RegisterPlayer)]
-///     fn register(&self, cmd: RegisterPlayer, state: &PlayerState, seq: u32)
+/// #[command_handler(domain = "counter", state = CounterState)]
+/// impl Counter {
+///     #[handles(Increase)]
+///     fn register(&self, cmd: Increase, state: &CounterState, seq: u32)
 ///         -> CommandResult<EventBook> {
 ///         // ...
 ///     }
@@ -316,7 +299,7 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
             ) -> ::angzarr_client::router::component::Component {
                 use ::angzarr_client::router::component as __p;
                 #[allow(unused_mut)]
-                let mut table = ::angzarr_client::__router::aggregate::AggregateDispatch::new(
+                let mut table = ::angzarr_client::router::binding::aggregate::AggregateDispatch::new(
                     #name, #domain, #rebuilder,
                 );
                 #(#command_regs)*
@@ -358,7 +341,7 @@ fn rebuilder_expr(self_ty: &syn::Type, state_ty: &Ident, meta: &MethodMetadata) 
     });
     quote! {{
         use ::angzarr_client::router::component::{IgnoresSnapshot as _, LoadsSnapshot as _};
-        let rebuilder = ::angzarr_client::__router::rebuild::Rebuilder::<#state_ty>::new(|| #initial);
+        let rebuilder = ::angzarr_client::router::binding::rebuild::Rebuilder::<#state_ty>::new(|| #initial);
         #(#appliers)*
         ::angzarr_client::router::component::with_snapshot(
             rebuilder,
@@ -652,8 +635,8 @@ fn strip_method_markers(input: &mut ItemImpl) {
 ///
 /// # Example
 /// ```rust,ignore
-/// #[handles(RegisterPlayer)]
-/// fn register(&self, cmd: RegisterPlayer, state: &PlayerState, seq: u32)
+/// #[handles(Increase)]
+/// fn register(&self, cmd: Increase, state: &CounterState, seq: u32)
 ///     -> CommandResult<EventBook> {
 ///     // ...
 /// }
@@ -714,7 +697,7 @@ pub fn handles_fact(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// # Example
 /// ```rust,ignore
 /// #[rejected(domain = "payment", command = ProcessPayment)]
-/// fn handle_payment_rejected(&self, notification: &Notification, state: &PlayerState)
+/// fn handle_payment_rejected(&self, notification: &Notification, state: &CounterState)
 ///     -> CommandResult<BusinessResponse> {
 ///     // ...
 /// }
@@ -737,15 +720,15 @@ pub fn rejected(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Example
 /// ```rust,ignore
-/// #[applies(PlayerRegistered)]
-/// fn apply_registered(state: &mut PlayerState, event: PlayerRegistered) {
-///     state.player_id = format!("player_{}", event.email);
+/// #[applies(Increased)]
+/// fn apply_registered(state: &mut CounterState, event: Increased) {
+///     state.value += event.by;
 ///     state.display_name = event.display_name;
 ///     state.exists = true;
 /// }
 ///
 /// #[applies(FundsDeposited)]
-/// fn apply_deposited(state: &mut PlayerState, event: FundsDeposited) {
+/// fn apply_deposited(state: &mut CounterState, event: FundsDeposited) {
 ///     if let Some(balance) = event.new_balance {
 ///         state.bankroll = balance.amount;
 ///     }
@@ -941,7 +924,7 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
             ) -> ::angzarr_client::router::component::Component {
                 use ::angzarr_client::router::component as __p;
                 let mut table =
-                    ::angzarr_client::__router::saga::SagaDispatch::new(#name, #source, [#target]);
+                    ::angzarr_client::router::binding::saga::SagaDispatch::new(#name, #source, [#target]);
                 #(#regs)*
                 let _ = &factory;
                 __p::Component::Saga(table)
@@ -1198,7 +1181,7 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
             ) -> ::angzarr_client::router::component::Component {
                 use ::angzarr_client::router::component as __p;
                 #[allow(unused_mut)]
-                let mut table = ::angzarr_client::__router::process_manager::ProcessManagerDispatch::new(
+                let mut table = ::angzarr_client::router::binding::process_manager::ProcessManagerDispatch::new(
                     #name, #pm_domain, [#(#targets),*], #rebuilder,
                 );
                 #(#regs)*
@@ -1224,10 +1207,10 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
 ///
 /// # Example
 /// ```rust,ignore
-/// #[projector(name = "output", domains = ["player", "hand"])]
+/// #[projector(name = "output", domains = ["counter", "ledger"])]
 /// impl OutputProjector {
-///     #[handles(PlayerRegistered)]
-///     fn project_registered(&self, event: PlayerRegistered) -> CommandResult<()> {
+///     #[handles(Increased)]
+///     fn project_registered(&self, event: Increased) -> CommandResult<()> {
 ///         // side effects through &self
 ///     }
 ///
@@ -1334,7 +1317,7 @@ fn expand_projector(args: ProjectorArgs, mut input: ItemImpl) -> TokenStream2 {
             ) -> ::angzarr_client::router::component::Component {
                 use ::angzarr_client::router::component as __p;
                 // One instance per delivered book, reused across its pages.
-                let table = ::angzarr_client::__router::projector::ProjectorDispatch::new(
+                let table = ::angzarr_client::router::binding::projector::ProjectorDispatch::new(
                     #name,
                     move || factory(),
                 );
@@ -1468,9 +1451,9 @@ pub fn state_factory(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Example
 /// ```rust,ignore
-/// #[upcasts(from = PlayerRegisteredV1, to = PlayerRegisteredV2)]
-/// fn upgrade(old: PlayerRegisteredV1) -> PlayerRegisteredV2 {
-///     PlayerRegisteredV2 { /* ... */ }
+/// #[upcasts(from = IncreasedV1, to = IncreasedV2)]
+/// fn upgrade(old: IncreasedV1) -> IncreasedV2 {
+///     IncreasedV2 { /* ... */ }
 /// }
 /// ```
 ///
@@ -1535,14 +1518,14 @@ impl syn::parse::Parse for UpcastsArgs {
 ///
 /// # Example
 /// ```rust,ignore
-/// #[upcaster(name = "player-v1-to-v2", domain = "player")]
-/// impl PlayerUpcaster {
-///     #[upcasts(from = PlayerRegisteredV1, to = PlayerRegisteredV2)]
-///     fn upgrade(old: PlayerRegisteredV1) -> PlayerRegisteredV2 { /* ... */ }
+/// #[upcaster(name = "counter-v1-to-v2", domain = "counter")]
+/// impl CounterUpcaster {
+///     #[upcasts(from = IncreasedV1, to = IncreasedV2)]
+///     fn upgrade(old: IncreasedV1) -> IncreasedV2 { /* ... */ }
 /// }
 ///
-/// let Built::Upcaster(router) = Router::new("upcaster-player")
-///     .with_handler(|| PlayerUpcaster)
+/// let Built::Upcaster(router) = Router::new("upcaster-counter")
+///     .with_handler(|| CounterUpcaster)
 ///     .build()?
 /// else {
 ///     unreachable!("a router of upcasters builds an upcaster router")
@@ -1617,7 +1600,7 @@ fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
                 use ::angzarr_client::router::component as __p;
                 // Upcasts are associated functions; no instance is needed.
                 let _ = factory;
-                let table = ::angzarr_client::__router::upcaster::UpcasterDispatch::new(#name, #domain);
+                let table = ::angzarr_client::router::binding::upcaster::UpcasterDispatch::new(#name, #domain);
                 #(#regs)*
                 __p::Component::Upcaster(table)
             }

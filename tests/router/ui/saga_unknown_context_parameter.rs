@@ -2,7 +2,8 @@
 //! unknown name is a compile error rather than a silently missing value.
 
 use angzarr_client::proto::SagaResponse;
-use angzarr_client::{saga, CommandResult};
+use angzarr_client::router::saga;
+use angzarr_client::CommandResult;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 struct OrderCreated {}

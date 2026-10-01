@@ -10,12 +10,13 @@ use angzarr_client::proto::{
     ContextualCommand, Cover, EventBook, EventPage, PageHeader, ProcessManagerHandleRequest,
     ProcessManagerHandleResponse, SagaHandleRequest, SagaResponse, Snapshot,
 };
+#[allow(unused_imports)]
+use angzarr_client::router::{
+    applies, command_handler, handles, process_manager, saga, Destinations,
+};
 use angzarr_client::router::{Built, Router};
 #[allow(unused_imports)]
-use angzarr_client::{
-    applies, command_handler, full_type_url, handles, process_manager, saga, CommandResult,
-    Destinations,
-};
+use angzarr_client::{full_type_url, CommandResult};
 use prost_types::Any;
 
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -11,9 +11,11 @@
 //! Uses minimal macro-declared handlers, one per kind.
 
 use angzarr_client::proto::{EventBook, ProcessManagerHandleResponse, SagaResponse};
+#[allow(unused_imports)]
+use angzarr_client::router::{command_handler, handles, process_manager, projector, saga};
 use angzarr_client::router::{BuildError, Built, Router};
 #[allow(unused_imports)]
-use angzarr_client::{command_handler, handles, process_manager, projector, saga, CommandResult};
+use angzarr_client::CommandResult;
 
 // --- Minimal handlers, one per kind. -------------------------------------
 

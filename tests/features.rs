@@ -24,33 +24,19 @@ use std::path::Path;
 use cucumber::{writer::Stats, World};
 
 use steps::aggregate_client_steps::AggregateClientWorld;
-use steps::builder_steps::BuilderWorld;
 use steps::command_builder::CommandBuilderWorld;
-use steps::command_handler_steps::CommandHandlerWorld;
-use steps::compensation_steps::CompensationWorld;
 use steps::connection::ConnectionWorld;
-use steps::decorators::DecoratorsWorldCucumber;
-use steps::destinations::DestinationsWorld;
 use steps::domain_client_steps::DomainClientWorld;
 use steps::error_handling::ErrorHandlingWorld;
 use steps::event_decoding::EventDecodingWorld;
+use steps::hosting::HostingWorld;
 use steps::identity::IdentityWorld;
-use steps::multi_handler_steps::MultiHandlerWorld;
 use steps::parity::ParityWorld;
-use steps::process_manager_steps::ProcessManagerWorld;
-use steps::projector_steps::ProjectorWorld;
 use steps::query_builder::QueryBuilderWorld;
 use steps::query_client_steps::QueryClientWorld;
-use steps::rejected_compensation_steps::RejectedCompensationWorld;
-use steps::rejection_steps::RejectionWorld;
 use steps::retry::RetryWorld;
-use steps::router_steps::RouterWorld;
-use steps::saga_steps::SagaWorld;
 use steps::speculative_client_steps::SpeculativeClientWorld;
 use steps::testing::TestingWorld;
-use steps::upcaster_steps::UpcasterWorld;
-use steps::validation_steps::ValidationWorld;
-use steps::wire_parity::WireParityWorld;
 
 const CLIENT_DIR: &str = "angzarr-project/features/client";
 const PARITY_DIR: &str = "angzarr-project/parity/client";
@@ -158,40 +144,22 @@ async fn main() {
 
     let sel = selected_features();
     let results = vec![
-        // features/client — router / dispatch and client-surface tiers.
+        // features/client — consumer clients.
         run_suite!(sel, AggregateClientWorld, client("aggregate_client")),
-        run_suite!(sel, BuilderWorld, client("builder")),
-        run_suite!(sel, CommandHandlerWorld, client("command_handler")),
-        run_suite!(sel, CompensationWorld, client("compensation")),
         run_suite!(sel, DomainClientWorld, client("domain-client")),
-        run_suite!(sel, MultiHandlerWorld, client("multi_handler")),
-        run_suite!(sel, ProcessManagerWorld, client("process_manager")),
-        run_suite!(sel, ProjectorWorld, client("projector")),
         run_suite!(sel, QueryClientWorld, client("query_client")),
-        run_suite!(
-            sel,
-            RejectedCompensationWorld,
-            client("rejected_compensation")
-        ),
-        run_suite!(sel, RejectionWorld, client("rejection")),
-        run_suite!(sel, RouterWorld, client("router")),
-        run_suite!(sel, SagaWorld, client("saga")),
         run_suite!(sel, SpeculativeClientWorld, client("speculative_client")),
-        run_suite!(sel, UpcasterWorld, client("upcaster")),
-        run_suite!(sel, ValidationWorld, client("validation")),
         // parity/client — cross-language surface parity.
         run_suite!(sel, CommandBuilderWorld, parity("command_builder")),
         run_suite!(sel, ConnectionWorld, parity("connection")),
-        run_suite!(sel, DecoratorsWorldCucumber, parity("decorators")),
-        run_suite!(sel, DestinationsWorld, parity("destinations")),
         run_suite!(sel, ErrorHandlingWorld, parity("error_handling")),
+        run_suite!(sel, HostingWorld, parity("hosting")),
         run_suite!(sel, EventDecodingWorld, parity("event_decoding")),
         run_suite!(sel, IdentityWorld, parity("identity")),
         run_suite!(sel, ParityWorld, parity("parity")),
         run_suite!(sel, QueryBuilderWorld, parity("query_builder")),
         run_suite!(sel, RetryWorld, parity("retry")),
         run_suite!(sel, TestingWorld, parity("testing")),
-        run_suite!(sel, WireParityWorld, parity("wire_parity")),
     ];
 
     let mut problems: Vec<String> = Vec::new();

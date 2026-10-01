@@ -86,10 +86,6 @@ sha2 = "0.10"
 name = "features"
 harness = false
 
-[[test]]
-name = "sour_only_builder"
-harness = false
-
 [features]
 default = []
 # `angzarr_client::testing`: proto builders, deterministic test UUIDs,

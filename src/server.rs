@@ -1,62 +1,22 @@
-//! gRPC runner utilities for hosting aggregate, saga, process manager,
-//! projector, and upcaster services.
+//! Transport configuration and runners for hosting components.
 //!
-//! Each `run_*_server` function:
-//!
-//! 1. Resolves transport from env via [`get_transport_config`] →
-//!    [`ServerConfig`] (TCP or UDS — UDS path lives in the parent dir we
-//!    create on demand, with any stale socket file removed).
-//! 2. Reads the runner's logical name from the router (`router.name()`),
-//!    so callers don't pass a redundant `domain`/`name` argument that can
-//!    drift from the metadata on the registered handlers.
-//! 3. Adds `grpc.health.v1.Health` alongside the kind-specific service.
-//! 4. Spawns a [`crate::readiness`] supervisor whose probes are:
-//!    - a [`crate::readiness::TransportProbe`] flipped once the listener is
-//!      bound and the server is accepting traffic, and
-//!    - one [`crate::readiness::OutputDomainProbe`] per `target` declared in
-//!      the router's saga / process-manager handler metadata.
-//!
-//! While any probe is failing, the per-kind health service name and the empty
-//! `""` overall name both report `NOT_SERVING`. K8s liveness sees the gRPC
-//! server respond regardless; readiness only flips green once all probes do.
+//! [`get_transport_config`] resolves the transport (TCP or a Unix socket)
+//! from the environment the coordinator sets. Each `run_*_server` function
+//! serves one built router through a [`crate::host::ComponentHost`] until
+//! SIGINT / SIGTERM; use the host directly to serve several components or
+//! application services together.
 
 use std::env;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use tonic::server::NamedService;
-use tonic::transport::Server;
-use tonic_health::server::HealthReporter;
-use tonic_health::ServingStatus;
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::error::{ClientError, Result};
 use crate::error_codes::{codes, keys, messages};
-use crate::handler::{
-    CommandHandlerGrpc, ProcessManagerGrpc, ProjectorGrpc, SagaGrpc, UpcasterGrpc,
-};
-use crate::proto::command_handler_service_server::CommandHandlerServiceServer;
-use crate::proto::process_manager_service_server::ProcessManagerServiceServer;
-use crate::proto::projector_service_server::ProjectorServiceServer;
-use crate::proto::saga_service_server::SagaServiceServer;
-use crate::proto::upcaster_service_server::UpcasterServiceServer;
-use crate::readiness::{
-    probe_config_from_env, run_supervisor_with_wake, BusProbe, OutputDomainProbe, Probe,
-    TransportProbe,
-};
+use crate::host::ComponentHost;
 use crate::router::routers::{CommandHandlerRouter, ProcessManagerRouter, SagaRouter};
-
-/// Fully-qualified gRPC service names (`io.angzarr.v1.<Service>`) — the
-/// health-reporter keys a `Health.Check` for a specific service matches.
-/// Taken from the generated servers' `NamedService::NAME` so they always
-/// equal the gRPC path the services are served under.
-const HEALTH_NAME_COMMAND_HANDLER: &str =
-    <CommandHandlerServiceServer<CommandHandlerGrpc> as NamedService>::NAME;
-const HEALTH_NAME_SAGA: &str = <SagaServiceServer<SagaGrpc> as NamedService>::NAME;
-const HEALTH_NAME_PROCESS_MANAGER: &str =
-    <ProcessManagerServiceServer<ProcessManagerGrpc> as NamedService>::NAME;
-const HEALTH_NAME_PROJECTOR: &str = <ProjectorServiceServer<ProjectorGrpc> as NamedService>::NAME;
-const HEALTH_NAME_UPCASTER: &str = <UpcasterServiceServer<UpcasterGrpc> as NamedService>::NAME;
+use crate::router::Built;
 
 /// Initialize a JSON tracing subscriber filtered by `RUST_LOG` (default `info`).
 ///
@@ -163,26 +123,13 @@ pub fn resolve_bind_address(default_port: u16) -> String {
     env::var(ENV_BIND_ADDRESS).unwrap_or_else(|_| format!("{}:{}", DEFAULT_BIND_HOST, default_port))
 }
 
-/// Construct a fresh `tonic::transport::Server` builder.
-pub fn create_server() -> Server {
-    Server::builder()
-}
-
-/// Run a server for any [`crate::router::Built`] router kind.
-///
-/// Dispatches to the per-kind `run_*_server` function based on the variant.
-pub async fn run_server(default_port: u16, built: crate::router::Built) -> Result<()> {
-    match built {
-        crate::router::Built::CommandHandler(router) => {
-            run_command_handler_server(router, default_port).await
-        }
-        crate::router::Built::Saga(router) => run_saga_server(router, default_port).await,
-        crate::router::Built::ProcessManager(router) => {
-            run_process_manager_server(router, default_port).await
-        }
-        crate::router::Built::Projector(router) => run_projector_server(router, default_port).await,
-        crate::router::Built::Upcaster(router) => run_upcaster_server(router, default_port).await,
-    }
+/// Serve one built router of any kind until SIGINT / SIGTERM.
+pub async fn run_server(default_port: u16, built: Built) -> Result<()> {
+    ComponentHost::new()
+        .with_router(built)
+        .with_default_port(default_port)
+        .serve()
+        .await
 }
 
 /// Remove a stale UDS socket file at `path`. No-op if the path does not exist.
@@ -242,11 +189,6 @@ pub(crate) fn bind_uds_listener(uds_path: &Path) -> Result<tokio::net::UnixListe
 }
 
 /// A bound listener for either transport.
-enum Listener {
-    Tcp(tokio::net::TcpListener),
-    Uds(tokio::net::UnixListener),
-}
-
 /// Bind a TCP listener, surfacing a structured `TCP_BIND_FAILED` error.
 pub(crate) async fn bind_tcp_listener(addr: SocketAddr) -> Result<tokio::net::TcpListener> {
     tokio::net::TcpListener::bind(addr).await.map_err(|e| {
@@ -265,7 +207,7 @@ pub(crate) async fn bind_tcp_listener(addr: SocketAddr) -> Result<tokio::net::Tc
 ///
 /// Wired into `Server::serve_with_shutdown` so the server drains in-flight
 /// requests on a signal instead of being killed mid-stream by the runtime.
-async fn shutdown_signal() {
+pub(crate) async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(e) = tokio::signal::ctrl_c().await {
             warn!(error = %e, "failed to install ctrl_c handler");
@@ -298,252 +240,44 @@ async fn shutdown_signal() {
 // Per-kind runners
 // ---------------------------------------------------------------------------
 
-/// Run a command handler service. Domain is read from the router's
-/// `#[command_handler(domain = ...)]` metadata.
+/// Serve a command-handler router until SIGINT / SIGTERM.
 pub async fn run_command_handler_server(
     router: CommandHandlerRouter,
     default_port: u16,
 ) -> Result<()> {
-    let name = router.name();
-    // CH never emits cross-domain commands at the framework level —
-    // events flow back through the response. No probes.
-    let svc = CommandHandlerServiceServer::new(CommandHandlerGrpc::new(router));
-    run_kind(
-        name,
-        get_transport_config(default_port),
-        Vec::new(),
-        false,
-        HEALTH_NAME_COMMAND_HANDLER,
-        |r| r.add_service(svc),
-    )
-    .await
+    run_server(default_port, Built::CommandHandler(router)).await
 }
 
-/// Run a saga service. Saga name is read from the router's `#[saga(name = ...)]`
-/// metadata. Audit #74: only `target`s declared with `#[saga(sync = true)]`
-/// get an `OutputDomainProbe`; async-only sagas rely on the `BusProbe`
-/// (configured via `ANGZARR_BUS_ENDPOINT`).
+/// Serve a saga router until SIGINT / SIGTERM. Sync targets get an
+/// output-domain readiness probe; async targets rely on the bus probe
+/// (`ANGZARR_BUS_ENDPOINT`).
 pub async fn run_saga_server(router: SagaRouter, default_port: u16) -> Result<()> {
-    let name = router.name();
-    let sync_outputs = router.sync_output_domains();
-    let has_async_outputs = router.has_async_outputs();
-    let svc = SagaServiceServer::new(SagaGrpc::new(router));
-    run_kind(
-        name,
-        get_transport_config(default_port),
-        sync_outputs,
-        has_async_outputs,
-        HEALTH_NAME_SAGA,
-        |r| r.add_service(svc),
-    )
-    .await
+    run_server(default_port, Built::Saga(router)).await
 }
 
-/// Run a projector service. Projector name is read from the
-/// `#[projector(name = ...)]` metadata. Projectors are read-side and have no
-/// output-domain probes.
+/// Serve a projector router until SIGINT / SIGTERM.
 pub async fn run_projector_server(
     router: crate::router::ProjectorRouter,
     default_port: u16,
 ) -> Result<()> {
-    let name = router.name();
-    let svc = ProjectorServiceServer::new(ProjectorGrpc::new(router));
-    run_kind(
-        name,
-        get_transport_config(default_port),
-        Vec::new(),
-        false,
-        HEALTH_NAME_PROJECTOR,
-        |r| r.add_service(svc),
-    )
-    .await
+    run_server(default_port, Built::Projector(router)).await
 }
 
-/// Run a process-manager service. PM name is read from
-/// `#[process_manager(name = ...)]` metadata. Audit #74: only targets
-/// listed in `sync_targets` get an `OutputDomainProbe`; async-only
-/// targets ride the bus probe.
+/// Serve a process-manager router until SIGINT / SIGTERM. Sync targets get
+/// an output-domain readiness probe; async targets rely on the bus probe.
 pub async fn run_process_manager_server(
     router: ProcessManagerRouter,
     default_port: u16,
 ) -> Result<()> {
-    let name = router.name();
-    let sync_outputs = router.sync_output_domains();
-    let has_async_outputs = router.has_async_outputs();
-    let svc = ProcessManagerServiceServer::new(ProcessManagerGrpc::new(router));
-    run_kind(
-        name,
-        get_transport_config(default_port),
-        sync_outputs,
-        has_async_outputs,
-        HEALTH_NAME_PROCESS_MANAGER,
-        |r| r.add_service(svc),
-    )
-    .await
+    run_server(default_port, Built::ProcessManager(router)).await
 }
 
-/// Run an upcaster service. Upcaster name is read from
-/// `#[upcaster(name = ...)]` metadata. Upcasters have no output-domain probes.
+/// Serve an upcaster router until SIGINT / SIGTERM.
 pub async fn run_upcaster_server(
     router: crate::router::routers::UpcasterRouter,
     default_port: u16,
 ) -> Result<()> {
-    let name = router.name();
-    let svc = UpcasterServiceServer::new(UpcasterGrpc::new(router));
-    run_kind(
-        name,
-        get_transport_config(default_port),
-        Vec::new(),
-        false,
-        HEALTH_NAME_UPCASTER,
-        |r| r.add_service(svc),
-    )
-    .await
-}
-
-// ---------------------------------------------------------------------------
-// Shared runner core
-// ---------------------------------------------------------------------------
-
-/// Common runner body shared by every per-kind `run_*_server`:
-/// builds probes + health, marks transport bound after the listener succeeds,
-/// then serves until either the server future resolves or a SIGINT/SIGTERM
-/// signal triggers graceful shutdown.
-async fn run_kind<F>(
-    instance_name: String,
-    config: ServerConfig,
-    sync_output_domains: Vec<String>,
-    has_async_outputs: bool,
-    health_service_name: &'static str,
-    add_kind_service: F,
-) -> Result<()>
-where
-    F: FnOnce(tonic::transport::server::Router) -> tonic::transport::server::Router,
-{
-    let (health_reporter, health_service) = tonic_health::server::health_reporter();
-    let service_names: Vec<String> = vec![String::new(), health_service_name.to_string()];
-    for name in &service_names {
-        health_reporter
-            .set_service_status(name, ServingStatus::NotServing)
-            .await;
-    }
-
-    // Bind before anything else is started so a bind failure returns a
-    // structured error with no supervisor left running, and so "bound"
-    // is only ever published for a listener that exists.
-    let uds_to_cleanup = config.uds_path.clone();
-    let listener = match config.uds_path.as_ref() {
-        Some(uds_path) => {
-            ensure_uds_parent_dir(uds_path)?;
-            cleanup_socket(uds_path);
-            info!(
-                service = health_service_name,
-                name = %instance_name,
-                transport = "uds",
-                address = %uds_path.display(),
-                "server_started",
-            );
-            Listener::Uds(bind_uds_listener(uds_path)?)
-        }
-        None => {
-            let addr_str = resolve_bind_address(config.port);
-            let addr = parse_bind_address(&addr_str)?;
-            let listener = bind_tcp_listener(addr).await?;
-            info!(
-                service = health_service_name,
-                name = %instance_name,
-                transport = "tcp",
-                address = %addr_str,
-                "server_started",
-            );
-            Listener::Tcp(listener)
-        }
-    };
-
-    let (transport_probe, transport_signal) = TransportProbe::new();
-    let wake = transport_probe.wake();
-    let mut probes: Vec<Box<dyn Probe>> = vec![Box::new(transport_probe)];
-    // Audit #74: probe sync targets directly; if any handler emits async,
-    // add a single BusProbe iff the operator configured `ANGZARR_BUS_ENDPOINT`.
-    for domain in sync_output_domains {
-        probes.push(Box::new(OutputDomainProbe::for_domain(domain)?));
-    }
-    if has_async_outputs {
-        if let Some(bus) = BusProbe::from_env() {
-            probes.push(Box::new(bus));
-        }
-    }
-
-    let (interval, timeout) = probe_config_from_env();
-    // Audit #83: clones held for the shutdown flip. `HealthReporter` is
-    // `Clone`; `service_names` is owned by the supervisor task.
-    let shutdown_reporter = health_reporter.clone();
-    let shutdown_service_names = service_names.clone();
-    let supervisor = tokio::spawn(run_supervisor_with_wake(
-        probes,
-        health_reporter,
-        service_names,
-        interval,
-        timeout,
-        wake,
-    ));
-
-    let server = Server::builder().add_service(health_service);
-    let router = add_kind_service(server);
-
-    transport_signal.mark_bound();
-    let result = match listener {
-        Listener::Uds(listener) => {
-            let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
-            router
-                .serve_with_incoming_shutdown(incoming, shutdown_signal())
-                .await
-        }
-        Listener::Tcp(listener) => {
-            let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-            router
-                .serve_with_incoming_shutdown(incoming, shutdown_signal())
-                .await
-        }
-    };
-
-    // Audit #83: shut down in two phases.
-    // 1. Cancel the supervisor and wait for it to actually exit so any
-    //    in-flight `set_service_status` finishes before we publish the
-    //    final state. `JoinError` from the abort path is expected and
-    //    swallowed; any other panic from the supervisor was already
-    //    caught at the probe level (audit #82).
-    // 2. Flip every registered health name to `NOT_SERVING` so K8s
-    //    readiness goes red and the load balancer drains the pod.
-    supervisor.abort();
-    let _ = supervisor.await;
-    publish_shutdown_status(&shutdown_reporter, &shutdown_service_names).await;
-
-    // Always remove the UDS socket file on shutdown — leaving it
-    // behind makes the next start fail with EADDRINUSE if the runner
-    // is restarted before kubelet cleans up the volume.
-    if let Some(path) = uds_to_cleanup {
-        cleanup_socket(&path);
-    }
-
-    // Audit #89: same event name + field set on shutdown.
-    info!(
-        service = health_service_name,
-        name = %instance_name,
-        "server_shutdown",
-    );
-    result.map_err(ClientError::from)
-}
-
-/// Audit #83: flip every registered health name to `NOT_SERVING` so the
-/// load balancer drains the pod. Extracted so the shutdown publish can
-/// be unit-tested in isolation from the runner's transport plumbing.
-async fn publish_shutdown_status(reporter: &HealthReporter, service_names: &[String]) {
-    for name in service_names {
-        reporter
-            .set_service_status(name, ServingStatus::NotServing)
-            .await;
-    }
+    run_server(default_port, Built::Upcaster(router)).await
 }
 
 #[cfg(test)]
@@ -555,104 +289,6 @@ mod tests {
 
     fn clear_bind_env() {
         env::remove_var(ENV_BIND_ADDRESS);
-    }
-
-    async fn health_status(port: u16, service: &str) -> Option<i32> {
-        use tonic_health::pb::health_client::HealthClient;
-        use tonic_health::pb::HealthCheckRequest;
-        let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
-            .ok()?
-            .connect()
-            .await
-            .ok()?;
-        let mut client = HealthClient::new(channel);
-        let resp = client
-            .check(HealthCheckRequest {
-                service: service.to_string(),
-            })
-            .await
-            .ok()?;
-        Some(resp.into_inner().status)
-    }
-
-    /// Readiness flips to SERVING as soon as the listener is bound, not on
-    /// the next supervisor interval (30s by default).
-    // ENV_LOCK stays held across the yield so the spawned runner reads the
-    // bind address before another test changes it.
-    #[allow(clippy::await_holding_lock)]
-    #[tokio::test]
-    async fn readiness_serves_promptly_after_bind() {
-        let port = {
-            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            probe.local_addr().unwrap().port()
-        };
-        let server = {
-            let _g = ENV_LOCK.lock().unwrap();
-            env::set_var(ENV_BIND_ADDRESS, format!("127.0.0.1:{port}"));
-            let server = tokio::spawn(run_kind(
-                "ready".into(),
-                ServerConfig {
-                    port,
-                    uds_path: None,
-                },
-                Vec::new(),
-                false,
-                HEALTH_NAME_PROJECTOR,
-                |r| r,
-            ));
-            // run_kind resolves the bind address before its first await.
-            tokio::task::yield_now().await;
-            clear_bind_env();
-            server
-        };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        let serving = tonic_health::pb::health_check_response::ServingStatus::Serving as i32;
-        let mut last = None;
-        while std::time::Instant::now() < deadline {
-            last = health_status(port, HEALTH_NAME_PROJECTOR).await;
-            if last == Some(serving) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        server.abort();
-        assert_eq!(last, Some(serving), "health never reported SERVING");
-    }
-
-    /// A TCP bind failure is reported as a structured error from the
-    /// runner, before anything is marked bound.
-    // ENV_LOCK stays held across the yield so the spawned runner reads the
-    // bind address before another test changes it.
-    #[allow(clippy::await_holding_lock)]
-    #[tokio::test]
-    async fn tcp_bind_failure_is_a_structured_error() {
-        let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = occupied.local_addr().unwrap().port();
-        let fut = {
-            let _g = ENV_LOCK.lock().unwrap();
-            env::set_var(ENV_BIND_ADDRESS, format!("127.0.0.1:{port}"));
-            let fut = tokio::spawn(run_kind(
-                "busy".into(),
-                ServerConfig {
-                    port,
-                    uds_path: None,
-                },
-                Vec::new(),
-                false,
-                HEALTH_NAME_PROJECTOR,
-                |r| r,
-            ));
-            tokio::task::yield_now().await;
-            clear_bind_env();
-            fut
-        };
-        let result = tokio::time::timeout(std::time::Duration::from_secs(5), fut)
-            .await
-            .expect("runner returns instead of serving")
-            .expect("runner task");
-        let err = result.expect_err("bind on an occupied port fails");
-        assert_eq!(err.code(), codes::TCP_BIND_FAILED);
-        drop(occupied);
     }
 
     const TRANSPORT_VARS: &[&str] = &[
@@ -779,23 +415,6 @@ mod tests {
         );
     }
 
-    /// Health keys are the fully-qualified gRPC service names of the
-    /// io.angzarr.v1 package the services are served under.
-    #[test]
-    fn health_names_are_v1_service_names() {
-        assert_eq!(
-            HEALTH_NAME_COMMAND_HANDLER,
-            "io.angzarr.v1.CommandHandlerService"
-        );
-        assert_eq!(HEALTH_NAME_SAGA, "io.angzarr.v1.SagaService");
-        assert_eq!(
-            HEALTH_NAME_PROCESS_MANAGER,
-            "io.angzarr.v1.ProcessManagerService"
-        );
-        assert_eq!(HEALTH_NAME_PROJECTOR, "io.angzarr.v1.ProjectorService");
-        assert_eq!(HEALTH_NAME_UPCASTER, "io.angzarr.v1.UpcasterService");
-    }
-
     // Audit #77: ANGZARR_BIND_ADDRESS overrides the default
     // dual-stack `[::]:{port}` composition.
 
@@ -840,63 +459,6 @@ mod tests {
         // The default_port arg is irrelevant when the override is set.
         assert_eq!(addr, "0.0.0.0:1234");
         clear_bind_env();
-    }
-
-    // Audit #83: shutdown flips every registered health name to
-    // NOT_SERVING so the K8s load balancer drains the pod.
-
-    /// Read the current `ServingStatus` from the reporter's shared
-    /// state by wiring a fresh `HealthService` over a clone of the
-    /// reporter and calling its gRPC `check` method.
-    async fn read_health_status(
-        reporter: &HealthReporter,
-        name: &str,
-    ) -> tonic_health::pb::health_check_response::ServingStatus {
-        use tonic::Request;
-        use tonic_health::pb::HealthCheckRequest;
-        use tonic_health::server::HealthService;
-        let service = HealthService::from_health_reporter(reporter.clone());
-        let req = Request::new(HealthCheckRequest {
-            service: name.to_string(),
-        });
-        let resp = tonic_health::pb::health_server::Health::check(&service, req)
-            .await
-            .expect("check must succeed for a registered service");
-        resp.into_inner().status()
-    }
-
-    #[tokio::test]
-    async fn publish_shutdown_status_flips_every_name_to_not_serving() {
-        let (reporter, _service) = tonic_health::server::health_reporter();
-        let names: Vec<String> = vec![
-            String::new(), // empty/overall name
-            "svc.A".to_string(),
-            "svc.B".to_string(),
-        ];
-
-        // Start every name at SERVING — this is the steady state once
-        // the readiness supervisor has flipped them green.
-        for name in &names {
-            reporter
-                .set_service_status(name, ServingStatus::Serving)
-                .await;
-        }
-        for name in &names {
-            assert_eq!(
-                read_health_status(&reporter, name).await,
-                tonic_health::pb::health_check_response::ServingStatus::Serving,
-            );
-        }
-
-        publish_shutdown_status(&reporter, &names).await;
-
-        for name in &names {
-            assert_eq!(
-                read_health_status(&reporter, name).await,
-                tonic_health::pb::health_check_response::ServingStatus::NotServing,
-                "shutdown must flip {name:?} to NOT_SERVING",
-            );
-        }
     }
 
     #[test]
@@ -951,14 +513,5 @@ mod tests {
                 let _ = std::fs::remove_dir_all("/proc/this-cannot-be-created");
             }
         }
-    }
-
-    #[tokio::test]
-    async fn publish_shutdown_status_no_names_is_noop() {
-        let (reporter, _service) = tonic_health::server::health_reporter();
-        // Should not panic, should not register a name we never asked
-        // for. Empty input is the legal "no services" case (won't
-        // happen in run_kind today but the helper is general-purpose).
-        publish_shutdown_status(&reporter, &[]).await;
     }
 }

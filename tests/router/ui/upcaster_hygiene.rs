@@ -3,7 +3,7 @@
 
 #![allow(non_snake_case, dead_code, unused_macros)]
 
-use angzarr_client::upcaster;
+use angzarr_client::router::upcaster;
 
 mod shadow {
     pub struct Vec;

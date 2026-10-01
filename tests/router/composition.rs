@@ -9,12 +9,11 @@ use angzarr_client::proto::{
     EventBook, EventPage, Notification, PageHeader, ProcessManagerHandleRequest,
     ProcessManagerHandleResponse, RejectionNotification,
 };
+#[allow(unused_imports)]
+use angzarr_client::router::{command_handler, handles, process_manager, rejected};
 use angzarr_client::router::{BuildError, Built, Router};
 #[allow(unused_imports)]
-use angzarr_client::{
-    command_handler, full_type_url, handles, process_manager, rejected, ClientError,
-    CommandRejectedError, CommandResult,
-};
+use angzarr_client::{full_type_url, ClientError, CommandRejectedError, CommandResult};
 use prost_types::Any;
 
 macro_rules! msg {

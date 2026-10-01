@@ -8,11 +8,11 @@ use angzarr_client::proto::{
     event_page, Cover, EventBook, EventPage, ProcessManagerHandleResponse, SagaResponse,
     UpcastRequest,
 };
+#[allow(unused_imports)]
+use angzarr_client::router::{handles, process_manager, projector, saga, upcaster, upcasts};
 use angzarr_client::router::{Built, Router};
 #[allow(unused_imports)]
-use angzarr_client::{
-    full_type_url, handles, process_manager, projector, saga, upcaster, upcasts, CommandResult,
-};
+use angzarr_client::{full_type_url, CommandResult};
 use prost_types::Any;
 
 macro_rules! msg {

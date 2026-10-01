@@ -54,6 +54,11 @@ pub mod codes {
     pub const UDS_DIRECTORY_CREATE_FAILED: &str = "UDS_DIRECTORY_CREATE_FAILED";
     pub const STREAM_LIMIT_EXCEEDED: &str = "STREAM_LIMIT_EXCEEDED";
 
+    // Component host
+    pub const HOST_HAS_NO_COMPONENTS: &str = "HOST_HAS_NO_COMPONENTS";
+    pub const HOST_DUPLICATE_KIND: &str = "HOST_DUPLICATE_KIND";
+    pub const HOST_SERVER_TASK_FAILED: &str = "HOST_SERVER_TASK_FAILED";
+
     // Dispatch — common
     pub const HANDLER_WRONG_RESPONSE_KIND: &str = "HANDLER_WRONG_RESPONSE_KIND";
     pub const HANDLER_PANICKED: &str = "HANDLER_PANICKED";
@@ -148,6 +153,12 @@ pub mod messages {
     pub const UDS_DIRECTORY_CREATE_FAILED: &str =
         "failed to create unix domain socket parent directory";
     pub const STREAM_LIMIT_EXCEEDED: &str = "server stream exceeded the configured maximum";
+
+    // Component host
+    pub const HOST_HAS_NO_COMPONENTS: &str = "component host has no components registered";
+    pub const HOST_DUPLICATE_KIND: &str =
+        "component host has two routers of one kind; register their handlers on one router";
+    pub const HOST_SERVER_TASK_FAILED: &str = "component host server task failed";
 
     // Dispatch — common
     pub const HANDLER_WRONG_RESPONSE_KIND: &str = "handler returned wrong response kind";

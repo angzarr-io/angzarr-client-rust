@@ -19,9 +19,9 @@ use angzarr_client::router::Router;
 // `#[command_handler]`; the compiler counts the imports as unused once
 // the parent macro strips the markers. Allow at the import level.
 #[allow(unused_imports)]
-use angzarr_client::{
-    applies, command_handler, full_type_url, handles, handles_fact, CommandResult,
-};
+use angzarr_client::router::{applies, command_handler, handles, handles_fact};
+#[allow(unused_imports)]
+use angzarr_client::{full_type_url, CommandResult};
 use prost_types::Any;
 
 // Test-local proto stubs. Real prost messages so Any pack/unpack works
@@ -295,7 +295,7 @@ async fn handle_fact_without_fact_handlers_refuses_with_no_fact_handler() {
     else {
         panic!("expected CommandHandler");
     };
-    let grpc = angzarr_client::CommandHandlerGrpc::new(r);
+    let grpc = angzarr_client::handler::CommandHandlerGrpc::new(r);
     let request = FactRequest {
         facts: Some(EventBook {
             cover: Some(angzarr_client::proto::Cover {

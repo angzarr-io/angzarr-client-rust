@@ -1,7 +1,7 @@
 //! An `#[upcasts]` marker with an unknown argument inside an `#[upcaster]`
 //! must fail to compile instead of being silently dropped.
 
-use angzarr_client::upcaster;
+use angzarr_client::router::upcaster;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 struct V1 {}

@@ -8,3 +8,4 @@
 
 pub mod backend;
 pub mod fixtures;
+pub mod host_fixtures;

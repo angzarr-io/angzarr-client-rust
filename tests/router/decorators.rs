@@ -4,8 +4,8 @@
 //! R2 covers method-level metadata — `#[handles]`, `#[rejected]`, `#[applies]`,
 //! `#[state_factory]` — recoverable through `Handler::config()`.
 
-use angzarr_client::command_handler;
 use angzarr_client::proto::EventBook;
+use angzarr_client::router::command_handler;
 use angzarr_client::router::{Handler, HandlerConfig, Kind};
 use angzarr_client::CommandResult;
 
@@ -206,8 +206,8 @@ fn state_factory_is_none_when_absent() {
 // Audit #74: readiness sync-target metadata.
 // ----------------------------------------------------------------------------
 
+use angzarr_client::router::{process_manager, saga};
 use angzarr_client::router::{Built, Router};
-use angzarr_client::{process_manager, saga};
 
 test_proto!(InventoryReserved);
 test_proto!(SecondEvt);

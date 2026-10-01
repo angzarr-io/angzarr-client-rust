@@ -56,10 +56,6 @@
 //! }
 //! ```
 
-/// The dispatch engine the kind macros register handlers with.
-#[doc(hidden)]
-pub use angzarr_router as __router;
-
 /// Version of the angzarr-client crate, injected at build time from VERSION file.
 pub const VERSION: &str = env!("ANGZARR_CLIENT_VERSION");
 
@@ -70,6 +66,7 @@ pub mod convert;
 pub mod error;
 pub mod error_codes;
 pub mod handler;
+pub mod host;
 pub mod identity;
 #[path = "proto.rs"]
 pub mod proto;
@@ -94,12 +91,6 @@ pub use transport::{resolve_ch_endpoint, TransportMode};
 // Re-export builder extension traits for fluent API
 pub use builder::{CommandBuilder, CommandBuilderExt, QueryBuilder, QueryBuilderExt};
 
-// Re-export compensation helpers
-pub use compensation::{
-    delegate_to_framework, emit_compensation_events, is_notification, pm_delegate_to_framework,
-    pm_emit_compensation_events, CompensationContext, DelegationOptions, PMRevocationResponse,
-};
-
 // Re-export helpers
 pub use builder::{decode_event, events_from_response};
 pub use convert::{
@@ -116,51 +107,15 @@ pub use proto_ext::{
     EventBookExt, EventPageExt, ProtoUuidExt, UuidExt,
 };
 
-// Re-export Tier 5 unified router surface
-pub use router::{
-    // Tier 5 unified Handler contract
-    BuildError,
-    Built,
-    // Typed runtime routers returned by Router::build()
-    CommandHandlerRouter,
-    // Destination-sequence stamping for saga/PM outbound commands
-    Destinations,
-    DispatchError,
-    // Return shape of #[handles_fact] methods
-    FactRecord,
-    Handler,
-    HandlerConfig,
-    HandlerKind,
-    Kind,
-    ProcessManagerResponse,
-    ProcessManagerRouter,
-    ProjectorRouter,
-    RejectionHandlerResponse,
-    // Builder
-    Router,
-    SagaHandlerResponse,
-    SagaRouter,
-    UpcasterRouter,
-};
-
-// Re-export handler types
-pub use handler::{CommandHandlerGrpc, ProcessManagerGrpc, ProjectorGrpc, SagaGrpc, UpcasterGrpc};
-
-// Re-export server utilities
+// Component host and transport configuration
+pub use host::{ComponentHost, HostAddress, RunningHost};
 pub use server::{
-    cleanup_socket, configure_logging, create_server, get_transport_config, resolve_bind_address,
-    run_command_handler_server, run_process_manager_server, run_projector_server, run_saga_server,
-    run_server, run_upcaster_server, ServerConfig, DEFAULT_BIND_HOST, ENV_BIND_ADDRESS,
+    configure_logging, get_transport_config, resolve_bind_address, ServerConfig, DEFAULT_BIND_HOST,
+    ENV_BIND_ADDRESS,
 };
 
 // Re-export validation helpers
 pub use validation::{
     require_exists, require_non_negative, require_not_empty, require_not_empty_str,
     require_not_exists, require_positive, require_status, require_status_not,
-};
-
-// Re-export proc macros for Tier 5 OO-style component definitions
-pub use angzarr_macros::{
-    applies, command_handler, handles, handles_fact, process_manager, projector, rejected, saga,
-    state_factory, upcaster, upcasts,
 };

@@ -10,6 +10,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[allow(unused_imports)]
+use angzarr_client::handler::{
+    CommandHandlerGrpc, ProcessManagerGrpc, ProjectorGrpc, SagaGrpc, UpcasterGrpc,
+};
 use angzarr_client::proto::command_handler_service_server::CommandHandlerService;
 use angzarr_client::proto::process_manager_service_server::ProcessManagerService;
 use angzarr_client::proto::projector_service_server::ProjectorService;
@@ -20,13 +24,13 @@ use angzarr_client::proto::{
     EventPage, ProcessManagerHandleRequest, ProcessManagerHandleResponse, SagaHandleRequest,
     SagaResponse, UpcastRequest,
 };
+#[allow(unused_imports)]
+use angzarr_client::router::{
+    command_handler, handles, process_manager, projector, saga, upcaster, upcasts,
+};
 use angzarr_client::router::{Built, Router};
 #[allow(unused_imports)]
-use angzarr_client::{
-    command_handler, full_type_url, handles, process_manager, projector, saga, upcaster, upcasts,
-    CommandHandlerGrpc, CommandRejectedError, CommandResult, ProcessManagerGrpc, ProjectorGrpc,
-    SagaGrpc, UpcasterGrpc,
-};
+use angzarr_client::{full_type_url, CommandRejectedError, CommandResult};
 use prost_types::Any;
 
 #[derive(Clone, PartialEq, ::prost::Message)]

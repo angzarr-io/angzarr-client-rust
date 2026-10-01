@@ -2,7 +2,8 @@
 //! must fail to compile.
 
 use angzarr_client::proto::{Notification, SagaResponse};
-use angzarr_client::{saga, CommandResult};
+use angzarr_client::router::saga;
+use angzarr_client::CommandResult;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 struct OrderCreated {}

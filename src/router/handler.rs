@@ -225,7 +225,7 @@ impl From<DispatchError> for crate::error::ClientError {
 /// Typed output of [`Router::build`][crate::router::Router::build].
 ///
 /// One variant per handler kind; `match` on it to obtain the concrete
-/// runtime router, or hand it to [`crate::run_server`].
+/// runtime router, or hand it to [`crate::ComponentHost::with_router`].
 #[derive(Debug)]
 pub enum Built {
     CommandHandler(crate::router::routers::CommandHandlerRouter),

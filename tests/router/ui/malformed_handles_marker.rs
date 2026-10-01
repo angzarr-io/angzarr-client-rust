@@ -1,7 +1,7 @@
 //! A `#[handles]` marker whose argument is not a type must fail to compile
 //! instead of being silently dropped.
 
-use angzarr_client::command_handler;
+use angzarr_client::router::command_handler;
 use angzarr_client::proto::EventBook;
 use angzarr_client::CommandResult;
 

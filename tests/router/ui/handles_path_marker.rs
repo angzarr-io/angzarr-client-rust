@@ -1,6 +1,6 @@
 //! Marker arguments may be paths to the message type, not only bare names.
 
-use angzarr_client::command_handler;
+use angzarr_client::router::command_handler;
 use angzarr_client::proto::EventBook;
 use angzarr_client::CommandResult;
 

@@ -1,17 +1,24 @@
-//! Step definitions for features/client/parity.feature.
+//! Step definitions for parity/client/parity.feature.
 //!
-//! Asserts each canonical public name is reachable in the compiled crate.
-//! Presence is checked against a hardcoded set mirroring the current
-//! `lib.rs` re-exports; testing helpers live in `angzarr_client::testing`
-//! (the `testing` feature, which this crate's dev-dependency enables). Names not in the set fail the scenario with a
-//! clear message pointing to the missing re-export.
-//!
-//! The `compile_probe` module at the bottom references each exported name
-//! so dropping a re-export from `lib.rs` triggers a compile error here.
+//! Presence is checked against [`EXPORTED`] / [`TESTING_EXPORTED`], which
+//! the `compile_probe` module pins: dropping a listed re-export stops this
+//! file compiling. Absence from the crate root is checked by probe modules
+//! that glob-import the root next to stand-ins of the same names — a name
+//! the root also exports is ambiguous at its use site and fails the build.
 
 #![allow(dead_code, unused_imports)]
 
+use std::path::Path;
+use std::sync::Arc;
+
+use angzarr_client::proto::command_handler_service_server::CommandHandlerServiceServer;
+use angzarr_client::{ComponentHost, ServerConfig};
 use cucumber::{given, then, World};
+use tonic::server::NamedService;
+
+use crate::common::host_fixtures::{
+    connect, Gate, OrderComponent, OrderReportService, ORDER_REPORT_SERVICE,
+};
 
 #[derive(Debug, Default, World)]
 pub struct ParityWorld {
@@ -24,37 +31,6 @@ const EXPORTED: &[&str] = &[
     "QueryClient",
     "SpeculativeClient",
     "DomainClient",
-    // Router runtime
-    "Router",
-    "BuildError",
-    "DispatchError",
-    "CommandHandlerRouter",
-    "SagaRouter",
-    "ProcessManagerRouter",
-    "ProjectorRouter",
-    "UpcasterRouter",
-    // Handler kind declarations (proc macros)
-    "command_handler",
-    "saga",
-    "process_manager",
-    "projector",
-    "upcaster",
-    // Method markers
-    "handles",
-    "applies",
-    "rejected",
-    "state_factory",
-    "upcasts",
-    // gRPC server adapters
-    "CommandHandlerGrpc",
-    "SagaGrpc",
-    "ProcessManagerGrpc",
-    "ProjectorGrpc",
-    "UpcasterGrpc",
-    // Response types
-    "SagaHandlerResponse",
-    "ProcessManagerResponse",
-    "RejectionHandlerResponse",
     // Errors
     "ClientError",
     "CommandRejectedError",
@@ -66,44 +42,20 @@ const EXPORTED: &[&str] = &[
     "META_ANGZARR_DOMAIN",
     "PROJECTION_DOMAIN_PREFIX",
     "PROJECTION_TYPE_URL",
-    // Identity helpers
+    // Identity
     "compute_root",
     "to_proto_bytes",
     // Retry
     "RetryPolicy",
     "ExponentialBackoffRetry",
     "default_retry_policy",
-    // Validation
-    "require_exists",
-    "require_not_exists",
-    "require_positive",
-    "require_non_negative",
-    "require_not_empty",
-    "require_not_empty_str",
-    "require_status",
-    "require_status_not",
-    // Compensation
-    "CompensationContext",
-    "delegate_to_framework",
-    "emit_compensation_events",
-    "pm_delegate_to_framework",
-    "pm_emit_compensation_events",
-    // Event packing — pack_event/pack_events removed in audit #57
-    // and new_event_book/new_event_book_multi removed under @C-0103
-    // (zero production callers; per-language helpers had divergent
-    // contracts). Production code uses inline `Any { type_url, value }`
-    // or `testing::pack_event(msg)` for fixtures.
-    // Builders (direct types, distinct from *Ext traits)
+    // Builders
     "CommandBuilder",
     "QueryBuilder",
-    // Destinations
-    "Destinations",
-    // Server utilities
+    // Component host
+    "ComponentHost",
     "configure_logging",
     "get_transport_config",
-    "create_server",
-    "run_server",
-    "cleanup_socket",
 ];
 
 /// Names reachable from `angzarr_client::testing` (the `testing` feature,
@@ -122,8 +74,7 @@ const TESTING_EXPORTED: &[&str] = &[
     "ScenarioContext",
 ];
 
-/// Predicates implemented on `ClientError` (verified by `tests::error` below
-/// — `ClientError::is_not_found`, etc.).
+/// Predicates implemented on `ClientError`.
 const ERROR_PREDICATES_IMPLEMENTED: &[&str] = &[
     "is_not_found",
     "is_precondition_failed",
@@ -131,19 +82,42 @@ const ERROR_PREDICATES_IMPLEMENTED: &[&str] = &[
     "is_connection_error",
 ];
 
+/// Example and business concepts the client must not name: the generic
+/// client-tier fixture vocabulary and the example applications' domains.
+const BUSINESS_CONCEPTS: &[&str] = &[
+    "order",
+    "payment",
+    "inventory",
+    "shipping",
+    "shipment",
+    "fulfillment",
+    "cart",
+    "customer",
+    "product",
+    "stock",
+    "reservation",
+    "player",
+    "table",
+    "hand",
+    "tournament",
+    "poker",
+    "blackjack",
+    "card",
+    "deck",
+    "chip",
+];
+
 fn check(name: &str) {
     assert!(
         EXPORTED.contains(&name),
-        "\"{}\" is not re-exported from angzarr_client",
-        name
+        "\"{name}\" is not re-exported from angzarr_client"
     );
 }
 
 fn check_testing(name: &str) {
     assert!(
         TESTING_EXPORTED.contains(&name),
-        "\"{}\" is not exported from angzarr_client::testing",
-        name
+        "\"{name}\" is not exported from angzarr_client::testing"
     );
 }
 
@@ -161,13 +135,8 @@ async fn then_symbol_exported(_world: &mut ParityWorld, name: String) {
     check(&name);
 }
 
-#[then(expr = "the {string} kind declaration is exported")]
-async fn then_kind_decl_exported(_world: &mut ParityWorld, name: String) {
-    check(&name);
-}
-
-#[then(expr = "the {string} method marker is exported")]
-async fn then_method_marker_exported(_world: &mut ParityWorld, name: String) {
+#[then(expr = "the {string} constant is exported")]
+async fn then_constant_exported(_world: &mut ParityWorld, name: String) {
     check(&name);
 }
 
@@ -189,13 +158,7 @@ async fn then_testing_not_at_root(_world: &mut ParityWorld) {
             "\"{name}\" is re-exported from the angzarr_client root"
         );
     }
-    // `root_probe` compiles only while the crate root exports none of them.
-    root_probe::check();
-}
-
-#[then(expr = "the {string} constant is exported")]
-async fn then_constant_exported(_world: &mut ParityWorld, name: String) {
-    check(&name);
+    testing_root_probe::check();
 }
 
 #[then(expr = "the {string} constant is exported with value {string}")]
@@ -212,43 +175,196 @@ async fn then_constant_value(_world: &mut ParityWorld, name: String, value: Stri
 async fn then_error_predicate_exposed(_world: &mut ParityWorld, name: String) {
     assert!(
         ERROR_PREDICATES_IMPLEMENTED.contains(&name.as_str()),
-        "error predicate \"{}\" is not implemented on ClientError",
-        name
+        "error predicate \"{name}\" is not implemented on ClientError"
     );
 }
 
-// --- Compile-time probe: referencing each exported name forces lib.rs to
-// keep them reachable. Drop a re-export => this module stops compiling.
+// --- Router binding ---------------------------------------------------------
+
+#[then("the router binding is exported from the router module")]
+async fn then_router_binding(_world: &mut ParityWorld) {
+    let engine = std::any::type_name::<angzarr_client::router::binding::aggregate::FactRecord>();
+    assert!(
+        engine.starts_with("angzarr_router::"),
+        "angzarr_client::router::binding is {engine}, not angzarr-router"
+    );
+}
+
+#[then(
+    "the client's root exports no dispatch-engine API: no handler decorators, Router builders, handler gRPC adapters or compensation helpers"
+)]
+async fn then_no_dispatch_at_root(_world: &mut ParityWorld) {
+    dispatch_root_probe::check();
+}
+
+// --- Business concepts -------------------------------------------------------
+
+/// Public item, module and gRPC service names declared under `dir`.
+fn public_names(dir: &Path, out: &mut Vec<(String, String)>) {
+    let decl = regex_lite_public_decl();
+    for entry in std::fs::read_dir(dir).expect("source directory") {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            public_names(&path, out);
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("source file");
+        for line in text.lines() {
+            if let Some(name) = decl(line) {
+                out.push((name, path.display().to_string()));
+            }
+        }
+    }
+}
+
+/// Extract the declared name from a `pub fn|struct|enum|trait|const|static|
+/// mod|type` line, or the name string of a generated message or gRPC
+/// service.
+fn regex_lite_public_decl() -> impl Fn(&str) -> Option<String> {
+    |line: &str| {
+        let t = line.trim_start();
+        for prefix in [
+            "const NAME: &'static str = \"",
+            "pub const SERVICE_NAME: &str = \"",
+        ] {
+            if let Some(rest) = t.strip_prefix(prefix) {
+                return rest.split('"').next().map(|s| s.to_string());
+            }
+        }
+        let rest = t.strip_prefix("pub ")?;
+        let rest = rest.strip_prefix("async ").unwrap_or(rest);
+        let rest = rest.strip_prefix("const fn ").or_else(|| {
+            [
+                "fn ", "struct ", "enum ", "trait ", "const ", "static ", "mod ", "type ",
+            ]
+            .iter()
+            .find_map(|k| rest.strip_prefix(k))
+        })?;
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        (!name.is_empty()).then_some(name)
+    }
+}
+
+/// Lower-case words of an identifier or dotted service name.
+fn words(name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut prev_lower = false;
+    for c in name.chars() {
+        if !c.is_alphanumeric() {
+            if !current.is_empty() {
+                out.push(std::mem::take(&mut current));
+            }
+            prev_lower = false;
+            continue;
+        }
+        if c.is_uppercase() && prev_lower && !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+        }
+        prev_lower = c.is_lowercase() || c.is_ascii_digit();
+        current.push(c.to_ascii_lowercase());
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+#[then(
+    "no exported symbol, module or gRPC service of the client names an example or business concept"
+)]
+async fn then_no_business_names(_world: &mut ParityWorld) {
+    let mut names = Vec::new();
+    public_names(Path::new("src"), &mut names);
+    public_names(Path::new("angzarr-macros/src"), &mut names);
+    assert!(
+        names.iter().any(|(n, _)| n == "ComponentHost"),
+        "the scan sees the crate's public items"
+    );
+    assert!(
+        names
+            .iter()
+            .any(|(n, _)| n == "io.angzarr.v1.CommandHandlerService"),
+        "the scan sees the crate's gRPC services"
+    );
+    let offending: Vec<_> = names
+        .iter()
+        .filter(|(n, _)| {
+            words(n)
+                .iter()
+                .any(|w| BUSINESS_CONCEPTS.contains(&w.as_str()))
+        })
+        .collect();
+    assert!(
+        offending.is_empty(),
+        "business concepts named: {offending:?}"
+    );
+}
+
+#[then(
+    "the component host serves only framework services and the services an application registers"
+)]
+async fn then_host_serves_only(_world: &mut ParityWorld) {
+    let ch = <CommandHandlerServiceServer<angzarr_client::handler::CommandHandlerGrpc> as NamedService>::NAME;
+    let gate = Arc::new(Gate::default());
+    let running = ComponentHost::new()
+        .with_handler(move || OrderComponent(Arc::clone(&gate)))
+        .with_service(OrderReportService)
+        .with_transport(ServerConfig {
+            port: 0,
+            uds_path: None,
+        })
+        .start()
+        .await
+        .expect("host starts");
+    assert_eq!(
+        running.services(),
+        &[
+            angzarr_client::host::HEALTH_SERVICE_NAME.to_string(),
+            ch.to_string(),
+            ORDER_REPORT_SERVICE.to_string(),
+        ]
+    );
+    // A framework service with no registered component is not served.
+    let channel = connect(running.address()).await;
+    let status = angzarr_client::proto::saga_service_client::SagaServiceClient::new(channel)
+        .handle(angzarr_client::proto::SagaHandleRequest::default())
+        .await
+        .expect_err("no saga is registered");
+    assert_eq!(status.code(), tonic::Code::Unimplemented);
+    running.shutdown().await.expect("clean shutdown");
+}
+
+// --- Compile-time probes -----------------------------------------------------
+
+/// Referencing each listed name keeps it reachable where the scenarios say.
 mod compile_probe {
     #![allow(unused_imports, dead_code)]
+    use angzarr_client::router::binding;
     use angzarr_client::testing::{
         make_command_book, make_command_page, make_cover, make_event_book, make_event_page,
         make_timestamp, uuid_for, uuid_obj_for, uuid_str_for, ScenarioContext,
         DEFAULT_TEST_NAMESPACE,
     };
     use angzarr_client::{
-        applies, cleanup_socket, command_handler, compute_root, configure_logging, create_server,
-        default_retry_policy, delegate_to_framework, emit_compensation_events,
-        get_transport_config, handles, pm_delegate_to_framework, pm_emit_compensation_events,
-        process_manager, projector, rejected, require_exists, require_non_negative,
-        require_not_empty, require_not_empty_str, require_not_exists, require_positive,
-        require_status, require_status_not, run_server, saga, state_factory, to_proto_bytes,
-        upcaster, upcasts, BuildError, ClientError, CommandBuilder, CommandHandlerClient,
-        CommandHandlerGrpc, CommandHandlerRouter, CommandRejectedError, CompensationContext,
-        Destinations, DispatchError, DomainClient, ExponentialBackoffRetry, ProcessManagerGrpc,
-        ProcessManagerResponse, ProcessManagerRouter, ProjectorGrpc, ProjectorRouter, QueryBuilder,
-        QueryClient, RejectionHandlerResponse, RetryPolicy, Router, SagaGrpc, SagaHandlerResponse,
-        SagaRouter, SpeculativeClient, UpcasterGrpc, UpcasterRouter, DEFAULT_EDITION,
-        META_ANGZARR_DOMAIN, PROJECTION_DOMAIN_PREFIX, PROJECTION_TYPE_URL, TYPE_URL_PREFIX,
-        UNKNOWN_DOMAIN, WILDCARD_DOMAIN,
+        compute_root, configure_logging, default_retry_policy, get_transport_config,
+        to_proto_bytes, ClientError, CommandBuilder, CommandHandlerClient, CommandRejectedError,
+        ComponentHost, DomainClient, ExponentialBackoffRetry, QueryBuilder, QueryClient,
+        RetryPolicy, SpeculativeClient, DEFAULT_EDITION, META_ANGZARR_DOMAIN,
+        PROJECTION_DOMAIN_PREFIX, PROJECTION_TYPE_URL, TYPE_URL_PREFIX, UNKNOWN_DOMAIN,
+        WILDCARD_DOMAIN,
     };
 }
 
-/// Compiles only while the crate root exports none of the testing helpers:
-/// each name below is also provided by `fallback`, and a name both glob
-/// imports provide is ambiguous at its use site.
+/// Compiles only while the crate root exports none of the testing helpers.
 #[allow(non_upper_case_globals, dead_code)]
-mod root_probe {
+mod testing_root_probe {
     mod fallback {
         pub const make_timestamp: u8 = 0;
         pub const make_cover: u8 = 0;
@@ -281,6 +397,133 @@ mod root_probe {
             DEFAULT_TEST_NAMESPACE,
         ];
         assert_eq!(names, [0; 10]);
-        let _: fallback::ScenarioContext = ScenarioContext;
+        let _: Option<ScenarioContext> = None::<fallback::ScenarioContext>;
+    }
+}
+
+/// Compiles only while the crate root exports no dispatch-engine API:
+/// handler kind attributes and markers (macro namespace), Router builders
+/// and runtime routers, handler gRPC adapters and compensation helpers.
+#[allow(non_upper_case_globals, non_camel_case_types, dead_code, unused_macros)]
+mod dispatch_root_probe {
+    mod fallback {
+        macro_rules! command_handler {
+            () => {
+                0u8
+            };
+        }
+        macro_rules! saga {
+            () => {
+                0u8
+            };
+        }
+        macro_rules! process_manager {
+            () => {
+                0u8
+            };
+        }
+        macro_rules! projector {
+            () => {
+                0u8
+            };
+        }
+        macro_rules! upcaster {
+            () => {
+                0u8
+            };
+        }
+        macro_rules! handles {
+            () => {
+                0u8
+            };
+        }
+        macro_rules! handles_fact {
+            () => {
+                0u8
+            };
+        }
+        macro_rules! applies {
+            () => {
+                0u8
+            };
+        }
+        macro_rules! rejected {
+            () => {
+                0u8
+            };
+        }
+        macro_rules! state_factory {
+            () => {
+                0u8
+            };
+        }
+        macro_rules! upcasts {
+            () => {
+                0u8
+            };
+        }
+        pub(crate) use {
+            applies, command_handler, handles, handles_fact, process_manager, projector, rejected,
+            saga, state_factory, upcaster, upcasts,
+        };
+
+        pub struct Router;
+        pub struct Built;
+        pub struct CommandHandlerRouter;
+        pub struct SagaRouter;
+        pub struct ProcessManagerRouter;
+        pub struct ProjectorRouter;
+        pub struct UpcasterRouter;
+        pub struct CommandHandlerGrpc;
+        pub struct SagaGrpc;
+        pub struct ProcessManagerGrpc;
+        pub struct ProjectorGrpc;
+        pub struct UpcasterGrpc;
+        pub struct CompensationContext;
+        pub const delegate_to_framework: u8 = 0;
+        pub const emit_compensation_events: u8 = 0;
+        pub const pm_delegate_to_framework: u8 = 0;
+        pub const pm_emit_compensation_events: u8 = 0;
+    }
+
+    #[allow(unused_imports)]
+    use angzarr_client::*;
+    use fallback::*;
+
+    pub fn check() {
+        let markers: [u8; 11] = [
+            command_handler!(),
+            saga!(),
+            process_manager!(),
+            projector!(),
+            upcaster!(),
+            handles!(),
+            handles_fact!(),
+            applies!(),
+            rejected!(),
+            state_factory!(),
+            upcasts!(),
+        ];
+        assert_eq!(markers, [0; 11]);
+        let helpers: [u8; 4] = [
+            delegate_to_framework,
+            emit_compensation_events,
+            pm_delegate_to_framework,
+            pm_emit_compensation_events,
+        ];
+        assert_eq!(helpers, [0; 4]);
+        let _: Option<Router> = None::<fallback::Router>;
+        let _: Option<Built> = None::<fallback::Built>;
+        let _: Option<CommandHandlerRouter> = None::<fallback::CommandHandlerRouter>;
+        let _: Option<SagaRouter> = None::<fallback::SagaRouter>;
+        let _: Option<ProcessManagerRouter> = None::<fallback::ProcessManagerRouter>;
+        let _: Option<ProjectorRouter> = None::<fallback::ProjectorRouter>;
+        let _: Option<UpcasterRouter> = None::<fallback::UpcasterRouter>;
+        let _: Option<CommandHandlerGrpc> = None::<fallback::CommandHandlerGrpc>;
+        let _: Option<SagaGrpc> = None::<fallback::SagaGrpc>;
+        let _: Option<ProcessManagerGrpc> = None::<fallback::ProcessManagerGrpc>;
+        let _: Option<ProjectorGrpc> = None::<fallback::ProjectorGrpc>;
+        let _: Option<UpcasterGrpc> = None::<fallback::UpcasterGrpc>;
+        let _: Option<CompensationContext> = None::<fallback::CompensationContext>;
     }
 }
