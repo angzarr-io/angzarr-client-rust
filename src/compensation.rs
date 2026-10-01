@@ -27,17 +27,6 @@ use crate::proto::{
 };
 use prost::Message;
 
-/// Fully-qualified proto type name for Notification — referenced only by
-/// the `notification_type_url_matches_prefix_plus_name` parity test.
-#[cfg(test)]
-const NOTIFICATION_TYPE_NAME: &str = "angzarr_client.proto.angzarr.Notification";
-
-/// Pre-computed full type URL for Notification — avoids per-call `format!`
-/// in [`is_notification`]. Pinned via the `notification_type_url_matches_prefix_plus_name`
-/// test below so any drift in `TYPE_URL_PREFIX` or `NOTIFICATION_TYPE_NAME`
-/// fails compilation tests immediately.
-const NOTIFICATION_TYPE_URL: &str = "type.googleapis.com/angzarr_client.proto.angzarr.Notification";
-
 /// Parsed context from a rejection notification.
 ///
 /// Provides easy access to rejection details extracted from the Notification
@@ -310,19 +299,15 @@ pub fn pm_emit_compensation_events(
 // Helper functions
 // =============================================================================
 
-/// Check if a type URL refers to a rejection Notification.
-///
-/// Audit finding #58: matches against the fully qualified type name per
-/// `google.protobuf.Any` spec. The previous short-form expectation
-/// diverged from Python-emitted URLs.
+/// True when `type_url` is the `google.protobuf.Any` type URL of
+/// `io.angzarr.v1.Notification`.
 pub fn is_notification(type_url: &str) -> bool {
-    type_url == NOTIFICATION_TYPE_URL
+    type_url == crate::full_type_url::<Notification>()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::convert::TYPE_URL_PREFIX;
     use crate::proto::{AngzarrDeferredSequence, CommandPage, PageHeader, Uuid as ProtoUuid};
     use prost::Message;
     use prost_types::Any;
@@ -368,7 +353,7 @@ mod tests {
 
         Notification {
             payload: Some(Any {
-                type_url: format!("{}angzarr.RejectionNotification", TYPE_URL_PREFIX),
+                type_url: crate::full_type_url::<RejectionNotification>(),
                 value: buf,
             }),
             ..Default::default()
@@ -412,7 +397,7 @@ mod tests {
     fn from_notification_errors_on_garbage_payload() {
         let notification = Notification {
             payload: Some(Any {
-                type_url: format!("{}angzarr.RejectionNotification", TYPE_URL_PREFIX),
+                type_url: crate::full_type_url::<RejectionNotification>(),
                 value: vec![0xff, 0xff, 0xff, 0xff, 0xff],
             }),
             ..Default::default()
@@ -431,7 +416,7 @@ mod tests {
         rejection.encode(&mut buf).unwrap();
         let notification = Notification {
             payload: Some(Any {
-                type_url: format!("{}angzarr.RejectionNotification", TYPE_URL_PREFIX),
+                type_url: crate::full_type_url::<RejectionNotification>(),
                 value: buf,
             }),
             ..Default::default()
@@ -461,7 +446,7 @@ mod tests {
         rejection.encode(&mut buf).unwrap();
         let notification = Notification {
             payload: Some(Any {
-                type_url: format!("{}angzarr.RejectionNotification", TYPE_URL_PREFIX),
+                type_url: crate::full_type_url::<RejectionNotification>(),
                 value: buf,
             }),
             ..Default::default()
@@ -591,33 +576,23 @@ mod tests {
     }
 
     #[test]
-    fn is_notification_matches_correct_type_url() {
-        // Audit finding #58: spec-compliant fully qualified name.
+    fn is_notification_matches_v1_notification_type_url() {
         assert!(is_notification(
-            "type.googleapis.com/angzarr_client.proto.angzarr.Notification"
+            "type.googleapis.com/io.angzarr.v1.Notification"
         ));
-    }
-
-    #[test]
-    fn notification_type_url_matches_prefix_plus_name() {
-        // Pins the precomputed constant against the canonical prefix +
-        // name so any drift in either source is caught here.
-        assert_eq!(
-            NOTIFICATION_TYPE_URL,
-            format!("{}{}", TYPE_URL_PREFIX, NOTIFICATION_TYPE_NAME)
-        );
+        assert!(is_notification(&crate::full_type_url::<Notification>()));
     }
 
     #[test]
     fn is_notification_rejects_wrong_type_url() {
         assert!(!is_notification(
-            "type.googleapis.com/angzarr_client.proto.angzarr.RejectionNotification"
+            "type.googleapis.com/io.angzarr.v1.RejectionNotification"
         ));
-        // Pre-#58 short form is no longer accepted.
         assert!(!is_notification("type.googleapis.com/angzarr.Notification"));
         assert!(!is_notification(
-            "angzarr_client.proto.angzarr.Notification"
+            "type.googleapis.com/angzarr_client.proto.angzarr.Notification"
         ));
+        assert!(!is_notification("io.angzarr.v1.Notification"));
         assert!(!is_notification(""));
     }
 }

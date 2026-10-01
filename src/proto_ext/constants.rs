@@ -12,7 +12,7 @@ pub const UNKNOWN_DOMAIN: &str = "unknown";
 pub const PROJECTION_DOMAIN_PREFIX: &str = "_projection";
 
 /// Protobuf type URL for serialized Projection messages in synthetic event books.
-pub const PROJECTION_TYPE_URL: &str = "angzarr_client.proto.angzarr.Projection";
+pub const PROJECTION_TYPE_URL: &str = "io.angzarr.v1.Projection";
 
 /// Wildcard domain for catch-all routing (matches any domain).
 pub const WILDCARD_DOMAIN: &str = "*";
@@ -32,10 +32,16 @@ pub const DEFAULT_EDITION: &str = "";
 /// Used by `decode_typed` to match type URLs in Event/Command payloads.
 pub const TYPE_URL_PREFIX: &str = "type.googleapis.com/";
 
-/// Type URL prefix for angzarr-internal framework messages
-/// (Notification, Revocation, Confirmation, Compensate, NoOp, …).
-///
-/// Pinned by the `type_url_constants_share_prefix` test in
-/// `proto_ext::type_url` so a typo in any one of the
-/// `proto_ext::type_url::*` constants fails compilation tests.
-pub const ANGZARR_TYPE_URL_PREFIX: &str = "type.angzarr.io/";
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn projection_type_url_is_the_v1_projection_name() {
+        assert_eq!(PROJECTION_TYPE_URL, "io.angzarr.v1.Projection");
+        assert_eq!(
+            PROJECTION_TYPE_URL,
+            <crate::proto::Projection as prost::Name>::full_name()
+        );
+    }
+}

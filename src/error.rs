@@ -69,10 +69,6 @@ struct GoogleRpcErrorInfo {
 /// Type URL for `google.rpc.ErrorInfo` per the canonical `Any` packing.
 const ERROR_INFO_TYPE_URL: &str = "type.googleapis.com/google.rpc.ErrorInfo";
 
-/// Type URL for the project's `Cover` proto (declared in
-/// `angzarr_client/proto/angzarr/types.proto`).
-const COVER_TYPE_URL: &str = "type.googleapis.com/angzarr_client.proto.angzarr.Cover";
-
 /// Build the canonical `grpc-status-details-bin` payload (a serialized
 /// `google.rpc.Status` whose `details` is `repeated Any`) for an
 /// angzarr error. Returns the raw bytes ready to feed to
@@ -104,7 +100,7 @@ pub fn build_status_details(
     }];
     if let Some(cover) = cover {
         details.push(Any {
-            type_url: COVER_TYPE_URL.to_string(),
+            type_url: crate::full_type_url::<crate::proto::Cover>(),
             value: cover.encode_to_vec(),
         });
     }
@@ -139,7 +135,7 @@ pub fn unpack_status_details(
                 error_code = info.reason;
                 metadata = info.metadata.into_iter().collect();
             }
-        } else if any.type_url == COVER_TYPE_URL {
+        } else if any.type_url == crate::full_type_url::<crate::proto::Cover>() {
             cover = crate::proto::Cover::decode(any.value.as_slice()).ok();
         }
     }
@@ -495,6 +491,32 @@ pub type CommandResult<T> = std::result::Result<T, CommandRejectedError>;
 
 #[cfg(test)]
 mod tests {
+    /// The Cover detail is packed under its io.angzarr.v1 type URL so
+    /// readers can resolve it against the generated descriptors.
+    #[test]
+    fn status_details_pack_cover_under_v1_type_url() {
+        let cover = crate::proto::Cover {
+            domain: "player".into(),
+            ..Default::default()
+        };
+        let bytes = super::build_status_details(
+            tonic::Code::FailedPrecondition,
+            "m",
+            "CODE",
+            None,
+            Some(&cover),
+        );
+        let status = super::GoogleRpcStatus::decode(bytes.as_slice()).expect("status");
+        let urls: Vec<&str> = status.details.iter().map(|a| a.type_url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "type.googleapis.com/google.rpc.ErrorInfo",
+                "type.googleapis.com/io.angzarr.v1.Cover"
+            ]
+        );
+    }
+
     use super::*;
 
     #[test]

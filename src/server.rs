@@ -24,6 +24,7 @@ use std::env;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+use tonic::server::NamedService;
 use tonic::transport::Server;
 use tonic_health::server::HealthReporter;
 use tonic_health::ServingStatus;
@@ -44,21 +45,17 @@ use crate::readiness::{
 };
 use crate::router::runtime::{CommandHandlerRouter, ProcessManagerRouter, SagaRouter};
 
-/// Fully-qualified gRPC service names — matched against `Health.Check` and
-/// used as health-reporter keys.
-///
-/// The `angzarr_client.proto.angzarr.` prefix is the **proto package**
-/// (declared in `angzarr-project/proto/angzarr_client/proto/angzarr/*.proto`),
-/// not a Rust-language identifier. All six sibling clients
-/// (Python / Go / Java / C# / C++ / Rust) emit the same package because
-/// they all generate from the same `.proto` files; the name is part of
-/// the wire-format spec. Renaming would require coordinated proto-package
-/// rename across every client + every coordinator.
-const HEALTH_NAME_COMMAND_HANDLER: &str = "angzarr_client.proto.angzarr.CommandHandlerService";
-const HEALTH_NAME_SAGA: &str = "angzarr_client.proto.angzarr.SagaService";
-const HEALTH_NAME_PROCESS_MANAGER: &str = "angzarr_client.proto.angzarr.ProcessManagerService";
-const HEALTH_NAME_PROJECTOR: &str = "angzarr_client.proto.angzarr.ProjectorService";
-const HEALTH_NAME_UPCASTER: &str = "angzarr_client.proto.angzarr.UpcasterService";
+/// Fully-qualified gRPC service names (`io.angzarr.v1.<Service>`) — the
+/// health-reporter keys a `Health.Check` for a specific service matches.
+/// Taken from the generated servers' `NamedService::NAME` so they always
+/// equal the gRPC path the services are served under.
+const HEALTH_NAME_COMMAND_HANDLER: &str =
+    <CommandHandlerServiceServer<CommandHandlerGrpc> as NamedService>::NAME;
+const HEALTH_NAME_SAGA: &str = <SagaServiceServer<SagaGrpc> as NamedService>::NAME;
+const HEALTH_NAME_PROCESS_MANAGER: &str =
+    <ProcessManagerServiceServer<ProcessManagerGrpc> as NamedService>::NAME;
+const HEALTH_NAME_PROJECTOR: &str = <ProjectorServiceServer<ProjectorGrpc> as NamedService>::NAME;
+const HEALTH_NAME_UPCASTER: &str = <UpcasterServiceServer<UpcasterGrpc> as NamedService>::NAME;
 
 /// Initialize a JSON tracing subscriber filtered by `RUST_LOG` (default `info`).
 ///
@@ -519,6 +516,23 @@ mod tests {
 
     fn clear_bind_env() {
         env::remove_var(ENV_BIND_ADDRESS);
+    }
+
+    /// Health keys are the fully-qualified gRPC service names of the
+    /// io.angzarr.v1 package the services are served under.
+    #[test]
+    fn health_names_are_v1_service_names() {
+        assert_eq!(
+            HEALTH_NAME_COMMAND_HANDLER,
+            "io.angzarr.v1.CommandHandlerService"
+        );
+        assert_eq!(HEALTH_NAME_SAGA, "io.angzarr.v1.SagaService");
+        assert_eq!(
+            HEALTH_NAME_PROCESS_MANAGER,
+            "io.angzarr.v1.ProcessManagerService"
+        );
+        assert_eq!(HEALTH_NAME_PROJECTOR, "io.angzarr.v1.ProjectorService");
+        assert_eq!(HEALTH_NAME_UPCASTER, "io.angzarr.v1.UpcasterService");
     }
 
     // Audit #77: ANGZARR_BIND_ADDRESS overrides the default
