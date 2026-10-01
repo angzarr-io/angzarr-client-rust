@@ -60,16 +60,6 @@ const PARITY_DIR: &str = "angzarr-project/parity/client";
 const PENDING: &[(&str, &str)] = &[
     ("C-0336", "no configurable connect timeout"),
     ("C-0337", "no configurable HTTP/2 keep-alive"),
-    // Fact handlers that return flagging events and the NO_FACT_HANDLER
-    // refusal come from angzarr-router past the pinned rev.
-    (
-        "C-0490",
-        "pinned angzarr-router records facts without flags",
-    ),
-    (
-        "C-0491",
-        "pinned angzarr-router passes undeclared facts through",
-    ),
 ];
 
 /// Outcome of one feature run.

@@ -116,8 +116,9 @@ pub fn build_status_details(
 /// inspection. Returns `(error_code, metadata, optional_cover)`.
 ///
 /// Robust to siblings that pack extra `Any` entries we don't recognize
-/// — those are silently skipped.
-#[cfg(test)]
+/// — those are silently skipped. Compiled for this crate's unit tests and
+/// with the `testing` feature.
+#[cfg(any(test, feature = "testing"))]
 pub fn unpack_status_details(
     bytes: &[u8],
 ) -> Option<(

@@ -31,7 +31,10 @@ pub mod routers;
 pub use angzarr_router::destinations::Destinations;
 pub use builder::Router;
 pub use handler::{BuildError, Built, DispatchError, Handler, HandlerConfig, HandlerKind, Kind};
-pub use responses::{ProcessManagerResponse, RejectionHandlerResponse, SagaHandlerResponse};
+pub use responses::{
+    FactRecord, IntoFactRecord, ProcessManagerResponse, RejectionHandlerResponse,
+    SagaHandlerResponse,
+};
 pub use routers::{
     CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter, UpcasterRouter,
 };

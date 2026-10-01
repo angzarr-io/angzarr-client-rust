@@ -68,7 +68,7 @@ pub mod codes {
     pub const MISSING_NOTIFICATION_PAYLOAD: &str = "MISSING_NOTIFICATION_PAYLOAD";
     pub const MISSING_REJECTED_COMMAND: &str = "MISSING_REJECTED_COMMAND";
     pub const MISSING_DEFERRED_HEADER: &str = "MISSING_DEFERRED_HEADER";
-    pub const HANDLER_DOES_NOT_SUPPORT_FACT: &str = "HANDLER_DOES_NOT_SUPPORT_FACT";
+    pub const NO_FACT_HANDLER: &str = "NO_FACT_HANDLER";
     pub const HANDLER_DOES_NOT_SUPPORT_REPLAY: &str = "HANDLER_DOES_NOT_SUPPORT_REPLAY";
     pub const ROUTER_SEQUENCE_OVERFLOW: &str = "ROUTER_SEQUENCE_OVERFLOW";
 
@@ -166,8 +166,7 @@ pub mod messages {
     pub const MISSING_REJECTED_COMMAND: &str = "RejectionNotification has no rejected_command";
     pub const MISSING_DEFERRED_HEADER: &str =
         "rejected command's first page is missing the AngzarrDeferred sequence header";
-    pub const HANDLER_DOES_NOT_SUPPORT_FACT: &str =
-        "handler does not declare any #[handles_fact] methods";
+    pub const NO_FACT_HANDLER: &str = "no fact handler for the fact type";
     pub const HANDLER_DOES_NOT_SUPPORT_REPLAY: &str = "handler does not support replay";
     pub const ROUTER_SEQUENCE_OVERFLOW: &str =
         "router sequence counter overflowed u32 — too many merged compensation events";

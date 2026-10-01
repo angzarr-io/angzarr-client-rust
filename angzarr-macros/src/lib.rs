@@ -279,7 +279,7 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
                     let fact: #fact_ty = __p::decode(any)?;
                     let handler = f();
                     let recorded = handler.#method(fact, state).map_err(__p::rejected)?;
-                    ::std::result::Result::Ok(__p::pack(&recorded))
+                    ::std::result::Result::Ok(__p::fact_record(recorded))
                 });
             }
         });
@@ -670,21 +670,26 @@ pub fn handles(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Triggered when the coordinator dispatches a fact (an external
 /// reality, e.g. a payment confirmation) via the `HandleFact` RPC. The
 /// method receives `(self, fact, state)` after state has been rebuilt
-/// from prior events (and earlier facts of the same request); it returns
-/// the fact to record — the same fact, or an annotated one. Facts cannot
-/// be refused short of an error.
+/// from prior events (and the facts and flags recorded before it in the
+/// same request). It returns the fact to record, optionally followed by
+/// events that flag it, as a `FactRecord`; returning the fact message
+/// itself records it with no flags. Facts cannot be refused.
 ///
-/// Aggregates with at least one `#[handles_fact]` method opt into the
-/// `HandleFact` RPC. Aggregates with none get UNIMPLEMENTED from the
-/// framework's gRPC adapter — the coordinator falls back to
-/// pass-through-persist per the proto's Optional contract.
+/// Each `#[handles_fact]` type is a `ComponentOptions.facts` entry. A fact
+/// of any other type is refused with INVALID_ARGUMENT / NO_FACT_HANDLER and
+/// nothing is recorded.
 ///
 /// # Example
 /// ```rust,ignore
-/// #[handles_fact(StockReserved)]
-/// fn on_stock_reserved(&self, fact: StockReserved, state: &PlayerState)
-///     -> CommandResult<StockReserved> {
-///     Ok(fact)
+/// #[handles_fact(ShipmentDispatched)]
+/// fn on_dispatched(&self, fact: ShipmentDispatched, state: &OrderState)
+///     -> CommandResult<FactRecord> {
+///     let record = FactRecord::new(&fact);
+///     Ok(if state.awaiting_shipment {
+///         record
+///     } else {
+///         record.flag(&ShipmentDiscrepancy { order_id: fact.order_id })
+///     })
 /// }
 /// ```
 #[proc_macro_attribute]

@@ -81,6 +81,13 @@ pub fn decode_applied<T: Message + Default>(
     T::decode(any.value.as_slice()).map_err(|e| Box::new(e) as _)
 }
 
+/// The router's record of a `#[handles_fact]` method's return.
+pub fn fact_record<R: super::responses::IntoFactRecord>(
+    recorded: R,
+) -> angzarr_router::aggregate::FactRecord {
+    recorded.into_fact_record()
+}
+
 /// Pack `msg` into an `Any` under its `/`-prefixed type URL.
 pub fn pack<T: Message + Name>(msg: &T) -> Any {
     Any {

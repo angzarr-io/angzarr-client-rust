@@ -10,20 +10,24 @@ use std::sync::{Arc, Mutex};
 
 use angzarr_client::proto::{
     business_response, command_page, event_page, BusinessResponse, CommandBook, CommandPage,
-    ContextualCommand, Cover, EventBook, EventPage, PageHeader,
+    ContextualCommand, Cover, EventBook, EventPage, FactRequest, PageHeader,
 };
 use angzarr_client::router::CommandHandlerRouter;
 use angzarr_client::router::{Built, Router};
-use angzarr_client::{command_handler, ClientError, CommandResult};
+use angzarr_client::{command_handler, ClientError, CommandResult, FactRecord};
 use cucumber::{given, then, when, World};
 use prost::{Message, Name};
 use prost_types::Any;
 
-use crate::common::fixtures::{CompleteOrder, CreateOrder, OrderCreated};
+use crate::common::fixtures::{
+    CompleteOrder, CreateOrder, OrderCompleted, OrderCreated, PaymentCaptured, ShipmentDiscrepancy,
+    ShipmentDispatched,
+};
 
 #[derive(Default)]
 pub struct OrderState {
     created: bool,
+    awaiting_shipment: bool,
 }
 
 /// What `handle_create` does when CreateOrder arrives.
@@ -117,7 +121,10 @@ pub struct SeededOrder {
 impl SeededOrder {
     #[state_factory]
     fn initial() -> OrderState {
-        OrderState { created: true }
+        OrderState {
+            created: true,
+            ..Default::default()
+        }
     }
 
     #[applies(OrderCreated)]
@@ -136,11 +143,58 @@ impl SeededOrder {
     }
 }
 
+/// Order aggregate that declares ShipmentDispatched as a fact.
+pub struct ShippingOrder {
+    behaviour: Arc<OrderBehaviour>,
+}
+
+#[command_handler(domain = "order", state = OrderState)]
+impl ShippingOrder {
+    #[applies(OrderCreated)]
+    fn on_created(state: &mut OrderState, _evt: OrderCreated) {
+        state.created = true;
+    }
+
+    #[applies(OrderCompleted)]
+    fn on_completed(state: &mut OrderState, _evt: OrderCompleted) {
+        state.awaiting_shipment = true;
+    }
+
+    #[handles(CreateOrder)]
+    fn handle_create(
+        &self,
+        _cmd: CreateOrder,
+        state: &OrderState,
+        _seq: u32,
+    ) -> CommandResult<EventBook> {
+        Ok(handle_create_body(&self.behaviour, state))
+    }
+
+    /// Records the dispatch; flags a discrepancy when the order is not
+    /// awaiting shipment.
+    #[handles_fact(ShipmentDispatched)]
+    fn on_dispatched(
+        &self,
+        fact: ShipmentDispatched,
+        state: &OrderState,
+    ) -> CommandResult<FactRecord> {
+        let record = FactRecord::new(&fact);
+        Ok(if state.awaiting_shipment {
+            record
+        } else {
+            record.flag(&ShipmentDiscrepancy {
+                order_id: fact.order_id,
+            })
+        })
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 enum InitialState {
     #[default]
     Default,
     Supplied,
+    DeclaresShipmentFact,
 }
 
 #[derive(Debug, Default, World)]
@@ -150,6 +204,7 @@ pub struct CommandHandlerWorld {
     prior: Option<EventBook>,
     command_ext: Option<Any>,
     response: Option<BusinessResponse>,
+    fact_response: Option<EventBook>,
     error: Option<ClientError>,
 }
 
@@ -164,6 +219,11 @@ impl CommandHandlerWorld {
                 .build(),
             InitialState::Supplied => Router::new("order")
                 .with_handler(move || SeededOrder {
+                    behaviour: Arc::clone(&behaviour),
+                })
+                .build(),
+            InitialState::DeclaresShipmentFact => Router::new("order")
+                .with_handler(move || ShippingOrder {
                     behaviour: Arc::clone(&behaviour),
                 })
                 .build(),
@@ -195,6 +255,43 @@ impl CommandHandlerWorld {
             Ok(r) => self.response = Some(r),
             Err(e) => self.error = Some(e),
         }
+    }
+
+    fn dispatch_fact<F: Message + Name>(&mut self, fact: &F) {
+        let request = FactRequest {
+            facts: Some(EventBook {
+                cover: Some(Cover {
+                    domain: "order".into(),
+                    ..Default::default()
+                }),
+                pages: vec![EventPage {
+                    header: Some(PageHeader::default()),
+                    payload: Some(event_page::Payload::Event(pack(fact))),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            prior_events: self.prior.clone(),
+        };
+        match self.router().dispatch_fact(request) {
+            Ok(book) => self.fact_response = Some(book),
+            Err(e) => self.error = Some(e),
+        }
+    }
+
+    /// Type URLs of the recorded fact response's events, in order.
+    fn fact_event_types(&self) -> Vec<String> {
+        let book = self
+            .fact_response
+            .as_ref()
+            .unwrap_or_else(|| panic!("no HandleFact response; error {:?}", self.error));
+        book.pages
+            .iter()
+            .map(|p| match &p.payload {
+                Some(event_page::Payload::Event(any)) => any.type_url.clone(),
+                other => panic!("expected an event page, got {other:?}"),
+            })
+            .collect()
     }
 
     fn events(&self) -> &EventBook {
@@ -425,4 +522,69 @@ fn then_no_ext(world: &mut CommandHandlerWorld) {
     let book = world.events();
     assert_eq!(book.pages.len(), 1);
     assert_eq!(book.cover.as_ref().and_then(|c| c.ext.clone()), None);
+}
+
+// --- Facts -----------------------------------------------------------------
+
+#[given(
+    "Order declares ShipmentDispatched as a fact whose handler records it and flags a ShipmentDiscrepancy when the order is not awaiting shipment"
+)]
+fn given_declares_shipment_fact(world: &mut CommandHandlerWorld) {
+    world.initial = InitialState::DeclaresShipmentFact;
+}
+
+#[when(expr = "a {word} fact is dispatched to HandleFact")]
+fn when_fact_dispatched(world: &mut CommandHandlerWorld, fact: String) {
+    match fact.as_str() {
+        "ShipmentDispatched" => world.dispatch_fact(&ShipmentDispatched {
+            order_id: "o-1".into(),
+        }),
+        "PaymentCaptured" => world.dispatch_fact(&PaymentCaptured {
+            order_id: "o-1".into(),
+        }),
+        other => panic!("no fixture for fact {other}"),
+    }
+}
+
+#[then("the response contains the ShipmentDispatched event")]
+fn then_contains_dispatched(world: &mut CommandHandlerWorld) {
+    let types = world.fact_event_types();
+    assert_eq!(
+        types.first(),
+        Some(&angzarr_client::full_type_url::<ShipmentDispatched>()),
+        "events: {types:?}"
+    );
+}
+
+#[then("the response contains a ShipmentDiscrepancy event after it")]
+fn then_contains_discrepancy(world: &mut CommandHandlerWorld) {
+    assert_eq!(
+        world.fact_event_types(),
+        vec![
+            angzarr_client::full_type_url::<ShipmentDispatched>(),
+            angzarr_client::full_type_url::<ShipmentDiscrepancy>(),
+        ]
+    );
+}
+
+#[then("the response is not an error")]
+fn then_not_error(world: &mut CommandHandlerWorld) {
+    assert!(world.error.is_none(), "error: {:?}", world.error);
+    assert!(world.fact_response.is_some());
+}
+
+#[then(expr = "HandleFact fails with INVALID_ARGUMENT and angzarr error code {word}")]
+fn then_handle_fact_fails(world: &mut CommandHandlerWorld, code: String) {
+    let err = world.error.as_ref().expect("HandleFact error");
+    assert!(err.is_invalid_argument(), "got {err:?}");
+    assert_eq!(err.code(), code);
+}
+
+#[then("no events are returned")]
+fn then_no_events(world: &mut CommandHandlerWorld) {
+    assert!(
+        world.fact_response.is_none(),
+        "unexpected events {:?}",
+        world.fact_response
+    );
 }

@@ -61,17 +61,9 @@ impl CommandHandlerService for CommandHandlerGrpc {
         &self,
         request: Request<crate::proto::FactRequest>,
     ) -> Result<Response<EventBook>, Status> {
-        // Audit #45: gate on metadata as high in the stack as
-        // possible. No `#[handles_fact]` declared on any registered
-        // handler → return UNIMPLEMENTED without invoking dispatch.
-        // The coordinator's pass-through-persist fallback handles
-        // facts for non-opted-in aggregates.
-        if !self.router.supports_handle_fact() {
-            return Err(unimplemented_with_code(
-                codes::HANDLER_DOES_NOT_SUPPORT_FACT,
-                messages::HANDLER_DOES_NOT_SUPPORT_FACT,
-            ));
-        }
+        // A fact type no `#[handles_fact]` declares (including every type,
+        // for an aggregate that declares none) is refused by the router
+        // with INVALID_ARGUMENT / NO_FACT_HANDLER.
         let req = request.into_inner();
         let book = on_blocking_pool(&self.router, move |r| r.dispatch_fact(req)).await?;
         Ok(Response::new(book))
@@ -363,13 +355,13 @@ mod tests {
     #[test]
     fn unimplemented_with_code_packs_canonical_details() {
         let status = unimplemented_with_code(
-            codes::HANDLER_DOES_NOT_SUPPORT_FACT,
-            messages::HANDLER_DOES_NOT_SUPPORT_FACT,
+            codes::HANDLER_DOES_NOT_SUPPORT_REPLAY,
+            messages::HANDLER_DOES_NOT_SUPPORT_REPLAY,
         );
         assert_eq!(status.code(), tonic::Code::Unimplemented);
-        assert_eq!(status.message(), messages::HANDLER_DOES_NOT_SUPPORT_FACT);
+        assert_eq!(status.message(), messages::HANDLER_DOES_NOT_SUPPORT_REPLAY);
         let (code, _meta, _cover) = unpack_status_details(status.details()).expect("decode");
-        assert_eq!(code, codes::HANDLER_DOES_NOT_SUPPORT_FACT);
+        assert_eq!(code, codes::HANDLER_DOES_NOT_SUPPORT_REPLAY);
     }
 
     #[test]

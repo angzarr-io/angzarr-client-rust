@@ -7,9 +7,9 @@
 //!   `#[handles_fact]` method, which records (possibly annotated) facts.
 //! - `dispatch_replay` round-trips state through `Any` using the
 //!   `#[applies]` machinery.
-//! - Aggregates that don't opt in get `false` from `supports_*` —
-//!   the gRPC adapter then returns `UNIMPLEMENTED` (covered in the
-//!   adapter-level integration tests).
+//! - Aggregates that don't opt in get `false` from `supports_*`. Replay
+//!   then answers `UNIMPLEMENTED`; HandleFact refuses every fact with
+//!   `INVALID_ARGUMENT` / `NO_FACT_HANDLER`.
 
 use angzarr_client::proto::{
     EventBook, EventPage, FactRequest, PageHeader, ReplayRequest, Snapshot,
@@ -283,4 +283,42 @@ fn dispatch_replay_round_trips_state_through_any() {
     // apply_created bumped apply_count to 6 and overwrote order_id.
     assert_eq!(resulting.apply_count, 6);
     assert_eq!(resulting.order_id, "after-replay");
+}
+
+#[tokio::test]
+async fn handle_fact_without_fact_handlers_refuses_with_no_fact_handler() {
+    use angzarr_client::proto::command_handler_service_server::CommandHandlerService;
+    let angzarr_client::router::Built::CommandHandler(r) = Router::new("orders")
+        .with_handler(|| PlainOrder)
+        .build()
+        .expect("build")
+    else {
+        panic!("expected CommandHandler");
+    };
+    let grpc = angzarr_client::CommandHandlerGrpc::new(r);
+    let request = FactRequest {
+        facts: Some(EventBook {
+            cover: Some(angzarr_client::proto::Cover {
+                domain: "order".into(),
+                ..Default::default()
+            }),
+            pages: vec![EventPage {
+                payload: Some(angzarr_client::proto::event_page::Payload::Event(Any {
+                    type_url: full_type_url::<StockReserved>(),
+                    value: vec![],
+                })),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let status = grpc
+        .handle_fact(tonic::Request::new(request))
+        .await
+        .expect_err("undeclared fact is refused");
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    let (code, _meta, _cover) =
+        angzarr_client::error::unpack_status_details(status.details()).expect("details");
+    assert_eq!(code, angzarr_client::error_codes::codes::NO_FACT_HANDLER);
 }

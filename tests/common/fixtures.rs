@@ -278,3 +278,37 @@ impl ::prost::Name for WorkflowFailed {
     const PACKAGE: &'static str = "workflow";
     const NAME: &'static str = "WorkflowFailed";
 }
+
+// ---------------------------------------------------------------------------
+// Facts recorded by the order aggregate
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ShipmentDispatched {
+    #[prost(string, tag = "1")]
+    pub order_id: ::prost::alloc::string::String,
+}
+impl ::prost::Name for ShipmentDispatched {
+    const PACKAGE: &'static str = "shipping";
+    const NAME: &'static str = "ShipmentDispatched";
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ShipmentDiscrepancy {
+    #[prost(string, tag = "1")]
+    pub order_id: ::prost::alloc::string::String,
+}
+impl ::prost::Name for ShipmentDiscrepancy {
+    const PACKAGE: &'static str = "order";
+    const NAME: &'static str = "ShipmentDiscrepancy";
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct PaymentCaptured {
+    #[prost(string, tag = "1")]
+    pub order_id: ::prost::alloc::string::String,
+}
+impl ::prost::Name for PaymentCaptured {
+    const PACKAGE: &'static str = "payment";
+    const NAME: &'static str = "PaymentCaptured";
+}

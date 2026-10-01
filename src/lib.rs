@@ -126,6 +126,8 @@ pub use router::{
     // Destination-sequence stamping for saga/PM outbound commands
     Destinations,
     DispatchError,
+    // Return shape of #[handles_fact] methods
+    FactRecord,
     Handler,
     HandlerConfig,
     HandlerKind,
