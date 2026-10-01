@@ -35,3 +35,9 @@ mod markers;
 
 #[path = "router/context.rs"]
 mod context;
+
+#[path = "router/composition.rs"]
+mod composition;
+
+#[path = "router/metadata.rs"]
+mod metadata;

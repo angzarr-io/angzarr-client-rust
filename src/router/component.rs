@@ -56,13 +56,13 @@ pub(crate) fn begin_dispatch() {
 }
 
 /// A handler's business rejection, as the router's handler error.
+///
+/// The rejection itself is kept for [`from_coded`], which returns it
+/// (status code and all) once the router has unwound; the coded error only
+/// carries its code through the router.
 pub fn rejected(rej: CommandRejectedError) -> HandlerError {
     let extras: Vec<(String, String)> = rej.details.clone().into_iter().collect();
-    let coded = match rej.status_code {
-        "NOT_FOUND" => CodedError::rejection_not_found(rej.code, rej.message, extras),
-        "INVALID_ARGUMENT" => CodedError::rejection_invalid_argument(rej.code, rej.message, extras),
-        _ => CodedError::rejection_precondition_failed(rej.code, rej.message, extras),
-    };
+    let coded = CodedError::rejection_precondition_failed(rej.code, rej.message, extras);
     REJECTION.with(|r| *r.borrow_mut() = Some(rej));
     HandlerError::Coded(coded)
 }
@@ -244,4 +244,113 @@ pub fn replay_fn<S: Message + Default + Name + 'static>(rebuilder: Rebuilder<S>)
             state: Some(pack(&state)),
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rejection(code: &'static str) -> CommandRejectedError {
+        CommandRejectedError::not_found(code, "gone", [("k", "v")])
+    }
+
+    #[test]
+    fn a_handler_rejection_survives_the_router_unchanged() {
+        begin_dispatch();
+        let HandlerError::Coded(coded) = rejected(rejection("ORDER_GONE")) else {
+            panic!("rejections are coded");
+        };
+        assert_eq!(coded.code, "ORDER_GONE");
+        match from_coded(coded) {
+            ClientError::Rejected(rej) => {
+                assert_eq!(rej.code, "ORDER_GONE");
+                assert_eq!(rej.status_code, "NOT_FOUND");
+                assert_eq!(rej.details.get("k").map(String::as_str), Some("v"));
+            }
+            other => panic!("expected the rejection back, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_framework_error_is_an_invalid_argument_detail() {
+        begin_dispatch();
+        let err = from_coded(CodedError::invalid_argument(
+            codes::NO_HANDLER_REGISTERED,
+            "Unknown command type",
+            [("domain".to_string(), "order".to_string())],
+        ));
+        let ClientError::InvalidArgument(detail) = err else {
+            panic!("expected InvalidArgument, got {err:?}");
+        };
+        assert_eq!(detail.code, codes::NO_HANDLER_REGISTERED);
+        assert_eq!(detail.message, "Unknown command type");
+        assert_eq!(
+            detail.details.get("domain").map(String::as_str),
+            Some("order")
+        );
+    }
+
+    #[test]
+    fn a_stale_or_unrelated_rejection_is_not_returned() {
+        begin_dispatch();
+        let _ = rejected(rejection("ORDER_GONE"));
+        begin_dispatch();
+        let err = from_coded(CodedError::invalid_argument("ORDER_GONE", "framework", []));
+        assert!(
+            matches!(err, ClientError::InvalidArgument(_)),
+            "got {err:?}"
+        );
+
+        let _ = rejected(rejection("ORDER_GONE"));
+        let err = from_coded(CodedError::invalid_argument("OTHER", "framework", []));
+        assert!(
+            matches!(err, ClientError::InvalidArgument(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn interned_strings_are_shared() {
+        let a = intern("INTERN_TEST_CODE", "fallback");
+        let b = intern(&String::from("INTERN_TEST_CODE"), "fallback");
+        assert_eq!(a, "INTERN_TEST_CODE");
+        assert!(std::ptr::eq(a, b));
+    }
+
+    #[test]
+    fn grpc_codes_follow_the_router_table() {
+        assert_eq!(
+            grpc_code_for(codes::NO_HANDLER_REGISTERED),
+            tonic::Code::Unimplemented
+        );
+        assert_eq!(grpc_code_for("NO_UNDO_HANDLER"), tonic::Code::Unimplemented);
+        assert_eq!(
+            grpc_code_for("PERSISTED_EVENT_CORRUPT"),
+            tonic::Code::DataLoss
+        );
+        assert_eq!(
+            grpc_code_for(codes::UNHANDLED_HANDLER_ERROR),
+            tonic::Code::Internal
+        );
+        assert_eq!(
+            grpc_code_for(codes::ANY_DECODE_FAILED),
+            tonic::Code::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn decode_failures_are_any_decode_failed() {
+        let bad = Any {
+            type_url: "/io.angzarr.v1.Cover".into(),
+            value: vec![0xff, 0xff],
+        };
+        let Err(HandlerError::Coded(coded)) = decode::<crate::proto::Cover>(&bad) else {
+            panic!("expected a decode failure");
+        };
+        assert_eq!(coded.code, codes::ANY_DECODE_FAILED);
+        assert_eq!(
+            coded.extras.get(keys::TYPE_URL).map(String::as_str),
+            Some("/io.angzarr.v1.Cover")
+        );
+    }
 }
