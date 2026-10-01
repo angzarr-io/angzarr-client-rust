@@ -2,7 +2,6 @@
 //!
 //! Provides convenient accessors for sequence, type URL, and payload decoding.
 
-use super::constants::TYPE_URL_PREFIX;
 use crate::proto::page_header::SequenceType;
 use crate::proto::{
     AngzarrDeferredSequence, CommandPage, EventPage, ExternalDeferredSequence, MergeStrategy,
@@ -10,16 +9,9 @@ use crate::proto::{
 };
 use prost::Name;
 
-/// Compare a wire `type_url` against the canonical URL for type `M`
-/// without allocating the full `"prefix + name"` string. The previous
-/// `format!("{}{}", TYPE_URL_PREFIX, M::full_name()) == type_url`
-/// pattern allocated a fresh `String` on every page comparison; this
-/// version only allocates `M::full_name()` (one `String`).
+/// True when a wire `type_url` names message type `M` (any prefix).
 fn type_url_matches<M: Name>(type_url: &str) -> bool {
-    let Some(suffix) = type_url.strip_prefix(TYPE_URL_PREFIX) else {
-        return false;
-    };
-    suffix == M::full_name()
+    crate::convert::type_url_is::<M>(type_url)
 }
 
 /// Extension trait for PageHeader.

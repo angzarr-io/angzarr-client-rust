@@ -27,10 +27,11 @@ pub const META_ANGZARR_DOMAIN: &str = "_angzarr";
 /// non-empty identifier.
 pub const DEFAULT_EDITION: &str = "";
 
-/// Type URL prefix for googleapis.com protobuf Any messages.
-///
-/// Used by `decode_typed` to match type URLs in Event/Command payloads.
-pub const TYPE_URL_PREFIX: &str = "type.googleapis.com/";
+/// Prefix of every type URL this client emits: a bare `/` followed by the
+/// message's fully-qualified name (`/orders.OrderCreated`). Received type
+/// URLs may carry any prefix; they are matched by the full name after the
+/// last `/`.
+pub const TYPE_URL_PREFIX: &str = "/";
 
 #[cfg(test)]
 mod tests {

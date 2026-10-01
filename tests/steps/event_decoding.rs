@@ -17,6 +17,11 @@ pub struct OrderCreated {
     pub order_id: String,
 }
 
+impl prost::Name for OrderCreated {
+    const NAME: &'static str = "OrderCreated";
+    const PACKAGE: &'static str = "orders";
+}
+
 /// Another test event.
 #[derive(Clone, Message, PartialEq)]
 pub struct ItemAdded {
@@ -67,6 +72,7 @@ pub struct EventDecodingWorld {
     decode_result: Option<OrderCreated>,
     decode_is_none: bool,
     match_result: bool,
+    packed: Option<Any>,
     events_list: Vec<EventPage>,
     command_response: Option<CommandResponse>,
     last_error: Option<String>,
@@ -79,6 +85,7 @@ impl EventDecodingWorld {
             decode_result: None,
             decode_is_none: false,
             match_result: false,
+            packed: None,
             events_list: Vec::new(),
             command_response: None,
             last_error: None,
@@ -741,26 +748,20 @@ async fn then_both_item_added(world: &mut EventDecodingWorld) {
     }
 }
 
-// --------------------------------------------------------------------------
-// Spec-mutation guard: the spec's Given captures the type_url; this Then
-// independently re-captures from the spec text and verifies the stored
-// event's type_url matches. Mutations to either capture site become
-// observable as a mismatch.
-// --------------------------------------------------------------------------
+#[when(expr = "I pack an OrderCreated event from package {string}")]
+async fn when_pack(world: &mut EventDecodingWorld, package: String) {
+    assert_eq!(package, <OrderCreated as prost::Name>::PACKAGE);
+    world.packed = Some(angzarr_client::testing::pack_event(&OrderCreated {
+        order_id: "o-1".into(),
+    }));
+}
 
 #[then(expr = "the event's type_url is {string}")]
-async fn then_event_type_url_is(world: &mut EventDecodingWorld, expected: String) {
-    let event = world
-        .current_event
-        .as_ref()
-        .expect("current_event must be set by a Given");
-    let actual = match &event.payload {
-        Some(event_page::Payload::Event(any)) => &any.type_url,
-        _ => panic!("current_event payload is not Event variant"),
-    };
+async fn then_packed_type_url(world: &mut EventDecodingWorld, url: String) {
+    let any = world.packed.as_ref().expect("packed event");
+    assert_eq!(any.type_url, url);
     assert_eq!(
-        actual, &expected,
-        "event.type_url={:?} expected={:?}",
-        actual, expected
+        OrderCreated::decode(any.value.as_slice()).unwrap().order_id,
+        "o-1"
     );
 }

@@ -299,10 +299,9 @@ pub fn pm_emit_compensation_events(
 // Helper functions
 // =============================================================================
 
-/// True when `type_url` is the `google.protobuf.Any` type URL of
-/// `io.angzarr.v1.Notification`.
+/// True when `type_url` names `io.angzarr.v1.Notification` (any prefix).
 pub fn is_notification(type_url: &str) -> bool {
-    type_url == crate::full_type_url::<Notification>()
+    crate::convert::type_url_is::<Notification>(type_url)
 }
 
 #[cfg(test)]
@@ -577,9 +576,13 @@ mod tests {
 
     #[test]
     fn is_notification_matches_v1_notification_type_url() {
-        assert!(is_notification(
-            "type.googleapis.com/io.angzarr.v1.Notification"
-        ));
+        for url in [
+            "/io.angzarr.v1.Notification",
+            "type.googleapis.com/io.angzarr.v1.Notification",
+            "io.angzarr.v1.Notification",
+        ] {
+            assert!(is_notification(url), "{url}");
+        }
         assert!(is_notification(&crate::full_type_url::<Notification>()));
     }
 
@@ -592,7 +595,7 @@ mod tests {
         assert!(!is_notification(
             "type.googleapis.com/angzarr_client.proto.angzarr.Notification"
         ));
-        assert!(!is_notification("io.angzarr.v1.Notification"));
+        assert!(!is_notification("/my.app.FooNotification"));
         assert!(!is_notification(""));
     }
 }

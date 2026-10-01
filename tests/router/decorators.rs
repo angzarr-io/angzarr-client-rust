@@ -122,8 +122,8 @@ fn handles_stashes_type_urls_in_declaration_order() {
             assert_eq!(
                 handled,
                 vec![
-                    "type.googleapis.com/test.RegisterPlayer".to_string(),
-                    "type.googleapis.com/test.DepositFunds".to_string(),
+                    "/test.RegisterPlayer".to_string(),
+                    "/test.DepositFunds".to_string(),
                 ]
             );
         }
@@ -138,8 +138,8 @@ fn applies_stashes_event_type_urls_in_declaration_order() {
             assert_eq!(
                 applies,
                 vec![
-                    "type.googleapis.com/test.PlayerRegistered".to_string(),
-                    "type.googleapis.com/test.FundsDeposited".to_string(),
+                    "/test.PlayerRegistered".to_string(),
+                    "/test.FundsDeposited".to_string(),
                 ]
             );
         }

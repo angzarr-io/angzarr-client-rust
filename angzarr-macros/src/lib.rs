@@ -249,7 +249,7 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
         .iter()
         .map(|(method_ident, cmd_ty)| {
             quote! {
-                if *type_url == ::angzarr_client::full_type_url::<#cmd_ty>() {
+                if ::angzarr_client::type_url_is::<#cmd_ty>(type_url) {
                     let cmd_val = <#cmd_ty as ::prost::Message>::decode(payload.value.as_slice())
                         .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
                             ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
@@ -282,7 +282,7 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
         .iter()
         .map(|(method_ident, evt_ty)| {
             quote! {
-                if *evt_type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
+                if ::angzarr_client::type_url_is::<#evt_ty>(evt_type_url) {
                     let evt_val = <#evt_ty as ::prost::Message>::decode(evt_any.value.as_slice())
                         .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
                             ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
@@ -336,7 +336,7 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
         .iter()
         .map(|(method_ident, evt_ty)| {
             quote! {
-                if *type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
+                if ::angzarr_client::type_url_is::<#evt_ty>(type_url) {
                     let evt_val = <#evt_ty as ::prost::Message>::decode(payload.value.as_slice())
                         .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
                             ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
@@ -621,9 +621,7 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
                 }
 
                 // R10: Notification → rejection branch.
-                if *type_url == ::angzarr_client::full_type_url::<
-                    ::angzarr_client::proto::Notification
-                >() {
+                if ::angzarr_client::type_url_is::<::angzarr_client::proto::Notification>(type_url) {
                     let notification =
                         <::angzarr_client::proto::Notification as ::prost::Message>::decode(
                             payload.value.as_slice(),
@@ -1134,7 +1132,7 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
         .iter()
         .map(|(method_ident, evt_ty)| {
             quote! {
-                if event_any.type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
+                if ::angzarr_client::type_url_is::<#evt_ty>(&event_any.type_url) {
                     let evt = <#evt_ty as ::prost::Message>::decode(event_any.value.as_slice())
                         .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
                             ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
@@ -1426,7 +1424,7 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
         .iter()
         .map(|(method_ident, evt_ty)| {
             quote! {
-                if event_any.type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
+                if ::angzarr_client::type_url_is::<#evt_ty>(&event_any.type_url) {
                     let evt = <#evt_ty as ::prost::Message>::decode(event_any.value.as_slice())
                         .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
                             ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
@@ -1451,7 +1449,7 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
         .iter()
         .map(|(method_ident, evt_ty)| {
             quote! {
-                if *evt_type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
+                if ::angzarr_client::type_url_is::<#evt_ty>(evt_type_url) {
                     let evt_val = <#evt_ty as ::prost::Message>::decode(evt_any.value.as_slice())
                         .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
                             ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
@@ -1679,7 +1677,7 @@ fn expand_projector(args: ProjectorArgs, mut input: ItemImpl) -> TokenStream2 {
         .iter()
         .map(|(method_ident, evt_ty)| {
             quote! {
-                if event_any.type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
+                if ::angzarr_client::type_url_is::<#evt_ty>(&event_any.type_url) {
                     let evt = <#evt_ty as ::prost::Message>::decode(event_any.value.as_slice())
                         .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
                             ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
@@ -1996,7 +1994,7 @@ fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
         .iter()
         .map(|(method_ident, from, to)| {
             quote! {
-                if event_any.type_url == ::angzarr_client::full_type_url::<#from>() {
+                if ::angzarr_client::type_url_is::<#from>(&event_any.type_url) {
                     let old = <#from as ::prost::Message>::decode(event_any.value.as_slice())
                         .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
                             ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,

@@ -15,22 +15,13 @@ pub use crate::proto_ext::constants::{
     TYPE_URL_PREFIX, UNKNOWN_DOMAIN, WILDCARD_DOMAIN,
 };
 
-/// Build a fully-qualified `type.googleapis.com/...` URL from a message's
-/// fully-qualified proto type name.
-///
-/// Per `google.protobuf.Any` spec, the URL's last path segment **must**
-/// be the message's fully qualified name (`<package>.<MessageName>`).
-/// Audit finding #58: this used to incorrectly strip the
-/// `angzarr_client.proto.` package prefix, producing non-spec-compliant
-/// URLs that diverged from Python's emission. The strip has been removed.
+/// The type URL emitted for a fully-qualified proto type name:
+/// [`TYPE_URL_PREFIX`] (`/`) + the name.
 ///
 /// # Examples
 /// ```
 /// use angzarr_client::convert::type_url;
-/// assert_eq!(
-///     type_url("angzarr_client.proto.examples.AddItemToCart"),
-///     "type.googleapis.com/angzarr_client.proto.examples.AddItemToCart"
-/// );
+/// assert_eq!(type_url("orders.OrderCreated"), "/orders.OrderCreated");
 /// ```
 pub fn type_url(type_name: &str) -> String {
     format!("{}{}", TYPE_URL_PREFIX, type_name)
@@ -43,22 +34,22 @@ pub fn type_name_from_url(type_url: &str) -> &str {
     type_url.rsplit('/').next().unwrap_or(type_url)
 }
 
-/// Check if a type URL matches the given fully-qualified type name exactly.
-///
-/// Audit finding #58: comparison uses the spec-compliant fully qualified
-/// name verbatim — so it matches Python's emission and the
-/// `google.protobuf.Any` contract.
+/// True when `type_url` names `full_type_name`: whatever its prefix, the
+/// text after the last `/` equals the fully-qualified name exactly (no
+/// suffix matching).
 ///
 /// # Examples
 /// ```
 /// use angzarr_client::convert::type_url_matches_exact;
+/// assert!(type_url_matches_exact("/orders.OrderCreated", "orders.OrderCreated"));
 /// assert!(type_url_matches_exact(
-///     "type.googleapis.com/angzarr_client.proto.examples.PlayerRegistered",
-///     "angzarr_client.proto.examples.PlayerRegistered"
+///     "type.googleapis.com/orders.OrderCreated",
+///     "orders.OrderCreated"
 /// ));
+/// assert!(!type_url_matches_exact("/orders.OrderCreated", "OrderCreated"));
 /// ```
 pub fn type_url_matches_exact(type_url: &str, full_type_name: &str) -> bool {
-    type_url == format!("{}{}", TYPE_URL_PREFIX, full_type_name)
+    type_name_from_url(type_url) == full_type_name
 }
 
 /// Python-canonical name for [`type_url_matches_exact`]. Python exposes
@@ -86,7 +77,7 @@ pub fn type_url_matches(type_url: &str, full_type_name: &str) -> bool {
 /// }
 /// ```
 pub fn type_matches<T: prost::Message + Name>(any: &Any) -> bool {
-    any.type_url == full_type_url::<T>()
+    type_url_is::<T>(&any.type_url)
 }
 
 /// Unpack an Any to type T if the type matches, returning None otherwise.
@@ -103,7 +94,7 @@ pub fn try_unpack<T: prost::Message + Default + Name>(any: &Any) -> Option<T> {
 /// Unpack an Any to type T, returning an error if type doesn't match or decode fails.
 pub fn unpack<T: prost::Message + Default + Name>(any: &Any) -> Result<T> {
     let expected = full_type_url::<T>();
-    if any.type_url != expected {
+    if !type_url_is::<T>(&any.type_url) {
         return Err(ClientError::invalid_argument(
             codes::ANY_TYPE_MISMATCH,
             messages::ANY_TYPE_MISMATCH,
@@ -132,15 +123,16 @@ pub fn unpack<T: prost::Message + Default + Name>(any: &Any) -> Result<T> {
 /// use angzarr_client::convert::full_type_url;
 /// use examples::PlayerRegistered;
 ///
-/// assert_eq!(
-///     full_type_url::<PlayerRegistered>(),
-///     "type.googleapis.com/examples.PlayerRegistered"
-/// );
+/// assert_eq!(full_type_url::<PlayerRegistered>(), "/examples.PlayerRegistered");
 /// ```
 pub fn full_type_url<T: Name>() -> String {
-    // Audit finding #58: emit the fully qualified name verbatim per
-    // `google.protobuf.Any` spec.
     format!("{}{}", TYPE_URL_PREFIX, T::full_name())
+}
+
+/// True when `type_url` names message type `T` (any prefix; the full name
+/// after the last `/` must equal `T::full_name()`).
+pub fn type_url_is<T: Name>(type_url: &str) -> bool {
+    type_name_from_url(type_url) == T::full_name()
 }
 
 /// Get the fully-qualified type name for message type T (without URL prefix).
@@ -239,59 +231,93 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_type_url() {
-        // Audit finding #58: per `google.protobuf.Any` spec the URL
-        // carries the fully qualified type name verbatim (package
-        // prefix retained).
+    fn type_urls_are_emitted_with_the_bare_slash_prefix() {
+        assert_eq!(TYPE_URL_PREFIX, "/");
+        assert_eq!(type_url("orders.OrderCreated"), "/orders.OrderCreated");
         assert_eq!(
-            type_url("angzarr_client.proto.examples.AddItemToCart"),
-            "type.googleapis.com/angzarr_client.proto.examples.AddItemToCart"
+            full_type_url::<crate::proto::Cover>(),
+            "/io.angzarr.v1.Cover"
         );
     }
 
     #[test]
     fn test_type_name_from_url() {
         assert_eq!(
-            type_name_from_url("type.googleapis.com/angzarr_client.proto.examples.AddItemToCart"),
-            "angzarr_client.proto.examples.AddItemToCart"
+            type_name_from_url("type.googleapis.com/orders.OrderCreated"),
+            "orders.OrderCreated"
         );
-        assert_eq!(type_name_from_url("AddItemToCart"), "AddItemToCart");
+        assert_eq!(
+            type_name_from_url("/orders.OrderCreated"),
+            "orders.OrderCreated"
+        );
+        assert_eq!(
+            type_name_from_url("orders.OrderCreated"),
+            "orders.OrderCreated"
+        );
     }
 
+    /// Any prefix is accepted; the full name after the last "/" is compared
+    /// exactly.
     #[test]
-    fn test_type_url_matches_exact() {
-        // Audit finding #58: match on the fully qualified name.
-        assert!(type_url_matches_exact(
-            "type.googleapis.com/angzarr_client.proto.examples.AddItemToCart",
-            "angzarr_client.proto.examples.AddItemToCart"
-        ));
-        assert!(!type_url_matches_exact(
-            "type.googleapis.com/angzarr_client.proto.examples.AddItemToCart",
-            "angzarr_client.proto.examples.RemoveItem"
-        ));
-        // Short-form URLs no longer match (was the pre-#58 incorrect behavior).
-        assert!(!type_url_matches_exact(
-            "type.googleapis.com/examples.AddItemToCart",
-            "angzarr_client.proto.examples.AddItemToCart"
-        ));
-        // Suffix matching never worked.
-        assert!(!type_url_matches_exact(
-            "type.googleapis.com/angzarr_client.proto.examples.AddItemToCart",
-            "AddItemToCart"
-        ));
-    }
-
-    #[test]
-    fn type_url_matches_is_alias_for_exact() {
-        // Python-canonical name. Must behave identically to type_url_matches_exact.
-        assert!(type_url_matches(
-            "type.googleapis.com/angzarr_client.proto.examples.AddItemToCart",
-            "angzarr_client.proto.examples.AddItemToCart"
+    fn type_urls_match_by_full_name_whatever_the_prefix() {
+        for url in [
+            "/myapp.events.v1.OrderCreated",
+            "type.googleapis.com/myapp.events.v1.OrderCreated",
+            "example.com/types/myapp.events.v1.OrderCreated",
+            "myapp.events.v1.OrderCreated",
+        ] {
+            assert!(
+                type_url_matches(url, "myapp.events.v1.OrderCreated"),
+                "{url}"
+            );
+            assert!(
+                type_url_matches_exact(url, "myapp.events.v1.OrderCreated"),
+                "{url}"
+            );
+        }
+        assert!(!type_url_matches(
+            "/myapp.events.v2.OrderCreated",
+            "myapp.events.v1.OrderCreated"
         ));
         assert!(!type_url_matches(
-            "type.googleapis.com/angzarr_client.proto.examples.AddItemToCart",
-            "AddItemToCart"
+            "/myapp.events.v1.OrderCreated",
+            "OrderCreated"
         ));
+        assert!(!type_url_matches(
+            "/myapp.events.v1.OrderCreated",
+            "v1.OrderCreated"
+        ));
+    }
+
+    #[test]
+    fn typed_matching_accepts_any_prefix() {
+        let bytes = prost::Message::encode_to_vec(&crate::proto::Cover {
+            domain: "d".into(),
+            ..Default::default()
+        });
+        for url in [
+            "/io.angzarr.v1.Cover",
+            "type.googleapis.com/io.angzarr.v1.Cover",
+        ] {
+            assert!(type_url_is::<crate::proto::Cover>(url));
+            let any = Any {
+                type_url: url.into(),
+                value: bytes.clone(),
+            };
+            assert!(type_matches::<crate::proto::Cover>(&any));
+            assert_eq!(try_unpack::<crate::proto::Cover>(&any).unwrap().domain, "d");
+            assert_eq!(unpack::<crate::proto::Cover>(&any).unwrap().domain, "d");
+        }
+        assert!(!type_url_is::<crate::proto::Cover>("/io.angzarr.v1.Covers"));
+        let other = Any {
+            type_url: "/io.angzarr.v2.Cover".into(),
+            value: bytes,
+        };
+        assert!(try_unpack::<crate::proto::Cover>(&other).is_none());
+        assert_eq!(
+            unpack::<crate::proto::Cover>(&other).unwrap_err().code(),
+            codes::ANY_TYPE_MISMATCH
+        );
     }
 
     #[test]

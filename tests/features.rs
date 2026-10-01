@@ -93,20 +93,6 @@ const PENDING: &[(&str, &str)] = &[
         "C-0481",
         "router: unqualified compensates entry (fq.Type, any domain)",
     ),
-    (
-        "C-0475",
-        "type URL rule: accept any prefix, match by full name",
-    ),
-    (
-        "C-0365",
-        "type URL rule: accept any prefix, match by full name",
-    ),
-    (
-        "C-0372",
-        "type URL rule: accept any prefix, match by full name",
-    ),
-    ("C-0474", "type URL rule: emit the bare / prefix"),
-    ("C-0097", "type URL rule: TYPE_URL_PREFIX is /"),
     ("C-0336", "no configurable connect timeout"),
     ("C-0337", "no configurable HTTP/2 keep-alive"),
 ];

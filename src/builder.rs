@@ -361,12 +361,9 @@ pub fn events_from_response(response: &CommandResponse) -> &[EventPage] {
 ///
 /// `full_type_name` is the fully-qualified protobuf type name (e.g.
 /// `"examples.OrderCreated"`, `"google.protobuf.Duration"`) — NOT a
-/// suffix. The check is exact equality against
-/// `TYPE_URL_PREFIX + full_type_name`, mirroring Python's
-/// `helpers.decode_event` (`helpers.py:439`). Suffix matching is
-/// rejected as a contract: a real `OrderCreated` and an unrelated
-/// `legacy.OrderCreated` would be indistinguishable. See
-/// PARITY_AUDIT.md finding #25.
+/// suffix. The type URL may carry any prefix; the name after its last
+/// `/` must equal `full_type_name` exactly, so a real `OrderCreated` and
+/// an unrelated `legacy.OrderCreated` stay distinct.
 pub fn decode_event<M: Message + Default>(event: &EventPage, full_type_name: &str) -> Option<M> {
     let any = match &event.payload {
         Some(crate::proto::event_page::Payload::Event(e)) => e,

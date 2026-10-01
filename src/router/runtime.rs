@@ -36,6 +36,12 @@ fn stamp_cover(err: ClientError, cover: Option<Cover>) -> ClientError {
 // responsibility — see coordinator-contract/edition_propagation.feature
 // in angzarr-project.
 
+/// True when two type URLs name the same message: any prefixes, equal full
+/// names after the last `/`.
+fn same_type(a: &str, b: &str) -> bool {
+    crate::convert::type_name_from_url(a) == crate::convert::type_name_from_url(b)
+}
+
 /// Runtime router built from one-or-more aggregate factories.
 #[derive(Debug)]
 pub struct CommandHandlerRouter {
@@ -56,7 +62,7 @@ impl CommandHandlerRouter {
 
         // R10: Notification → rejection flow, matched against each handler's
         // `#[rejected(domain, command)]` set instead of `#[handles]`.
-        if type_url == crate::full_type_url::<Notification>() {
+        if crate::convert::type_url_is::<Notification>(&type_url) {
             return self.dispatch_rejection(cmd);
         }
 
@@ -85,7 +91,7 @@ impl CommandHandlerRouter {
             if declared_domain != &cover_domain {
                 continue;
             }
-            if !handles.iter().any(|u| u == &type_url) {
+            if !handles.iter().any(|u| same_type(u, &type_url)) {
                 continue;
             }
 
@@ -361,7 +367,7 @@ impl SagaRouter {
             if declared_source != &source_domain {
                 continue;
             }
-            if !handles.iter().any(|u| u == &type_url) {
+            if !handles.iter().any(|u| same_type(u, &type_url)) {
                 continue;
             }
 
@@ -400,7 +406,6 @@ impl SagaRouter {
 }
 
 fn extract_saga_event_type_url(request: &SagaHandleRequest) -> Result<String, ClientError> {
-    use crate::convert::TYPE_URL_PREFIX;
     use crate::error_codes::{codes, keys, messages};
 
     let book = request.source.as_ref().ok_or_else(|| {
@@ -427,11 +432,10 @@ fn extract_saga_event_type_url(request: &SagaHandleRequest) -> Result<String, Cl
             ));
         }
     };
-    // P2.5 / audit finding #35: explicit-over-tolerant. Reject empty or
-    // non-googleapis type URLs the same way Python does — surfaces
-    // wire-protocol violations as INVALID_ARGUMENT rather than letting
-    // them fall through to the generic "no handler registered" path.
-    if payload.type_url.is_empty() || !payload.type_url.starts_with(TYPE_URL_PREFIX) {
+    // A type URL naming no message (empty, or ending in "/") is a
+    // wire-protocol violation: INVALID_ARGUMENT, not "no handler". Any
+    // prefix is accepted.
+    if crate::convert::type_name_from_url(&payload.type_url).is_empty() {
         return Err(ClientError::invalid_argument(
             codes::SAGA_INVALID_TYPE_URL,
             messages::SAGA_INVALID_TYPE_URL,
@@ -489,7 +493,7 @@ impl ProcessManagerRouter {
             if !declared_sources.iter().any(|s| s == &trigger_domain) {
                 continue;
             }
-            if !handles.iter().any(|u| u == &type_url) {
+            if !handles.iter().any(|u| same_type(u, &type_url)) {
                 continue;
             }
 
@@ -537,7 +541,6 @@ impl ProcessManagerRouter {
 }
 
 fn extract_pm_event_type_url(request: &ProcessManagerHandleRequest) -> Result<String, ClientError> {
-    use crate::convert::TYPE_URL_PREFIX;
     use crate::error_codes::{codes, keys, messages};
 
     let book = request.trigger.as_ref().ok_or_else(|| {
@@ -564,11 +567,9 @@ fn extract_pm_event_type_url(request: &ProcessManagerHandleRequest) -> Result<St
             ));
         }
     };
-    // Audit finding #37: explicit-over-tolerant 4th check for parity with
-    // saga (`extract_saga_event_type_url`). Empty or non-googleapis type
-    // URLs raise INVALID_ARGUMENT instead of falling through to the
-    // generic "no handler registered" path.
-    if payload.type_url.is_empty() || !payload.type_url.starts_with(TYPE_URL_PREFIX) {
+    // As for sagas: a type URL naming no message is INVALID_ARGUMENT; any
+    // prefix is accepted.
+    if crate::convert::type_name_from_url(&payload.type_url).is_empty() {
         return Err(ClientError::invalid_argument(
             codes::PM_INVALID_TYPE_URL,
             messages::PM_INVALID_TYPE_URL,
@@ -1003,21 +1004,25 @@ mod tests {
     }
 
     #[test]
-    fn extract_saga_rejects_non_googleapis_prefix() {
-        let req = saga_request_with_event("type.example.com/foo.Bar");
-        let err = extract_saga_event_type_url(&req).expect_err("non-googleapis prefix must error");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("invalid type_url"),
-            "expected message to mention 'invalid type_url', got: {msg}"
-        );
+    fn extract_saga_rejects_a_type_url_without_a_name() {
+        let req = saga_request_with_event("type.googleapis.com/");
+        let err = extract_saga_event_type_url(&req).expect_err("no name must error");
+        assert!(err.to_string().contains("invalid type_url"));
     }
 
     #[test]
-    fn extract_saga_accepts_valid_googleapis_url() {
-        let req = saga_request_with_event("type.googleapis.com/examples.OrderCreated");
-        let url = extract_saga_event_type_url(&req).expect("valid type_url must succeed");
-        assert_eq!(url, "type.googleapis.com/examples.OrderCreated");
+    fn extract_saga_accepts_any_prefix() {
+        for url in [
+            "/examples.OrderCreated",
+            "type.googleapis.com/examples.OrderCreated",
+            "type.example.com/examples.OrderCreated",
+        ] {
+            let req = saga_request_with_event(url);
+            assert_eq!(
+                extract_saga_event_type_url(&req).expect("named type_url"),
+                url
+            );
+        }
     }
 
     #[test]
@@ -1081,17 +1086,25 @@ mod tests {
     }
 
     #[test]
-    fn extract_pm_rejects_non_googleapis_prefix() {
-        let req = pm_request_with_event("type.example.com/foo.Bar");
-        let err = extract_pm_event_type_url(&req).expect_err("non-googleapis prefix must error");
+    fn extract_pm_rejects_a_type_url_without_a_name() {
+        let req = pm_request_with_event("type.googleapis.com/");
+        let err = extract_pm_event_type_url(&req).expect_err("no name must error");
         assert!(err.to_string().contains("invalid type_url"));
     }
 
     #[test]
-    fn extract_pm_accepts_valid_googleapis_url() {
-        let req = pm_request_with_event("type.googleapis.com/examples.OrderCreated");
-        let url = extract_pm_event_type_url(&req).expect("valid type_url must succeed");
-        assert_eq!(url, "type.googleapis.com/examples.OrderCreated");
+    fn extract_pm_accepts_any_prefix() {
+        for url in [
+            "/examples.OrderCreated",
+            "type.googleapis.com/examples.OrderCreated",
+            "type.example.com/examples.OrderCreated",
+        ] {
+            let req = pm_request_with_event(url);
+            assert_eq!(
+                extract_pm_event_type_url(&req).expect("named type_url"),
+                url
+            );
+        }
     }
 
     #[test]

@@ -23,9 +23,7 @@ pub fn make_timestamp() -> Timestamp {
 
 /// Pack a protobuf message into an `Any` with the canonical type URL.
 ///
-/// The type URL is derived from `M::full_name()` (the proto descriptor),
-/// prefixed with the standard `type.googleapis.com/` per the
-/// `google.protobuf.Any` spec.
+/// The type URL is [`crate::TYPE_URL_PREFIX`] (`/`) + `M::full_name()`.
 ///
 /// Audit finding #47 (Option C — drop the second arg, derive name from
 /// the message): mirrors Python's `testing.builders.pack_event(msg)`.

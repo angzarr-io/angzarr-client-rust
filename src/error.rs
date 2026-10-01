@@ -67,7 +67,7 @@ struct GoogleRpcErrorInfo {
 }
 
 /// Type URL for `google.rpc.ErrorInfo` per the canonical `Any` packing.
-const ERROR_INFO_TYPE_URL: &str = "type.googleapis.com/google.rpc.ErrorInfo";
+const ERROR_INFO_TYPE_URL: &str = "/google.rpc.ErrorInfo";
 
 /// Build the canonical `grpc-status-details-bin` payload (a serialized
 /// `google.rpc.Status` whose `details` is `repeated Any`) for an
@@ -130,12 +130,12 @@ pub fn unpack_status_details(
     let mut metadata = BTreeMap::new();
     let mut cover = None;
     for any in &status.details {
-        if any.type_url == ERROR_INFO_TYPE_URL {
+        if crate::convert::type_name_from_url(&any.type_url) == "google.rpc.ErrorInfo" {
             if let Ok(info) = GoogleRpcErrorInfo::decode(any.value.as_slice()) {
                 error_code = info.reason;
                 metadata = info.metadata.into_iter().collect();
             }
-        } else if any.type_url == crate::full_type_url::<crate::proto::Cover>() {
+        } else if crate::convert::type_url_is::<crate::proto::Cover>(&any.type_url) {
             cover = crate::proto::Cover::decode(any.value.as_slice()).ok();
         }
     }
@@ -508,13 +508,7 @@ mod tests {
         );
         let status = super::GoogleRpcStatus::decode(bytes.as_slice()).expect("status");
         let urls: Vec<&str> = status.details.iter().map(|a| a.type_url.as_str()).collect();
-        assert_eq!(
-            urls,
-            vec![
-                "type.googleapis.com/google.rpc.ErrorInfo",
-                "type.googleapis.com/io.angzarr.v1.Cover"
-            ]
-        );
+        assert_eq!(urls, vec!["/google.rpc.ErrorInfo", "/io.angzarr.v1.Cover"]);
     }
 
     use super::*;
