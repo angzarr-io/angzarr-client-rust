@@ -1,7 +1,10 @@
-//! gRPC service adapters wrapping Tier 5 unified runtime routers.
+//! gRPC service adapters wrapping the unified runtime routers.
 //!
 //! Each wrapper takes the matching `router::runtime::*Router` produced by
-//! `Router::build().into_*()?` and exposes it as a `tonic` service.
+//! `Router::build()` (one `Built` variant per kind) and exposes it as a
+//! `tonic` service. Handler dispatch is synchronous user code, so every
+//! adapter runs it on tokio's blocking pool: a handler doing blocking I/O
+//! occupies a blocking thread, never an async worker.
 
 use std::sync::Arc;
 
@@ -50,7 +53,7 @@ impl CommandHandlerService for CommandHandlerGrpc {
         request: Request<ContextualCommand>,
     ) -> Result<Response<BusinessResponse>, Status> {
         let cmd = request.into_inner();
-        let response = self.router.dispatch(cmd).map_err(client_error_to_status)?;
+        let response = on_blocking_pool(&self.router, move |r| r.dispatch(cmd)).await?;
         Ok(Response::new(response))
     }
 
@@ -69,10 +72,8 @@ impl CommandHandlerService for CommandHandlerGrpc {
                 messages::HANDLER_DOES_NOT_SUPPORT_FACT,
             ));
         }
-        let book = self
-            .router
-            .dispatch_fact(request.into_inner())
-            .map_err(client_error_to_status)?;
+        let req = request.into_inner();
+        let book = on_blocking_pool(&self.router, move |r| r.dispatch_fact(req)).await?;
         Ok(Response::new(book))
     }
 
@@ -90,10 +91,8 @@ impl CommandHandlerService for CommandHandlerGrpc {
                 messages::HANDLER_DOES_NOT_SUPPORT_REPLAY,
             ));
         }
-        let resp = self
-            .router
-            .dispatch_replay(request.into_inner())
-            .map_err(client_error_to_status)?;
+        let req = request.into_inner();
+        let resp = on_blocking_pool(&self.router, move |r| r.dispatch_replay(req)).await?;
         Ok(Response::new(resp))
     }
 }
@@ -126,7 +125,7 @@ impl SagaService for SagaGrpc {
         request: Request<SagaHandleRequest>,
     ) -> Result<Response<SagaResponse>, Status> {
         let req = request.into_inner();
-        let response = self.router.dispatch(req).map_err(client_error_to_status)?;
+        let response = on_blocking_pool(&self.router, move |r| r.dispatch(req)).await?;
         Ok(Response::new(response))
     }
 }
@@ -159,7 +158,7 @@ impl ProcessManagerService for ProcessManagerGrpc {
         request: Request<ProcessManagerHandleRequest>,
     ) -> Result<Response<ProcessManagerHandleResponse>, Status> {
         let req = request.into_inner();
-        let response = self.router.dispatch(req).map_err(client_error_to_status)?;
+        let response = on_blocking_pool(&self.router, move |r| r.dispatch(req)).await?;
         Ok(Response::new(response))
     }
 }
@@ -189,7 +188,7 @@ impl Clone for ProjectorGrpc {
 impl ProjectorService for ProjectorGrpc {
     async fn handle(&self, request: Request<EventBook>) -> Result<Response<Projection>, Status> {
         let book = request.into_inner();
-        let projection = self.router.dispatch(book).map_err(client_error_to_status)?;
+        let projection = on_blocking_pool(&self.router, move |r| r.dispatch(book)).await?;
         Ok(Response::new(projection))
     }
 
@@ -199,6 +198,29 @@ impl ProjectorService for ProjectorGrpc {
     ) -> Result<Response<Projection>, Status> {
         self.handle(request).await
     }
+}
+
+/// Run synchronous router dispatch on tokio's blocking pool and map its
+/// outcome to a gRPC status. A panicking handler becomes `INTERNAL`
+/// (`HANDLER_PANICKED`) instead of tearing down the connection task.
+async fn on_blocking_pool<R, T, F>(router: &Arc<R>, dispatch: F) -> Result<T, Status>
+where
+    R: Send + Sync + 'static,
+    T: Send + 'static,
+    F: FnOnce(&R) -> Result<T, ClientError> + Send + 'static,
+{
+    let router = Arc::clone(router);
+    tokio::task::spawn_blocking(move || dispatch(&router))
+        .await
+        .map_err(|_| {
+            with_canonical_details(
+                Code::Internal,
+                messages::HANDLER_PANICKED,
+                codes::HANDLER_PANICKED,
+                None,
+            )
+        })?
+        .map_err(client_error_to_status)
 }
 
 fn client_error_to_status(err: ClientError) -> Status {
@@ -277,7 +299,7 @@ impl UpcasterService for UpcasterGrpc {
         request: Request<UpcastRequest>,
     ) -> Result<Response<UpcastResponse>, Status> {
         let req = request.into_inner();
-        let response = self.router.dispatch(req).map_err(client_error_to_status)?;
+        let response = on_blocking_pool(&self.router, move |r| r.dispatch(req)).await?;
         Ok(Response::new(response))
     }
 }

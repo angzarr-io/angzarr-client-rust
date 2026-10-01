@@ -55,6 +55,7 @@ pub mod codes {
 
     // Dispatch — common
     pub const HANDLER_WRONG_RESPONSE_KIND: &str = "HANDLER_WRONG_RESPONSE_KIND";
+    pub const HANDLER_PANICKED: &str = "HANDLER_PANICKED";
     pub const HANDLER_WRONG_REQUEST_KIND: &str = "HANDLER_WRONG_REQUEST_KIND";
     pub const NO_HANDLER_REGISTERED: &str = "NO_HANDLER_REGISTERED";
     pub const MISSING_COMMAND_BOOK: &str = "MISSING_COMMAND_BOOK";
@@ -147,6 +148,7 @@ pub mod messages {
 
     // Dispatch — common
     pub const HANDLER_WRONG_RESPONSE_KIND: &str = "handler returned wrong response kind";
+    pub const HANDLER_PANICKED: &str = "handler panicked during dispatch";
     pub const HANDLER_WRONG_REQUEST_KIND: &str = "handler dispatched with wrong request kind";
     pub const NO_HANDLER_REGISTERED: &str =
         "no handler registered for the given (domain, type_url)";

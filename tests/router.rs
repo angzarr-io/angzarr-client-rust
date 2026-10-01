@@ -26,3 +26,6 @@ mod fact_replay;
 
 #[path = "router/mode_inference.rs"]
 mod mode_inference;
+
+#[path = "router/blocking.rs"]
+mod blocking;
