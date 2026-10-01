@@ -60,14 +60,6 @@ const PARITY_DIR: &str = "angzarr-project/parity/client";
 const PENDING: &[(&str, &str)] = &[
     ("C-0336", "no configurable connect timeout"),
     ("C-0337", "no configurable HTTP/2 keep-alive"),
-    // Per-domain root helpers and INVENTORY_PRODUCT_NAMESPACE belong to the
-    // applications that own those domains; the spec still lists them.
-    ("C-0097", "INVENTORY_PRODUCT_NAMESPACE is application-owned"),
-    ("C-0098", "per-domain root helpers are application-owned"),
-    ("C-0111", "per-domain root helpers are application-owned"),
-    ("C-0112", "inventory_product_root is application-owned"),
-    ("C-0113", "INVENTORY_PRODUCT_NAMESPACE is application-owned"),
-    ("C-0114", "customer_root is application-owned"),
     // Fact handlers that return flagging events and the NO_FACT_HANDLER
     // refusal come from angzarr-router past the pinned rev.
     (

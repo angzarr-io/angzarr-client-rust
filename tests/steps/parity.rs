@@ -69,18 +69,6 @@ const EXPORTED: &[&str] = &[
     // Identity helpers
     "compute_root",
     "to_proto_bytes",
-    // Testing helpers (`angzarr_client::testing`, `testing` feature)
-    "make_timestamp",
-    "make_cover",
-    "make_event_page",
-    "make_event_book",
-    "make_command_page",
-    "make_command_book",
-    "uuid_for",
-    "uuid_str_for",
-    "uuid_obj_for",
-    "DEFAULT_TEST_NAMESPACE",
-    "ScenarioContext",
     // Retry
     "RetryPolicy",
     "ExponentialBackoffRetry",
@@ -118,6 +106,22 @@ const EXPORTED: &[&str] = &[
     "cleanup_socket",
 ];
 
+/// Names reachable from `angzarr_client::testing` (the `testing` feature,
+/// which this crate's dev-dependency enables) and not from the root.
+const TESTING_EXPORTED: &[&str] = &[
+    "make_timestamp",
+    "make_cover",
+    "make_event_page",
+    "make_event_book",
+    "make_command_page",
+    "make_command_book",
+    "uuid_for",
+    "uuid_str_for",
+    "uuid_obj_for",
+    "DEFAULT_TEST_NAMESPACE",
+    "ScenarioContext",
+];
+
 /// Predicates implemented on `ClientError` (verified by `tests::error` below
 /// — `ClientError::is_not_found`, etc.).
 const ERROR_PREDICATES_IMPLEMENTED: &[&str] = &[
@@ -131,6 +135,14 @@ fn check(name: &str) {
     assert!(
         EXPORTED.contains(&name),
         "\"{}\" is not re-exported from angzarr_client",
+        name
+    );
+}
+
+fn check_testing(name: &str) {
+    assert!(
+        TESTING_EXPORTED.contains(&name),
+        "\"{}\" is not exported from angzarr_client::testing",
         name
     );
 }
@@ -157,6 +169,29 @@ async fn then_kind_decl_exported(_world: &mut ParityWorld, name: String) {
 #[then(expr = "the {string} method marker is exported")]
 async fn then_method_marker_exported(_world: &mut ParityWorld, name: String) {
     check(&name);
+}
+
+#[then(expr = "the {string} symbol is exported from the testing module")]
+async fn then_symbol_in_testing(_world: &mut ParityWorld, name: String) {
+    check_testing(&name);
+}
+
+#[then(expr = "the {string} constant is exported from the testing module")]
+async fn then_constant_in_testing(_world: &mut ParityWorld, name: String) {
+    check_testing(&name);
+}
+
+#[then("none of the testing helpers is exported from the client's root")]
+async fn then_testing_not_at_root(_world: &mut ParityWorld) {
+    for name in TESTING_EXPORTED {
+        assert!(
+            !EXPORTED.contains(name),
+            "\"{name}\" is re-exported from the angzarr_client root"
+        );
+    }
+    // Importing them from the root must not compile.
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/router/ui/testing_helpers_at_root.rs");
 }
 
 #[then(expr = "the {string} constant is exported")]
