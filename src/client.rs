@@ -344,7 +344,7 @@ impl QueryClient {
     /// Uses the streaming `GetEvents` RPC to fetch multiple EventBooks.
     /// For a single EventBook, use `get_event_book()` instead.
     ///
-    /// Capped at [`DEFAULT_MAX_EVENT_BOOKS`] books — a hostile or
+    /// Capped at 100,000 books — a hostile or
     /// buggy server can otherwise stream forever and OOM the client.
     /// Use [`Self::get_events_with_limit`] for a custom cap.
     pub async fn get_events(&self, query: Query) -> Result<Vec<EventBook>> {

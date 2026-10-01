@@ -214,7 +214,7 @@ impl Default for DelegationOptions {
 /// Audit #65: replaces the previous two-function split
 /// (`delegate_to_framework(reason)` + `delegate_to_framework_with_options(reason, ...)`)
 /// with a single function taking the shared options struct, matching
-/// Python's [`compensation::delegate_to_framework`].
+/// Python's `compensation.delegate_to_framework`.
 pub fn delegate_to_framework(
     reason: impl Into<String>,
     options: DelegationOptions,

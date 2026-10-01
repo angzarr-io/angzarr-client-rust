@@ -24,7 +24,7 @@
 //!     }
 //!
 //!     #[handles(RegisterPlayer)]
-//!     fn register(&self, cb: &CommandBook, cmd: RegisterPlayer, state: &PlayerState, seq: u32)
+//!     fn register(&self, cmd: RegisterPlayer, state: &PlayerState, seq: u32)
 //!         -> CommandResult<EventBook> {
 //!         // ...
 //!     }
@@ -1057,7 +1057,6 @@ pub fn saga(attr: TokenStream, item: TokenStream) -> TokenStream {
 struct SagaArgs {
     name: String,
     source: String,
-    #[allow(dead_code)] // consumed once the saga macro is R1-ified in R11
     target: String,
     /// Audit #74: whether commands emitted to ``target`` ever use sync
     /// mode. Default ``false`` — async-only target rides the bus, no
@@ -1248,13 +1247,16 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
 ///
 /// # Attributes
 /// - `name = "pm-name"` - The PM's name (required)
-/// - `domain = "pm-domain"` - The PM's own domain for state (required)
+/// - `pm_domain = "pm-domain"` - The PM's own domain for state (required)
 /// - `state = StateType` - The PM's state type (required)
-/// - `inputs = ["domain1", "domain2"]` - Input domains to subscribe to (required)
+/// - `sources = ["domain1", "domain2"]` - Domains whose events trigger it (required)
+/// - `targets = ["domain"]` - Domains it issues commands to (required)
+/// - `sync_targets = ["domain"]` - Targets addressed synchronously (optional, ⊆ targets)
 ///
 /// # Example
 /// ```rust,ignore
-/// #[process_manager(name = "hand-flow", domain = "hand-flow", state = PMState, inputs = ["table", "hand"])]
+/// #[process_manager(name = "hand-flow", pm_domain = "hand-flow", state = PMState,
+///                   sources = ["table", "hand"], targets = ["hand"])]
 /// impl HandFlowPM {
 ///     #[applies(PMStateUpdated)]
 ///     fn apply_state(state: &mut PMState, event: PMStateUpdated) {
@@ -1286,7 +1288,6 @@ struct ProcessManagerArgs {
     pm_domain: String,
     state: Ident,
     sources: Vec<String>,
-    #[allow(dead_code)] // consumed once the process_manager macro is R1-ified in R12
     targets: Vec<String>,
     /// Audit #74: subset of ``targets`` whose commands ever use sync
     /// mode. Drives readiness probing — only sync targets get an
@@ -1590,18 +1591,19 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
 ///
 /// # Attributes
 /// - `name = "projector-name"` - The projector's name (required)
+/// - `domains = ["domain", ...]` - Domains it consumes; `"*"` matches any (required)
 ///
 /// # Example
 /// ```rust,ignore
-/// #[projector(name = "output")]
+/// #[projector(name = "output", domains = ["player", "hand"])]
 /// impl OutputProjector {
-///     #[projects(PlayerRegistered)]
-///     fn project_registered(&self, event: PlayerRegistered) -> Projection {
-///         // ...
+///     #[handles(PlayerRegistered)]
+///     fn project_registered(&self, event: PlayerRegistered) -> CommandResult<()> {
+///         // side effects through &self
 ///     }
 ///
-///     #[projects(HandComplete)]
-///     fn project_hand_complete(&self, event: HandComplete) -> Projection {
+///     #[handles(HandComplete)]
+///     fn project_hand_complete(&self, event: HandComplete) -> CommandResult<()> {
 ///         // ...
 ///     }
 /// }
@@ -1621,7 +1623,6 @@ pub fn projector(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 struct ProjectorArgs {
     name: String,
-    #[allow(dead_code)] // consumed once the projector macro is R1-ified in R13
     domains: Vec<String>,
 }
 
@@ -1940,10 +1941,12 @@ impl syn::parse::Parse for UpcastsArgs {
 ///     fn upgrade(old: PlayerRegisteredV1) -> PlayerRegisteredV2 { /* ... */ }
 /// }
 ///
-/// let router = Router::new("upcaster-player")
+/// let Built::Upcaster(router) = Router::new("upcaster-player")
 ///     .with_handler(|| PlayerUpcaster)
 ///     .build()?
-///     .into_upcaster()?; // or match Built::Upcaster(r)
+/// else {
+///     unreachable!("a router of upcasters builds an upcaster router")
+/// };
 /// ```
 ///
 /// The macro emits `impl HandlerKind` + `impl Handler` on the annotated
@@ -2088,9 +2091,7 @@ fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
 }
 
 struct UpcasterArgs {
-    #[allow(dead_code)]
     name: String,
-    #[allow(dead_code)]
     domain: String,
 }
 

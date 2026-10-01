@@ -1,13 +1,7 @@
 //! Typed runtime routers — output of [`Router::build`].
 //!
 //! Each struct carries the type-erased factories the builder collected and
-//! will grow a `dispatch()` method in later rounds (R6 for command handler,
-//! R11 saga, R12 process manager, R13 projector).
-//!
-//! These types share short names with the legacy generic routers in
-//! `router/mod.rs`. During the Tier 5 transition they are reached via the
-//! `router::runtime::` path; R15 cleanup deletes the legacy types and
-//! re-exports these at `router::*`.
+//! dispatches the framework request for its kind.
 //!
 //! [`Router::build`]: crate::router::Router::build
 
@@ -53,18 +47,10 @@ pub struct CommandHandlerRouter {
 }
 
 impl CommandHandlerRouter {
-    /// Dispatch a contextual command, fanning out to every registered handler
-    /// whose `#[handles]` metadata matches the command's type URL.
-    ///
-    /// Semantics (R8):
-    /// - All matching handlers run in registration order.
-    /// - Emitted event pages are concatenated.
-    /// - Each handler rebuilds its own state independently (handled by the
-    ///   per-instance `Handler::dispatch` body the macro emits).
-    /// - Factory invocation count equals the number of matched handlers.
-    ///
-    /// Sequence threading across merged output lands in R9; rejection
-    /// routing in R10.
+    /// Dispatch a contextual command to the one handler registered for its
+    /// `(cover domain, type URL)` — `build` rejects duplicates, so at most
+    /// one matches. A Notification payload is routed to the `#[rejected]`
+    /// compensation handlers instead, which fan out in registration order.
     pub fn dispatch(&self, cmd: ContextualCommand) -> Result<BusinessResponse, ClientError> {
         let type_url = extract_command_type_url(&cmd)?;
 
@@ -859,7 +845,7 @@ impl SagaRouter {
         seen
     }
 
-    /// Audit #74: subset of [`output_domains`] that the registered
+    /// Audit #74: subset of [`Self::output_domains`] that the registered
     /// sagas ever address with sync mode (`#[saga(sync = true)]`).
     /// Drives readiness probing — only sync targets need their
     /// coordinator reachable for traffic to be safe.
@@ -923,7 +909,7 @@ impl ProcessManagerRouter {
     }
 
     /// Audit #74: flattened, deduplicated `sync_targets` across every
-    /// registered PM — the subset of [`output_domains`] that ever uses
+    /// registered PM — the subset of [`Self::output_domains`] that ever uses
     /// sync mode.
     pub fn sync_output_domains(&self) -> Vec<String> {
         let mut seen: Vec<String> = Vec::new();

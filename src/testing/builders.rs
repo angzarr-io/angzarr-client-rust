@@ -15,8 +15,7 @@ use crate::proto::{
 ///
 /// **Non-deterministic** — wraps `SystemTime::now()`. For tests that
 /// compare serialized bytes across runs (or across language siblings),
-/// use [`make_event_page_at`] / [`make_event_book_at`] etc. with an
-/// explicit timestamp instead.
+/// use [`make_event_page_at`] with an explicit timestamp instead.
 #[must_use]
 pub fn make_timestamp() -> Timestamp {
     crate::now()

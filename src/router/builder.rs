@@ -1,10 +1,11 @@
-//! Unified `Router` builder for the Tier 5 handler runtime.
+//! Unified `Router` builder.
 //!
 //! Users call [`Router::new`], register handler factories via
 //! [`Router::with_handler`], and call [`Router::build`] to obtain a typed
-//! runtime router. Factories are closures (`Fn() -> H`) invoked per dispatch
-//! so handler state is isolated per request; they are *not* invoked at
-//! registration or build time.
+//! runtime router. Factories are closures (`Fn() -> H`) invoked per
+//! matched dispatch so handler state is isolated per request. They are not
+//! invoked at registration; `build` invokes each command-handler factory
+//! exactly once (C-0065) and no other kind's.
 
 use crate::router::runtime::{
     CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter,
@@ -76,9 +77,10 @@ impl Router {
     /// Register a handler factory.
     ///
     /// `factory` is a closure that produces a fresh handler instance on
-    /// each matched dispatch call — never at registration or build time,
-    /// and never as a metadata "probe". `HandlerKind::handler_config` is
-    /// the static, instance-free source for config reads.
+    /// each matched dispatch call. It is never invoked at registration;
+    /// `build` invokes a command-handler factory once (C-0065).
+    /// `HandlerKind::handler_config` is the static, instance-free source
+    /// for config reads.
     ///
     /// Use this to close over shared dependencies (e.g. a connection
     /// pool clone). Scarce resources stay un-allocated until a dispatch

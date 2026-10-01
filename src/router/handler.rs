@@ -258,8 +258,8 @@ impl From<DispatchError> for crate::error::ClientError {
 
 /// Typed output of [`Router::build`][crate::router::Router::build].
 ///
-/// One variant per handler kind. Obtain the concrete runtime router via the
-/// matching `into_*()` accessor or a `match` on the returned value.
+/// One variant per handler kind; `match` on it to obtain the concrete
+/// runtime router, or hand it to [`crate::run_server`].
 #[derive(Debug)]
 pub enum Built {
     CommandHandler(crate::router::runtime::CommandHandlerRouter),
@@ -277,9 +277,6 @@ pub trait Handler: Send + Sync {
     fn config(&self) -> HandlerConfig;
 
     /// Execute a dispatch request against this handler.
-    ///
-    /// R1 stub — real implementations land in R6 (command), R11 (saga),
-    /// R12 (pm), R13 (projector).
     fn dispatch(&self, request: HandlerRequest) -> Result<HandlerResponse, ClientError>;
 }
 

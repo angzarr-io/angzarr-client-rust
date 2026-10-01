@@ -18,7 +18,7 @@
 //!     let response = client.command_handler
 //!         .command("cart", cart_id)
 //!         .with_command("type.googleapis.com/examples.CreateCart", &create_cart)
-//!         .execute(angzarr_client::proto::SyncMode::Async)
+//!         .execute() // SyncMode::Async; execute_with_mode(mode) picks another
 //!         .await?;
 //!
 //!     // Query events
