@@ -252,6 +252,48 @@ mod tests {
     use super::*;
     use crate::proto::CommandPage;
 
+    #[test]
+    fn decode_typed_matches_by_full_name_whatever_the_prefix() {
+        use crate::proto::{command_page, event_page, Cover, EventPage};
+        let value = prost::Message::encode_to_vec(&Cover {
+            domain: "d".into(),
+            ..Default::default()
+        });
+        for url in [
+            "/io.angzarr.v1.Cover",
+            "type.googleapis.com/io.angzarr.v1.Cover",
+        ] {
+            let any = prost_types::Any {
+                type_url: url.into(),
+                value: value.clone(),
+            };
+            let ev = EventPage {
+                payload: Some(event_page::Payload::Event(any.clone())),
+                ..Default::default()
+            };
+            assert_eq!(
+                ev.decode_typed::<Cover>().map(|c| c.domain),
+                Some("d".into())
+            );
+            let cmd = CommandPage {
+                payload: Some(command_page::Payload::Command(any)),
+                ..Default::default()
+            };
+            assert_eq!(
+                cmd.decode_typed::<Cover>().map(|c| c.domain),
+                Some("d".into())
+            );
+        }
+        let other = EventPage {
+            payload: Some(event_page::Payload::Event(prost_types::Any {
+                type_url: "/io.angzarr.v1.Edition".into(),
+                value,
+            })),
+            ..Default::default()
+        };
+        assert!(other.decode_typed::<Cover>().is_none());
+    }
+
     /// MERGE_UNSPECIFIED (unset) and unknown values read as the documented
     /// default, Commutative; set values read by name.
     #[test]

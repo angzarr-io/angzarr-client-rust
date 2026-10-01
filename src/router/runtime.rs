@@ -968,6 +968,14 @@ impl ProjectorRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_type_compares_full_names_across_prefixes() {
+        assert!(same_type("/a.B", "type.googleapis.com/a.B"));
+        assert!(same_type("/a.B", "/a.B"));
+        assert!(!same_type("/a.B", "/a.v2.B"));
+        assert!(!same_type("type.googleapis.com/a.B", "/b.B"));
+    }
     use crate::proto::{event_page, EventBook, EventPage, PageHeader};
     use prost_types::Any as ProtoAny;
 
