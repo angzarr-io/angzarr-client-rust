@@ -9,10 +9,11 @@ use uuid::Uuid;
 
 /// Compute a deterministic root UUID from domain and business key.
 ///
-/// `uuid5(NAMESPACE_OID, "angzarr" + domain + business_key)`.
+/// `uuid5(NAMESPACE_OID, domain + ":" + business_key)`. Domain names never
+/// contain `':'`, so every `(domain, key)` pair hashes a distinct name.
 pub fn compute_root(domain: &str, business_key: &str) -> Uuid {
-    let seed = format!("angzarr{}{}", domain, business_key);
-    Uuid::new_v5(&Uuid::NAMESPACE_OID, seed.as_bytes())
+    let name = format!("{domain}:{business_key}");
+    Uuid::new_v5(&Uuid::NAMESPACE_OID, name.as_bytes())
 }
 
 /// Convert a UUID to its 16-byte proto representation.
@@ -25,13 +26,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compute_root_matches_python() {
-        // Verified byte-equal with Python's:
-        //   compute_root("player", "alice@x.com") = 8cf1fb5d-45ce-58c2-a7e4-34359eb42d7c
+    fn compute_root_is_uuid5_of_domain_colon_key() {
         assert_eq!(
-            compute_root("player", "alice@x.com").to_string(),
-            "8cf1fb5d-45ce-58c2-a7e4-34359eb42d7c"
+            compute_root("cart", "alice"),
+            Uuid::new_v5(&Uuid::NAMESPACE_OID, b"cart:alice")
         );
+        assert_eq!(
+            compute_root("cart", "alice").to_string(),
+            "92ab9191-4f7d-5ff2-adcf-93a1e494c055"
+        );
+    }
+
+    #[test]
+    fn compute_root_keeps_the_domain_key_boundary() {
+        assert_ne!(compute_root("ab", "c"), compute_root("a", "bc"));
     }
 
     #[test]

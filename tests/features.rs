@@ -68,6 +68,16 @@ const PENDING: &[(&str, &str)] = &[
     ("C-0112", "inventory_product_root is application-owned"),
     ("C-0113", "INVENTORY_PRODUCT_NAMESPACE is application-owned"),
     ("C-0114", "customer_root is application-owned"),
+    // Fact handlers that return flagging events and the NO_FACT_HANDLER
+    // refusal come from angzarr-router past the pinned rev.
+    (
+        "C-0490",
+        "pinned angzarr-router records facts without flags",
+    ),
+    (
+        "C-0491",
+        "pinned angzarr-router passes undeclared facts through",
+    ),
 ];
 
 /// Outcome of one feature run.

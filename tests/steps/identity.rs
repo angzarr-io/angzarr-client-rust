@@ -51,6 +51,18 @@ async fn then_uuids_differ(world: &mut IdentityWorld) {
     assert_ne!(first, second);
 }
 
+#[then(expr = "the first UUID equals {string}")]
+async fn then_first_uuid_equals(world: &mut IdentityWorld, expected: String) {
+    assert!(world.calls.len() >= 2);
+    assert_eq!(world.calls[world.calls.len() - 2].to_string(), expected);
+}
+
+#[then(expr = "the second UUID equals {string}")]
+async fn then_second_uuid_equals(world: &mut IdentityWorld, expected: String) {
+    let last = world.calls.last().expect("no UUID computed");
+    assert_eq!(last.to_string(), expected);
+}
+
 #[then(expr = "the resulting UUID equals {string}")]
 async fn then_uuid_equals(world: &mut IdentityWorld, expected: String) {
     let last = world.calls.last().expect("no UUID computed");
