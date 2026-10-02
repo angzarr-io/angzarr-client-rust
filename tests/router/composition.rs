@@ -129,6 +129,7 @@ fn rejection_of<M: ::prost::Message + ::prost::Name>(cmd: &M, sent_to: &str) -> 
                 }],
             }),
             rejection_reason: "no".into(),
+            ..Default::default()
         })),
         ..Default::default()
     };
@@ -367,6 +368,7 @@ fn a_rejection_routes_to_its_issuing_process_manager() {
                 }],
             }),
             rejection_reason: "no stock".into(),
+            ..Default::default()
         })),
         ..Default::default()
     };

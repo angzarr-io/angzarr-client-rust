@@ -345,6 +345,7 @@ mod tests {
         let rejection = RejectionNotification {
             rejected_command: Some(rejected_command),
             rejection_reason: reason.to_string(),
+            ..Default::default()
         };
 
         let mut buf = Vec::new();
@@ -410,6 +411,7 @@ mod tests {
         let rejection = RejectionNotification {
             rejected_command: None,
             rejection_reason: "no command".into(),
+            ..Default::default()
         };
         let mut buf = Vec::new();
         rejection.encode(&mut buf).unwrap();
@@ -440,6 +442,7 @@ mod tests {
         let rejection = RejectionNotification {
             rejected_command: Some(rejected_command),
             rejection_reason: "x".into(),
+            ..Default::default()
         };
         let mut buf = Vec::new();
         rejection.encode(&mut buf).unwrap();
