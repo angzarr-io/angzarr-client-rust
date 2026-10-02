@@ -36,7 +36,12 @@ pub struct CompensationContext {
     /// Sequence of the event that triggered the saga/PM command.
     pub source_event_sequence: u32,
 
-    /// Why the command was rejected (e.g. "insufficient_funds").
+    /// Machine rejection code (the rejecting handler's `ErrorInfo.reason`,
+    /// e.g. "INSUFFICIENT_FUNDS"); empty when the rejection carried none.
+    /// Compensation logic branches on this, never on `rejection_reason`.
+    pub rejection_code: String,
+
+    /// Human-readable rejection message, for logs and display.
     pub rejection_reason: String,
 
     /// The command that was rejected (full context).
@@ -106,6 +111,7 @@ impl CompensationContext {
 
         Ok(CompensationContext {
             source_event_sequence: deferred.source_seq,
+            rejection_code: rejection.code,
             rejection_reason: rejection.rejection_reason,
             rejected_command: Some(cmd),
             source_aggregate: deferred.source,
@@ -369,6 +375,34 @@ mod tests {
         );
         let ctx = CompensationContext::from_notification(&notification).unwrap();
         assert_eq!(ctx.rejection_reason, "insufficient_funds");
+    }
+
+    #[test]
+    fn from_notification_keeps_code_and_message_apart() {
+        let mut notification = make_rejection_notification(
+            "card was declined by the issuer",
+            "payments",
+            "type.googleapis.com/examples.ChargeCard",
+        );
+        let payload = notification.payload.as_mut().unwrap();
+        let mut rejection = RejectionNotification::decode(payload.value.as_slice()).unwrap();
+        rejection.code = "CARD_DECLINED".into();
+        payload.value = rejection.encode_to_vec();
+
+        let ctx = CompensationContext::from_notification(&notification).unwrap();
+        assert_eq!(ctx.rejection_code, "CARD_DECLINED");
+        assert_eq!(ctx.rejection_reason, "card was declined by the issuer");
+    }
+
+    #[test]
+    fn a_rejection_without_a_code_has_an_empty_code() {
+        let notification = make_rejection_notification(
+            "declined",
+            "payments",
+            "type.googleapis.com/examples.ChargeCard",
+        );
+        let ctx = CompensationContext::from_notification(&notification).unwrap();
+        assert_eq!(ctx.rejection_code, "");
     }
 
     #[test]

@@ -489,3 +489,69 @@ fn a_new_workflow_reaches_only_process_managers_consuming_its_domain() {
         .expect("dispatch");
     assert_eq!(*log.lock().unwrap(), vec!["pm-a"]);
 }
+
+/// What a `#[rejected]` handler read from the rejection it received.
+type Seen = Arc<Mutex<Option<(String, String)>>>;
+
+struct CodeReader(Seen);
+#[command_handler(domain = "payment", state = NoState)]
+impl CodeReader {
+    #[rejected(domain = "payment", command = ProcessPayment)]
+    fn on_payment(&self, n: &Notification, _s: &NoState) -> CommandResult<BusinessResponse> {
+        let rejection: RejectionNotification =
+            angzarr_client::unpack(n.payload.as_ref().expect("notification payload"))
+                .expect("rejection notification");
+        *self.0.lock().unwrap() = Some((rejection.code, rejection.rejection_reason));
+        Ok(BusinessResponse::default())
+    }
+}
+
+/// The rejecting handler's machine code reaches the compensator next to,
+/// and separate from, the human message.
+#[test]
+fn a_rejected_handler_reads_the_code_apart_from_the_message() {
+    let seen: Seen = Arc::default();
+    let s = Arc::clone(&seen);
+    let Built::CommandHandler(router) = Router::new("payments")
+        .with_handler(move || CodeReader(Arc::clone(&s)))
+        .build()
+        .expect("build")
+    else {
+        panic!("expected a command-handler router");
+    };
+    let notification = Notification {
+        payload: Some(pack(&RejectionNotification {
+            rejected_command: Some(CommandBook {
+                cover: Some(Cover {
+                    domain: "payment".into(),
+                    ..Default::default()
+                }),
+                pages: vec![CommandPage {
+                    payload: Some(command_page::Payload::Command(pack(&ProcessPayment {}))),
+                    ..Default::default()
+                }],
+            }),
+            rejection_reason: "card was declined by the issuer".into(),
+            code: "CARD_DECLINED".into(),
+        })),
+        ..Default::default()
+    };
+    router
+        .dispatch(ContextualCommand {
+            command: Some(CommandBook {
+                cover: Some(Cover {
+                    domain: "payment".into(),
+                    ..Default::default()
+                }),
+                pages: vec![CommandPage {
+                    payload: Some(command_page::Payload::Command(pack(&notification))),
+                    ..Default::default()
+                }],
+            }),
+            events: None,
+        })
+        .expect("dispatch");
+    let (code, message) = seen.lock().unwrap().clone().expect("handler ran");
+    assert_eq!(code, "CARD_DECLINED");
+    assert_eq!(message, "card was declined by the issuer");
+}
