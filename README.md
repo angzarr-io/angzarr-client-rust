@@ -67,47 +67,46 @@ Method markers inside the impl block:
 | Marker | Applies to | Role |
 |--------|-----------|------|
 | `#[handles(MessageType)]` | Any kind | Register a handler for an incoming message |
+| `#[handles_fact(EventType)]` | command_handler | Record a fact (optionally with flag events) |
 | `#[applies(EventType)]` | command_handler, process_manager | Mutate state during replay |
-| `#[rejected(domain, command)]` | command_handler, saga, process_manager | Receive a rejection notification and emit compensation |
+| `#[rejected(command = Type)]` | command_handler, process_manager | Receive a rejection notification and emit compensation |
 | `#[state_factory]` | command_handler, process_manager | Override `Default::default()` for initial state |
 | `#[upcasts(from, to)]` | upcaster | Transform one event type into another |
+
+The attributes and markers live in `angzarr_client::router`, next to
+`angzarr_client::router::binding` — the angzarr-router engine they register
+handlers with. Dispatch behaviour is the router's, specified by
+angzarr-router's conformance suite.
 
 ### Command-handler example
 
 ```rust,ignore
-use angzarr_client::{command_handler, handles, applies, CommandResult};
 use angzarr_client::proto::EventBook;
+use angzarr_client::router::{applies, command_handler, handles};
+use angzarr_client::{CommandRejectedError, CommandResult};
 
 #[derive(Default, Clone)]
-struct PlayerState {
-    player_id: String,
-    bankroll: u64,
+struct CounterState {
+    value: u64,
 }
 
-struct Player {
-    db_pool: DbPool,
-}
+struct Counter;
 
-impl Player {
-    pub fn new(db_pool: DbPool) -> Self { Self { db_pool } }
-}
-
-#[command_handler(domain = "player", state = PlayerState)]
-impl Player {
-    #[applies(PlayerRegistered)]
-    fn apply_registered(state: &mut PlayerState, evt: PlayerRegistered) {
-        state.player_id = evt.player_id;
+#[command_handler(domain = "counter", state = CounterState)]
+impl Counter {
+    #[applies(Increased)]
+    fn apply_increased(state: &mut CounterState, evt: Increased) {
+        state.value += evt.by;
     }
 
-    #[handles(RegisterPlayer)]
-    fn register(
-        &self,
-        cmd: RegisterPlayer,
-        state: &PlayerState,
-        seq: u32,
-    ) -> CommandResult<EventBook> {
-        if !state.player_id.is_empty() {
-            return Err(CommandRejectedError::precondition_failed("player already exists").into());
+    #[handles(Increase)]
+    fn increase(&self, cmd: Increase, state: &CounterState, seq: u32) -> CommandResult<EventBook> {
+        if cmd.by == 0 {
+            return Err(CommandRejectedError::invalid_argument(
+                "ZERO_INCREASE",
+                "increase must be positive",
+                [("by", "0")],
+            ));
         }
         // build and return the event book
         // ...
@@ -115,34 +114,35 @@ impl Player {
 }
 ```
 
-## Router
+## Component host
 
-One builder, one entry point:
+`ComponentHost` serves components next to the gRPC health service, plus any
+gRPC services the application registers:
 
 ```rust,ignore
-use angzarr_client::{run_server, Router};
+use angzarr_client::{configure_logging, ComponentHost};
 
 #[tokio::main]
 async fn main() -> angzarr_client::Result<()> {
-    let built = Router::new("agg-player")
-        .with_handler({
-            let pool = db_pool.clone();
-            move || Player::new(pool.clone())
-        })
-        .with_handler({
-            let rng = rng.clone();
-            move || Hand::new(rng.clone())
-        })
-        .build()?;
-
-    run_server("agg-player", 50001, built).await?;
-    Ok(())
+    configure_logging();
+    ComponentHost::new()
+        .with_handler(|| Counter)
+        .with_service(MyReportServiceServer::new(MyReports::default()))
+        .serve()
+        .await
 }
 ```
 
-The factory closure runs once per dispatch, so each request gets a fresh handler instance. Close over shared deps (`move || Player::new(pool.clone())`) or hand in a pool-checkout closure.
-
-`Router::build()` returns `Built::CommandHandler / Saga / ProcessManager / Projector / Upcaster` based on the kinds present. Mixing kinds in one router is a `BuildError::MixedKinds`.
+- Transport comes from the environment (`get_transport_config`): TCP, or a
+  Unix socket the host removes on shutdown.
+- Components of one kind share one router, which routes among them (e.g.
+  aggregates by domain). The factory closure runs once per dispatch, so
+  close over shared dependencies (`move || Ledger::new(pool.clone())`).
+- Health reports `NOT_SERVING` until the listener is bound and every sync
+  output domain is reachable, then `SERVING`; on SIGINT / SIGTERM it reports
+  `NOT_SERVING`, waits the drain period (`with_drain_period`), then stops
+  accepting and lets in-flight calls finish.
+- A host with no components refuses to start.
 
 ## Clients
 
@@ -267,5 +267,14 @@ just test            # run lib + cucumber tests
 just lint            # cargo clippy -D warnings
 just fmt             # cargo fmt --check
 just fmt-fix         # cargo fmt
-just mutation-test   # cargo-mutants (70% kill-rate threshold)
+just mutation-test   # cargo-mutants (70% kill-rate threshold; ephemeral container)
 ```
+
+> **Mutation testing is ephemeral.** `just mutation-test` runs inside a
+> container with the workspace mounted **read-only**; mutated source lives
+> in the container's writable overlay and is destroyed by `--rm` on exit.
+> Running `cargo mutants` directly on the host is **forbidden** — a crashed
+> run would leak mutated files into your working tree. Only
+> `mutants.out/outcomes.json` is copied back to the host. The
+> `.mutants-cache/` directory holds compiled artifacts (never mutated
+> source) and is gitignored; purge with `just mutants-purge-cache`.

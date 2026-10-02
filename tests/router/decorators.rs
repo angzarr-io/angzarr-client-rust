@@ -4,8 +4,8 @@
 //! R2 covers method-level metadata — `#[handles]`, `#[rejected]`, `#[applies]`,
 //! `#[state_factory]` — recoverable through `Handler::config()`.
 
-use angzarr_client::command_handler;
 use angzarr_client::proto::EventBook;
+use angzarr_client::router::command_handler;
 use angzarr_client::router::{Handler, HandlerConfig, Kind};
 use angzarr_client::CommandResult;
 
@@ -26,6 +26,7 @@ macro_rules! test_proto {
 
 test_proto!(RegisterPlayer);
 test_proto!(DepositFunds);
+test_proto!(ProcessPayment);
 test_proto!(PlayerRegistered);
 test_proto!(FundsDeposited);
 
@@ -80,7 +81,7 @@ impl Player {
         Ok(EventBook::default())
     }
 
-    #[rejected(domain = "payment", command = "ProcessPayment")]
+    #[rejected(domain = "payment", command = ProcessPayment)]
     #[allow(unused_variables, dead_code)]
     fn on_payment_rejected(
         &self,
@@ -122,8 +123,8 @@ fn handles_stashes_type_urls_in_declaration_order() {
             assert_eq!(
                 handled,
                 vec![
-                    "type.googleapis.com/test.RegisterPlayer".to_string(),
-                    "type.googleapis.com/test.DepositFunds".to_string(),
+                    "/test.RegisterPlayer".to_string(),
+                    "/test.DepositFunds".to_string(),
                 ]
             );
         }
@@ -138,8 +139,8 @@ fn applies_stashes_event_type_urls_in_declaration_order() {
             assert_eq!(
                 applies,
                 vec![
-                    "type.googleapis.com/test.PlayerRegistered".to_string(),
-                    "type.googleapis.com/test.FundsDeposited".to_string(),
+                    "/test.PlayerRegistered".to_string(),
+                    "/test.FundsDeposited".to_string(),
                 ]
             );
         }
@@ -150,10 +151,13 @@ fn applies_stashes_event_type_urls_in_declaration_order() {
 #[test]
 fn rejected_stashes_domain_and_command_pairs() {
     match Player.config() {
-        HandlerConfig::CommandHandler { rejected, .. } => {
+        HandlerConfig::CommandHandler { compensates, .. } => {
             assert_eq!(
-                rejected,
-                vec![("payment".to_string(), "ProcessPayment".to_string())]
+                compensates,
+                vec![format!(
+                    "payment:{}",
+                    <ProcessPayment as prost::Name>::full_name()
+                )]
             );
         }
         other => panic!("expected CommandHandler, got {:?}", other),
@@ -202,8 +206,8 @@ fn state_factory_is_none_when_absent() {
 // Audit #74: readiness sync-target metadata.
 // ----------------------------------------------------------------------------
 
+use angzarr_client::router::{process_manager, saga};
 use angzarr_client::router::{Built, Router};
-use angzarr_client::{process_manager, saga};
 
 test_proto!(InventoryReserved);
 test_proto!(SecondEvt);

@@ -1,0 +1,19 @@
+error: expected a message type, e.g. #[handles(MyMessage)]
+  --> tests/router/ui/malformed_handles_marker.rs:22:15
+   |
+22 |     #[handles("Cmd")]
+   |               ^^^^^
+
+warning: unused import: `angzarr_client::proto::EventBook`
+ --> tests/router/ui/malformed_handles_marker.rs:5:5
+  |
+5 | use angzarr_client::proto::EventBook;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `angzarr_client::CommandResult`
+ --> tests/router/ui/malformed_handles_marker.rs:6:5
+  |
+6 | use angzarr_client::CommandResult;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

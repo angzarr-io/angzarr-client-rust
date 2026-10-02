@@ -20,6 +20,7 @@ pub struct CommandBuilder<'a, C: traits::GatewayClient> {
     correlation_id: Option<String>,
     sequence: Option<u32>,
     merge_strategy: crate::proto::MergeStrategy,
+    sync_mode: Option<crate::proto::SyncMode>,
     type_url: Option<String>,
     payload: Option<Vec<u8>>,
 }
@@ -42,6 +43,7 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
             correlation_id: None,
             sequence: None,
             merge_strategy: crate::proto::MergeStrategy::MergeCommutative,
+            sync_mode: None,
             type_url: None,
             payload: None,
         }
@@ -55,7 +57,6 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
     }
 
     /// Set the expected sequence number for optimistic locking.
-    /// This is required - the builder will fail without it.
     pub fn with_sequence(mut self, seq: u32) -> Self {
         self.sequence = Some(seq);
         self
@@ -68,6 +69,19 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
         self
     }
 
+    /// Set the sync mode stamped onto the built `CommandPage`'s header.
+    ///
+    /// When unset, [`build`](Self::build) emits a header with
+    /// `sync_mode = None`, and [`execute`](Self::execute) supplies
+    /// `SyncMode::Async` (the cross-language default). Calling this
+    /// makes the `build()` output round-trip the choice — important
+    /// for callers who hand the produced `CommandBook` to a transport
+    /// helper that doesn't accept a separate `sync_mode` argument.
+    pub fn with_sync_mode(mut self, mode: crate::proto::SyncMode) -> Self {
+        self.sync_mode = Some(mode);
+        self
+    }
+
     /// Set the command type URL and message.
     pub fn with_command<M: Message>(mut self, type_url: impl Into<String>, message: &M) -> Self {
         self.type_url = Some(type_url.into());
@@ -75,13 +89,31 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
         self
     }
 
+    /// Set the command type URL alone; pair with
+    /// [`with_payload`](Self::with_payload).
+    pub fn with_type_url(mut self, type_url: impl Into<String>) -> Self {
+        self.type_url = Some(type_url.into());
+        self
+    }
+
+    /// Set the already-encoded command payload; pair with
+    /// [`with_type_url`](Self::with_type_url).
+    pub fn with_payload(mut self, payload: Vec<u8>) -> Self {
+        self.payload = Some(payload);
+        self
+    }
+
     /// Build the CommandBook without executing.
     ///
-    /// `type_url` and `payload` (set together by [`CommandBuilder::with_command`])
-    /// and `sequence` (set by [`CommandBuilder::with_sequence`]) are all
-    /// required — matching Python's `CommandBuilder.build` contract
-    /// (`builder.py:83-84`). `correlation_id` defaults to a fresh random
-    /// UUID when unset.
+    /// Requires a type URL and payload ([`with_command`](Self::with_command),
+    /// or [`with_type_url`](Self::with_type_url) plus
+    /// [`with_payload`](Self::with_payload)); without either `build()`
+    /// returns `COMMAND_TYPE_URL_MISSING` / `COMMAND_PAYLOAD_MISSING`.
+    /// The sequence defaults to 0 (a new aggregate) when
+    /// [`with_sequence`](Self::with_sequence) is not called.
+    /// `correlation_id` defaults to a fresh random UUID v4; `sync_mode`
+    /// rides into the page header iff [`with_sync_mode`](Self::with_sync_mode)
+    /// was called.
     pub fn build(self) -> Result<CommandBook> {
         let type_url = self.type_url.ok_or_else(|| {
             ClientError::invalid_argument(
@@ -97,13 +129,7 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
                 std::iter::empty::<(String, String)>(),
             )
         })?;
-        let sequence = self.sequence.ok_or_else(|| {
-            ClientError::invalid_argument(
-                codes::COMMAND_SEQUENCE_MISSING,
-                messages::COMMAND_SEQUENCE_MISSING,
-                std::iter::empty::<(String, String)>(),
-            )
-        })?;
+        let sequence = self.sequence.unwrap_or(0);
         let correlation_id = self
             .correlation_id
             .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -113,12 +139,12 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
                 domain: self.domain,
                 root: self.root.map(uuid_to_proto),
                 correlation_id,
-                edition: None,
+                ..Default::default()
             }),
             pages: vec![CommandPage {
                 header: Some(PageHeader {
                     sequence_type: Some(SequenceType::Sequence(sequence)),
-                    sync_mode: None,
+                    sync_mode: self.sync_mode.map(|m| m as i32),
                 }),
                 merge_strategy: self.merge_strategy as i32,
                 payload: Some(crate::proto::command_page::Payload::Command(
@@ -131,15 +157,29 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
         })
     }
 
-    /// Execute the command with the given sync mode.
+    /// Execute the command, defaulting to `SyncMode::Async`
+    /// (fire-and-forget) — the cross-language default mirroring
+    /// Python's `CommandBuilder.execute(sync_mode=ASYNC)` kwarg
+    /// default. Use [`Self::execute_with_mode`] or
+    /// [`Self::with_sync_mode`] + `execute()` to override.
+    pub async fn execute(self) -> Result<CommandResponse> {
+        let mode = self.sync_mode.unwrap_or(crate::proto::SyncMode::Async);
+        self.execute_with_mode(mode).await
+    }
+
+    /// Execute the command with an explicit sync mode.
     ///
-    /// Pass `SyncMode::Async` for fire-and-forget (the cross-language
-    /// default), `SyncMode::Simple` to wait for sync projectors, or
-    /// `SyncMode::Cascade` for full sync including saga cascade.
-    /// Mirrors Python's `CommandBuilder.execute(sync_mode=...)`
-    /// (`builder.py:104`). P2.4b / audit finding #13.
-    pub async fn execute(self, sync_mode: crate::proto::SyncMode) -> Result<CommandResponse> {
+    /// `SyncMode::Async` for fire-and-forget, `SyncMode::Simple` to
+    /// wait for sync projectors, `SyncMode::Cascade` for full sync
+    /// including saga cascade.
+    pub async fn execute_with_mode(
+        mut self,
+        sync_mode: crate::proto::SyncMode,
+    ) -> Result<CommandResponse> {
         let client = self.client;
+        // Stamp on the builder so `build()` round-trips the mode into
+        // the page header, then delegate to the gateway.
+        self.sync_mode = Some(sync_mode);
         let command = self.build()?;
         client.execute_with_sync_mode(command, sync_mode).await
     }
@@ -167,7 +207,11 @@ impl<'a, C: traits::QueryClient> QueryBuilder<'a, C> {
         }
     }
 
-    /// Query by correlation ID instead of root.
+    /// Set the correlation ID stamped on the query's cover, and clear
+    /// `root` — correlation-ID queries select across roots in the domain.
+    ///
+    /// Mirrors the cross-language gherkin contract `@C-0095` /
+    /// `@C-0096` and Python's `builder.py:178` (`self._root = None`).
     pub fn by_correlation_id(mut self, id: impl Into<String>) -> Self {
         self.correlation_id = Some(id.into());
         self.root = None;
@@ -180,18 +224,32 @@ impl<'a, C: traits::QueryClient> QueryBuilder<'a, C> {
         self
     }
 
-    /// Query a range of sequences (inclusive lower bound).
-    pub fn range(mut self, lower: u32) -> Self {
-        self.selection = Some(Selection::Range(SequenceRange { lower, upper: None }));
-        self
-    }
-
-    /// Query a range of sequences with upper bound (inclusive).
-    pub fn range_to(mut self, lower: u32, upper: u32) -> Self {
-        self.selection = Some(Selection::Range(SequenceRange {
-            lower,
-            upper: Some(upper),
-        }));
+    /// Restrict the query to a range of sequences.
+    ///
+    /// Accepts any standard Rust `RangeBounds<u32>` form:
+    /// `range(N..)` (open upper), `range(N..=M)` (inclusive upper),
+    /// `range(..M)` (no lower bound, inclusive upper), `range(..=M)`,
+    /// `range(..)`. Both bounds are coerced into the
+    /// inclusive-lower / inclusive-upper `SequenceRange` proto shape;
+    /// an exclusive upper (`N..M`) decrements `M` by one.
+    pub fn range(mut self, range: impl std::ops::RangeBounds<u32>) -> Self {
+        use std::ops::Bound;
+        let lower = match range.start_bound() {
+            Bound::Included(&n) => n,
+            Bound::Excluded(&n) => n.saturating_add(1),
+            Bound::Unbounded => 0,
+        };
+        // The wire range is `[lower, upper]` with an inclusive upper. An
+        // exclusive end at or below `lower` selects nothing, which is
+        // encoded as `upper < lower` (`..0` needs `lower` raised to 1,
+        // since no upper is below 0).
+        let (lower, upper) = match range.end_bound() {
+            Bound::Included(&n) => (lower, Some(n)),
+            Bound::Excluded(&0) => (lower.max(1), Some(0)),
+            Bound::Excluded(&n) => (lower, Some(n - 1)),
+            Bound::Unbounded => (lower, None),
+        };
+        self.selection = Some(Selection::Range(SequenceRange { lower, upper }));
         self
     }
 
@@ -212,28 +270,30 @@ impl<'a, C: traits::QueryClient> QueryBuilder<'a, C> {
         Ok(self)
     }
 
-    /// Build the Query without executing.
+    /// Build the Query without executing. Auto-generates a fresh
+    /// correlation ID if one wasn't supplied — matches `CommandBuilder`
+    /// so traces are joinable on the query side too.
     pub fn build(self) -> Query {
-        self.build_inner()
-    }
-
-    fn build_inner(&self) -> Query {
         Query {
             cover: Some(Cover {
-                domain: self.domain.clone(),
+                domain: self.domain,
                 root: self.root.map(uuid_to_proto),
-                correlation_id: self.correlation_id.clone().unwrap_or_default(),
-                edition: self.edition.clone().map(Edition::from),
+                correlation_id: self
+                    .correlation_id
+                    .unwrap_or_else(|| Uuid::new_v4().to_string()),
+                edition: self
+                    .edition
+                    .map(<Edition as crate::proto_ext::edition::EditionNew>::implicit),
+                ..Default::default()
             }),
-            selection: self.selection.clone(),
+            selection: self.selection,
         }
     }
 
     /// Execute the query and return a single EventBook (unary RPC).
     pub async fn get_event_book(self) -> Result<EventBook> {
         let client = self.client;
-        let query = self.build_inner();
-        client.get_event_book(query).await
+        client.get_event_book(self.build()).await
     }
 
     /// Execute the query and return all matching EventBooks (streaming RPC).
@@ -241,8 +301,7 @@ impl<'a, C: traits::QueryClient> QueryBuilder<'a, C> {
     /// Mirrors Python's `QueryBuilder.get_events` (`builder.py:235`).
     pub async fn get_events(self) -> Result<Vec<EventBook>> {
         let client = self.client;
-        let query = self.build_inner();
-        client.get_events(query).await
+        client.get_events(self.build()).await
     }
 
     /// Execute the query and return just the event pages.
@@ -304,12 +363,9 @@ pub fn events_from_response(response: &CommandResponse) -> &[EventPage] {
 ///
 /// `full_type_name` is the fully-qualified protobuf type name (e.g.
 /// `"examples.OrderCreated"`, `"google.protobuf.Duration"`) — NOT a
-/// suffix. The check is exact equality against
-/// `TYPE_URL_PREFIX + full_type_name`, mirroring Python's
-/// `helpers.decode_event` (`helpers.py:439`). Suffix matching is
-/// rejected as a contract: a real `OrderCreated` and an unrelated
-/// `legacy.OrderCreated` would be indistinguishable. See
-/// PARITY_AUDIT.md finding #25.
+/// suffix. The type URL may carry any prefix; the name after its last
+/// `/` must equal `full_type_name` exactly, so a real `OrderCreated` and
+/// an unrelated `legacy.OrderCreated` stay distinct.
 pub fn decode_event<M: Message + Default>(event: &EventPage, full_type_name: &str) -> Option<M> {
     let any = match &event.payload {
         Some(crate::proto::event_page::Payload::Event(e)) => e,
@@ -324,7 +380,6 @@ pub fn decode_event<M: Message + Default>(event: &EventPage, full_type_name: &st
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{Cover, Uuid as ProtoUuid};
     use async_trait::async_trait;
 
     // Mock client for testing QueryBuilder
@@ -374,16 +429,8 @@ mod tests {
         }
     }
 
-    fn make_cover(domain: &str, correlation_id: &str, root: Option<Uuid>) -> Cover {
-        Cover {
-            domain: domain.to_string(),
-            correlation_id: correlation_id.to_string(),
-            root: root.map(|u| ProtoUuid {
-                value: u.as_bytes().to_vec(),
-            }),
-            edition: None,
-        }
-    }
+    // (test fixture `make_cover` previously here was unused after
+    // earlier refactors; deleted on Theme 4 cleanup.)
 
     // CommandBuilder tests
     #[test]
@@ -494,33 +541,52 @@ mod tests {
     }
 
     #[test]
-    fn test_command_builder_build_missing_sequence_is_invalid_argument() {
-        // Sequence is required, matching Python builder.py:83-84 which
-        // raises InvalidArgumentError("sequence not set (call with_sequence)").
+    fn test_command_builder_build_without_sequence_defaults_to_zero() {
         let client = MockGatewayClient::new(CommandResponse::default());
-        let root = Uuid::new_v4();
         let msg = prost_types::Duration {
             seconds: 42,
             nanos: 0,
         };
-        let result = CommandBuilder::new(&client, "orders", root)
+        let book = CommandBuilder::new(&client, "orders", Uuid::new_v4())
             .with_command("type.googleapis.com/test.Command", &msg)
-            .build();
+            .build()
+            .expect("sequence defaults to 0");
+        let header = book.pages[0].header.as_ref().expect("header");
+        assert_eq!(header.sequence_type, Some(SequenceType::Sequence(0)));
+    }
 
-        let err = result.expect_err("build should fail when sequence is unset");
-        assert!(
-            err.is_invalid_argument(),
-            "expected InvalidArgument, got {:?}",
-            err
-        );
-        assert!(err.to_string().contains("sequence not set"));
+    #[test]
+    fn test_command_builder_type_url_without_payload_is_payload_missing() {
+        let client = MockGatewayClient::new(CommandResponse::default());
+        let err = CommandBuilder::new(&client, "orders", Uuid::new_v4())
+            .with_type_url("type.googleapis.com/test.Command")
+            .build()
+            .expect_err("payload is required");
+        assert_eq!(err.code(), codes::COMMAND_PAYLOAD_MISSING);
+    }
+
+    #[test]
+    fn test_command_builder_type_url_and_payload_set_separately() {
+        let client = MockGatewayClient::new(CommandResponse::default());
+        let book = CommandBuilder::new(&client, "orders", Uuid::new_v4())
+            .with_payload(vec![1, 2, 3])
+            .with_type_url("type.googleapis.com/test.Command")
+            .build()
+            .expect("type URL and payload set");
+        match &book.pages[0].payload {
+            Some(crate::proto::command_page::Payload::Command(any)) => {
+                assert_eq!(any.type_url, "type.googleapis.com/test.Command");
+                assert_eq!(any.value, vec![1, 2, 3]);
+            }
+            other => panic!("expected a command payload, got {other:?}"),
+        }
     }
 
     #[tokio::test]
     async fn test_command_builder_execute_propagates_async() {
-        // P2.4b / audit finding #13: `execute(sync_mode)` mirrors
-        // Python's `CommandBuilder.execute(sync_mode=...)` — the
-        // per-call mode reaches the gateway untouched.
+        // P2.4b / audit finding #13: per-call sync mode reaches the
+        // gateway untouched. Now uses the explicit-mode entry point
+        // since `execute()` defaults to ASYNC silently.
         let client = MockGatewayClient::new(CommandResponse::default());
         let root = Uuid::new_v4();
         let msg = prost_types::Duration {
@@ -530,7 +596,7 @@ mod tests {
         let _ = CommandBuilder::new(&client, "orders", root)
             .with_sequence(0)
             .with_command("type.googleapis.com/test.Command", &msg)
-            .execute(crate::proto::SyncMode::Async)
+            .execute_with_mode(crate::proto::SyncMode::Async)
             .await;
         assert_eq!(
             *client.last_sync_mode.lock().unwrap(),
@@ -549,7 +615,7 @@ mod tests {
         let _ = CommandBuilder::new(&client, "orders", root)
             .with_sequence(0)
             .with_command("type.googleapis.com/test.Command", &msg)
-            .execute(crate::proto::SyncMode::Cascade)
+            .execute_with_mode(crate::proto::SyncMode::Cascade)
             .await;
         assert_eq!(
             *client.last_sync_mode.lock().unwrap(),
@@ -610,6 +676,94 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_command_builder_execute_defaults_to_async() {
+        // Cross-language parity: when execute() is called without a
+        // mode, the gateway sees SyncMode::Async (Python's
+        // CommandBuilder.execute() kwarg default).
+        let client = MockGatewayClient::new(CommandResponse::default());
+        let msg = prost_types::Duration {
+            seconds: 1,
+            nanos: 0,
+        };
+        let _ = client
+            .command_new("orders")
+            .with_sequence(0)
+            .with_command("type.googleapis.com/test.Cmd", &msg)
+            .execute()
+            .await
+            .expect("execute should succeed");
+        assert_eq!(
+            *client.last_sync_mode.lock().unwrap(),
+            Some(crate::proto::SyncMode::Async),
+        );
+    }
+
+    #[tokio::test]
+    async fn test_command_builder_execute_with_mode_overrides_default() {
+        let client = MockGatewayClient::new(CommandResponse::default());
+        let msg = prost_types::Duration {
+            seconds: 1,
+            nanos: 0,
+        };
+        let _ = client
+            .command_new("orders")
+            .with_sequence(0)
+            .with_command("type.googleapis.com/test.Cmd", &msg)
+            .execute_with_mode(crate::proto::SyncMode::Cascade)
+            .await
+            .expect("execute_with_mode should succeed");
+        assert_eq!(
+            *client.last_sync_mode.lock().unwrap(),
+            Some(crate::proto::SyncMode::Cascade),
+        );
+    }
+
+    #[test]
+    fn test_command_builder_with_sync_mode_stamps_into_page_header() {
+        // Build path must round-trip the mode into PageHeader.sync_mode
+        // — the previous behavior dropped it on the floor for callers
+        // that hand the built CommandBook to a transport helper that
+        // doesn't accept a separate sync_mode argument.
+        let client = MockGatewayClient::new(CommandResponse::default());
+        let msg = prost_types::Duration {
+            seconds: 1,
+            nanos: 0,
+        };
+        let book = CommandBuilder::new(&client, "orders", Uuid::new_v4())
+            .with_sequence(0)
+            .with_sync_mode(crate::proto::SyncMode::Cascade)
+            .with_command("type.googleapis.com/test.Cmd", &msg)
+            .build()
+            .expect("build should succeed");
+        let header = book.pages[0]
+            .header
+            .as_ref()
+            .expect("page must have header");
+        assert_eq!(
+            header.sync_mode,
+            Some(crate::proto::SyncMode::Cascade as i32)
+        );
+    }
+
+    #[test]
+    fn test_command_builder_build_omits_sync_mode_when_unset() {
+        // Without with_sync_mode, the page header stays sync_mode=None
+        // — matches the previous default and lets execute() supply the
+        // ASYNC default at dispatch time.
+        let client = MockGatewayClient::new(CommandResponse::default());
+        let msg = prost_types::Duration {
+            seconds: 1,
+            nanos: 0,
+        };
+        let book = CommandBuilder::new(&client, "orders", Uuid::new_v4())
+            .with_sequence(0)
+            .with_command("type.googleapis.com/test.Cmd", &msg)
+            .build()
+            .expect("build should succeed");
+        assert!(book.pages[0].header.as_ref().unwrap().sync_mode.is_none());
+    }
+
     // QueryBuilder tests
     #[test]
     fn test_query_builder_by_correlation_id() {
@@ -620,8 +774,11 @@ mod tests {
         let builder =
             QueryBuilder::new(&client, "orders", Some(root)).by_correlation_id("corr-123");
 
+        // by_correlation_id clears root: correlation-ID queries select
+        // across roots in the domain. Mirrors Python `builder.py:178`
+        // and gherkin scenario `@C-0096 (Correlation ID clears root)`.
         assert_eq!(builder.correlation_id, Some("corr-123".to_string()));
-        assert!(builder.root.is_none()); // root should be cleared
+        assert_eq!(builder.root, None);
     }
 
     #[test]
@@ -635,11 +792,11 @@ mod tests {
     }
 
     #[test]
-    fn test_query_builder_range() {
+    fn test_query_builder_range_open_upper() {
         let client = MockQueryClient {
             event_book: EventBook::default(),
         };
-        let builder = QueryBuilder::new(&client, "orders", None).range(10);
+        let builder = QueryBuilder::new(&client, "orders", None).range(10..);
 
         match builder.selection {
             Some(Selection::Range(r)) => {
@@ -651,11 +808,11 @@ mod tests {
     }
 
     #[test]
-    fn test_query_builder_range_to() {
+    fn test_query_builder_range_inclusive_upper() {
         let client = MockQueryClient {
             event_book: EventBook::default(),
         };
-        let builder = QueryBuilder::new(&client, "orders", None).range_to(5, 15);
+        let builder = QueryBuilder::new(&client, "orders", None).range(5..=15);
 
         match builder.selection {
             Some(Selection::Range(r)) => {
@@ -664,6 +821,69 @@ mod tests {
             }
             _ => panic!("expected Range selection"),
         }
+    }
+
+    #[test]
+    fn test_query_builder_range_exclusive_upper_decrements() {
+        let client = MockQueryClient {
+            event_book: EventBook::default(),
+        };
+        // 5..15 is exclusive of 15 — coerce to inclusive 14.
+        let builder = QueryBuilder::new(&client, "orders", None).range(5..15);
+
+        match builder.selection {
+            Some(Selection::Range(r)) => {
+                assert_eq!(r.lower, 5);
+                assert_eq!(r.upper, Some(14));
+            }
+            _ => panic!("expected Range selection"),
+        }
+    }
+
+    #[test]
+    fn test_query_builder_range_unbounded_lower() {
+        let client = MockQueryClient {
+            event_book: EventBook::default(),
+        };
+        let builder = QueryBuilder::new(&client, "orders", None).range(..=20);
+
+        match builder.selection {
+            Some(Selection::Range(r)) => {
+                assert_eq!(r.lower, 0);
+                assert_eq!(r.upper, Some(20));
+            }
+            _ => panic!("expected Range selection"),
+        }
+    }
+
+    /// The coordinator reads a range as `[lower, upper + 1)`; an empty
+    /// Rust range must select nothing, never sequence 0.
+    #[test]
+    fn test_query_builder_empty_ranges_select_nothing() {
+        let client = MockQueryClient {
+            event_book: EventBook::default(),
+        };
+        let selects = |r: Option<Selection>, seq: u32| match r {
+            Some(Selection::Range(r)) => seq >= r.lower && r.upper.is_none_or(|u| seq <= u),
+            other => panic!("expected Range selection, got {other:?}"),
+        };
+        #[allow(clippy::reversed_empty_ranges)]
+        for builder in [
+            QueryBuilder::new(&client, "orders", None).range(..0),
+            QueryBuilder::new(&client, "orders", None).range(0..0),
+            QueryBuilder::new(&client, "orders", None).range(5..5),
+            QueryBuilder::new(&client, "orders", None).range(7..3),
+        ] {
+            let sel = builder.selection;
+            for seq in 0..10 {
+                assert!(!selects(sel.clone(), seq), "{sel:?} selects {seq}");
+            }
+        }
+        let sel = QueryBuilder::new(&client, "orders", None)
+            .range(..1)
+            .selection;
+        assert!(selects(sel.clone(), 0));
+        assert!(!selects(sel, 1));
     }
 
     #[test]
@@ -718,7 +938,7 @@ mod tests {
         let root = Uuid::new_v4();
         let query = QueryBuilder::new(&client, "orders", Some(root))
             .with_edition("test-edition")
-            .range(10)
+            .range(10..)
             .build();
 
         let cover = query.cover.unwrap();
@@ -740,6 +960,21 @@ mod tests {
         let cover = query.cover.unwrap();
         assert_eq!(cover.correlation_id, "corr-123");
         assert!(cover.root.is_none());
+    }
+
+    #[test]
+    fn test_query_builder_build_auto_generates_correlation_id() {
+        // When no correlation_id is supplied, build() generates a
+        // fresh UUID v4 — matches CommandBuilder behavior so query
+        // traces remain joinable to their command counterparts.
+        let client = MockQueryClient {
+            event_book: EventBook::default(),
+        };
+        let query = QueryBuilder::new(&client, "orders", Some(Uuid::new_v4())).build();
+        let cover = query.cover.unwrap();
+        // RFC 4122 v4 format: 36 chars, with dashes, version nibble = 4.
+        assert_eq!(cover.correlation_id.len(), 36);
+        assert_eq!(cover.correlation_id.chars().nth(14), Some('4'));
     }
 
     // Helper function tests
@@ -790,8 +1025,6 @@ mod tests {
                 type_url: "type.googleapis.com/google.protobuf.Duration".to_string(),
                 value: msg.encode_to_vec(),
             })),
-            cascade_id: None,
-            no_commit: false,
         };
 
         let decoded: Option<prost_types::Duration> =
@@ -818,8 +1051,6 @@ mod tests {
                 type_url: "type.googleapis.com/google.protobuf.Duration".to_string(),
                 value: msg.encode_to_vec(),
             })),
-            cascade_id: None,
-            no_commit: false,
         };
 
         let decoded: Option<prost_types::Duration> =
@@ -836,8 +1067,6 @@ mod tests {
             }),
             created_at: None,
             payload: None,
-            cascade_id: None,
-            no_commit: false,
         };
 
         let decoded: Option<prost_types::Duration> =
@@ -859,8 +1088,6 @@ mod tests {
                 type_url: "type.googleapis.com/google.protobuf.Duration".to_string(),
                 value: vec![0xFF, 0xFF, 0xFF], // garbage
             })),
-            cascade_id: None,
-            no_commit: false,
         };
 
         let decoded: Option<prost_types::Duration> =
@@ -903,7 +1130,7 @@ mod tests {
             },
         };
         let books = QueryBuilder::new(&client, "orders", None)
-            .range(0)
+            .range(0..)
             .get_events()
             .await
             .unwrap();

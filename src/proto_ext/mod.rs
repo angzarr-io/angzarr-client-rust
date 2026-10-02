@@ -12,7 +12,6 @@
 //! - [`pages`] - EventPageExt and CommandPageExt traits
 //! - [`books`] - EventBookExt, CommandBookExt, and sequence helpers
 //! - [`grpc`] - gRPC utilities for correlation and tracing
-//! - [`type_url`] - Type URL constants and helpers for angzarr types
 
 pub mod books;
 pub mod constants;
@@ -20,7 +19,6 @@ pub mod cover;
 pub mod edition;
 pub mod grpc;
 pub mod pages;
-pub mod type_url;
 pub mod uuid;
 
 // Re-export all public items for convenient imports
@@ -32,7 +30,7 @@ pub use constants::{
     PROJECTION_TYPE_URL, UNKNOWN_DOMAIN, WILDCARD_DOMAIN,
 };
 pub use cover::CoverExt;
-pub use edition::EditionExt;
+pub use edition::{EditionExt, EditionNew};
 pub use grpc::correlated_request;
 pub use pages::{AngzarrDeferredSequenceExt, CommandPageExt, EventPageExt, PageHeaderExt};
 pub use uuid::{ProtoUuidExt, UuidExt};

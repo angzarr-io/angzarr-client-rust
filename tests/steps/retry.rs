@@ -116,7 +116,7 @@ async fn given_on_retry(world: &mut RetryWorld) {
 async fn when_execute(world: &mut RetryWorld) {
     let policy = world.policy.as_ref().expect("no policy");
     let op = world.op.as_ref().expect("no op").clone();
-    let result = policy.execute(move || op());
+    let result = policy.execute_blocking(move || op());
     world.result = Some(result);
 }
 

@@ -1,6 +1,6 @@
 //! `#[projector]` without `domains` must fail at macro parse time.
 
-use angzarr_client::projector;
+use angzarr_client::router::projector;
 
 struct T;
 

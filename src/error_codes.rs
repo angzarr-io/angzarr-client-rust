@@ -48,9 +48,21 @@ pub mod codes {
     pub const GRPC_ERROR: &str = "GRPC_ERROR";
     pub const INVALID_TRANSPORT_MODE: &str = "INVALID_TRANSPORT_MODE";
     pub const INVALID_PORT: &str = "INVALID_PORT";
+    pub const INVALID_BIND_ADDRESS: &str = "INVALID_BIND_ADDRESS";
+    pub const UDS_BIND_FAILED: &str = "UDS_BIND_FAILED";
+    pub const TCP_BIND_FAILED: &str = "TCP_BIND_FAILED";
+    pub const UDS_DIRECTORY_CREATE_FAILED: &str = "UDS_DIRECTORY_CREATE_FAILED";
+    pub const STREAM_LIMIT_EXCEEDED: &str = "STREAM_LIMIT_EXCEEDED";
+
+    // Component host
+    pub const HOST_HAS_NO_COMPONENTS: &str = "HOST_HAS_NO_COMPONENTS";
+    pub const HOST_DUPLICATE_KIND: &str = "HOST_DUPLICATE_KIND";
+    pub const HOST_SERVER_TASK_FAILED: &str = "HOST_SERVER_TASK_FAILED";
 
     // Dispatch — common
     pub const HANDLER_WRONG_RESPONSE_KIND: &str = "HANDLER_WRONG_RESPONSE_KIND";
+    pub const HANDLER_PANICKED: &str = "HANDLER_PANICKED";
+    pub const UNHANDLED_HANDLER_ERROR: &str = "UNHANDLED_HANDLER_ERROR";
     pub const HANDLER_WRONG_REQUEST_KIND: &str = "HANDLER_WRONG_REQUEST_KIND";
     pub const NO_HANDLER_REGISTERED: &str = "NO_HANDLER_REGISTERED";
     pub const MISSING_COMMAND_BOOK: &str = "MISSING_COMMAND_BOOK";
@@ -58,6 +70,12 @@ pub mod codes {
     pub const MISSING_COMMAND_PAYLOAD: &str = "MISSING_COMMAND_PAYLOAD";
     pub const NOTIFICATION_DECODE_FAILED: &str = "NOTIFICATION_DECODE_FAILED";
     pub const REJECTION_NOTIFICATION_DECODE_FAILED: &str = "REJECTION_NOTIFICATION_DECODE_FAILED";
+    pub const MISSING_NOTIFICATION_PAYLOAD: &str = "MISSING_NOTIFICATION_PAYLOAD";
+    pub const MISSING_REJECTED_COMMAND: &str = "MISSING_REJECTED_COMMAND";
+    pub const MISSING_DEFERRED_HEADER: &str = "MISSING_DEFERRED_HEADER";
+    pub const NO_FACT_HANDLER: &str = "NO_FACT_HANDLER";
+    pub const HANDLER_DOES_NOT_SUPPORT_REPLAY: &str = "HANDLER_DOES_NOT_SUPPORT_REPLAY";
+    pub const ROUTER_SEQUENCE_OVERFLOW: &str = "ROUTER_SEQUENCE_OVERFLOW";
 
     // Dispatch — saga
     pub const MISSING_SAGA_SOURCE: &str = "MISSING_SAGA_SOURCE";
@@ -92,7 +110,7 @@ pub mod codes {
     // Saga / PM destinations
     /// Audit #64: a saga/PM tried to stamp a command for a domain that
     /// wasn't in the request's `destination_sequences` map.
-    pub const MISSING_DESTINATION_SEQUENCE: &str = "MISSING_DESTINATION_SEQUENCE";
+    pub const UNDECLARED_OUTPUT_DOMAIN: &str = "UNDECLARED_OUTPUT_DOMAIN";
 }
 
 /// Static human-readable messages — the value of `message` on every
@@ -129,9 +147,23 @@ pub mod messages {
     pub const GRPC_ERROR: &str = "grpc error";
     pub const INVALID_TRANSPORT_MODE: &str = "invalid transport mode env value";
     pub const INVALID_PORT: &str = "invalid port env value";
+    pub const INVALID_BIND_ADDRESS: &str = "invalid TCP bind address";
+    pub const UDS_BIND_FAILED: &str = "failed to bind unix domain socket";
+    pub const TCP_BIND_FAILED: &str = "failed to bind tcp listener";
+    pub const UDS_DIRECTORY_CREATE_FAILED: &str =
+        "failed to create unix domain socket parent directory";
+    pub const STREAM_LIMIT_EXCEEDED: &str = "server stream exceeded the configured maximum";
+
+    // Component host
+    pub const HOST_HAS_NO_COMPONENTS: &str = "component host has no components registered";
+    pub const HOST_DUPLICATE_KIND: &str =
+        "component host has two routers of one kind; register their handlers on one router";
+    pub const HOST_SERVER_TASK_FAILED: &str = "component host server task failed";
 
     // Dispatch — common
     pub const HANDLER_WRONG_RESPONSE_KIND: &str = "handler returned wrong response kind";
+    pub const HANDLER_PANICKED: &str = "handler panicked during dispatch";
+    pub const UNHANDLED_HANDLER_ERROR: &str = "handler failed with an unclassified error";
     pub const HANDLER_WRONG_REQUEST_KIND: &str = "handler dispatched with wrong request kind";
     pub const NO_HANDLER_REGISTERED: &str =
         "no handler registered for the given (domain, type_url)";
@@ -141,6 +173,14 @@ pub mod messages {
     pub const NOTIFICATION_DECODE_FAILED: &str = "failed to decode Notification payload";
     pub const REJECTION_NOTIFICATION_DECODE_FAILED: &str =
         "failed to decode RejectionNotification payload";
+    pub const MISSING_NOTIFICATION_PAYLOAD: &str = "Notification has no payload";
+    pub const MISSING_REJECTED_COMMAND: &str = "RejectionNotification has no rejected_command";
+    pub const MISSING_DEFERRED_HEADER: &str =
+        "rejected command's first page is missing the AngzarrDeferred sequence header";
+    pub const NO_FACT_HANDLER: &str = "no fact handler for the fact type";
+    pub const HANDLER_DOES_NOT_SUPPORT_REPLAY: &str = "handler does not support replay";
+    pub const ROUTER_SEQUENCE_OVERFLOW: &str =
+        "router sequence counter overflowed u32 — too many merged compensation events";
 
     // Dispatch — saga
     pub const MISSING_SAGA_SOURCE: &str = "missing saga source";
@@ -172,7 +212,7 @@ pub mod messages {
         "cannot mix handler kinds in one Router — all handlers must share a kind";
 
     // Saga / PM destinations
-    pub const MISSING_DESTINATION_SEQUENCE: &str = "no sequence for destination domain";
+    pub const UNDECLARED_OUTPUT_DOMAIN: &str = "domain is not a declared output domain";
 }
 
 /// Detail-map key constants — the keys used in the `details` mapping on

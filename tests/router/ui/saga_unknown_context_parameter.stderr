@@ -1,0 +1,19 @@
+error: unsupported handler parameter `trigger_seq`: optional parameters are `destinations`, `source_cover` and `source_seq`
+  --> tests/router/ui/saga_unknown_context_parameter.rs:20:46
+   |
+20 |     fn on_created(&self, _evt: OrderCreated, trigger_seq: u32) -> CommandResult<SagaResponse> {
+   |                                              ^^^^^^^^^^^
+
+warning: unused import: `angzarr_client::proto::SagaResponse`
+ --> tests/router/ui/saga_unknown_context_parameter.rs:4:5
+  |
+4 | use angzarr_client::proto::SagaResponse;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `angzarr_client::CommandResult`
+ --> tests/router/ui/saga_unknown_context_parameter.rs:6:5
+  |
+6 | use angzarr_client::CommandResult;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

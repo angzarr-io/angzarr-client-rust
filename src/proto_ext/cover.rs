@@ -72,10 +72,19 @@ pub trait CoverExt {
 
     /// Compute the bus routing key: `"{domain}"`.
     ///
-    /// The routing key is a transport concern used for bus subscription matching.
-    /// Edition filtering is handled at the handler level, not the bus level.
+    /// The routing key is a transport concern used for bus subscription
+    /// matching. Edition filtering is handled at the handler level, not
+    /// the bus level. Allocates a `String` on every call — for hot
+    /// dispatch loops where ownership isn't needed, prefer
+    /// [`routing_key_str`](Self::routing_key_str).
     fn routing_key(&self) -> String {
-        self.domain().to_string()
+        self.routing_key_str().to_string()
+    }
+
+    /// Borrowed view of [`routing_key`](Self::routing_key) for hot
+    /// paths that don't need an owned `String`.
+    fn routing_key_str(&self) -> &str {
+        self.domain()
     }
 
     /// Generate a cache key for this entity based on edition + domain + root.

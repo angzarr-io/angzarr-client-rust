@@ -17,14 +17,14 @@
 //!     let cart_id = Uuid::new_v4();
 //!     let response = client.command_handler
 //!         .command("cart", cart_id)
-//!         .with_command("type.googleapis.com/examples.CreateCart", &create_cart)
-//!         .execute(angzarr_client::proto::SyncMode::Async)
+//!         .with_command("/examples.CreateCart", &create_cart)
+//!         .execute() // SyncMode::Async; execute_with_mode(mode) picks another
 //!         .await?;
 //!
 //!     // Query events
 //!     let events = client.query
 //!         .query("cart", cart_id)
-//!         .range(0)
+//!         .range(0..)
 //!         .get_pages()
 //!         .await?;
 //!     Ok(())
@@ -33,7 +33,10 @@
 //!
 //! # Mocking for Tests
 //!
-//! Implement the `GatewayClient` and `QueryClient` traits to create mock clients:
+//! The `testing` cargo feature provides recording fakes of the client traits
+//! in `angzarr_client::testing::fakes`, along with proto builders and
+//! deterministic test UUIDs. Any type implementing `GatewayClient` or
+//! `QueryClient` can stand in for the coordinator:
 //!
 //! ```rust,ignore
 //! use angzarr_client::traits::{GatewayClient, QueryClient};
@@ -63,6 +66,7 @@ pub mod convert;
 pub mod error;
 pub mod error_codes;
 pub mod handler;
+pub mod host;
 pub mod identity;
 #[path = "proto.rs"]
 pub mod proto;
@@ -71,6 +75,7 @@ pub mod readiness;
 pub mod retry;
 pub mod router;
 pub mod server;
+#[cfg(feature = "testing")]
 pub mod testing;
 pub mod traits;
 pub mod transport;
@@ -79,35 +84,20 @@ pub mod validation;
 // Re-export main types at crate root
 pub use client::{CommandHandlerClient, DomainClient, QueryClient, SpeculativeClient};
 pub use error::{ClientError, CommandRejectedError, CommandResult, Result};
-pub use identity::{
-    cart_root, compute_root, customer_root, fulfillment_root, inventory_product_root,
-    inventory_root, order_root, product_root, to_proto_bytes, INVENTORY_PRODUCT_NAMESPACE,
-};
+pub use identity::{compute_root, to_proto_bytes};
 pub use retry::{default_retry_policy, ExponentialBackoffRetry, RetryPolicy};
-pub use testing::{
-    make_command_book, make_command_page, make_cover, make_event_book, make_event_page,
-    make_timestamp, pack_event as testing_pack_event, uuid_for, uuid_for_default, uuid_obj_for,
-    uuid_obj_for_default, uuid_str_for, uuid_str_for_default, ScenarioContext,
-    DEFAULT_TEST_NAMESPACE,
-};
 pub use transport::{resolve_ch_endpoint, TransportMode};
 
 // Re-export builder extension traits for fluent API
 pub use builder::{CommandBuilder, CommandBuilderExt, QueryBuilder, QueryBuilderExt};
 
-// Re-export compensation helpers
-pub use compensation::{
-    delegate_to_framework, emit_compensation_events, is_notification, pm_delegate_to_framework,
-    pm_emit_compensation_events, CompensationContext, DelegationOptions, PMRevocationResponse,
-};
-
 // Re-export helpers
 pub use builder::{decode_event, events_from_response};
 pub use convert::{
     full_type_name, full_type_url, now, parse_timestamp, proto_to_uuid, try_unpack, type_matches,
-    type_name_from_url, type_url, type_url_matches, type_url_matches_exact, unpack, uuid_to_proto,
-    DEFAULT_EDITION, META_ANGZARR_DOMAIN, PROJECTION_DOMAIN_PREFIX, PROJECTION_TYPE_URL,
-    TYPE_URL_PREFIX, UNKNOWN_DOMAIN, WILDCARD_DOMAIN,
+    type_name_from_url, type_url, type_url_is, type_url_matches, type_url_matches_exact, unpack,
+    uuid_to_proto, DEFAULT_EDITION, META_ANGZARR_DOMAIN, PROJECTION_DOMAIN_PREFIX,
+    PROJECTION_TYPE_URL, TYPE_URL_PREFIX, UNKNOWN_DOMAIN, WILDCARD_DOMAIN,
 };
 
 // Re-export extension traits
@@ -117,51 +107,15 @@ pub use proto_ext::{
     EventBookExt, EventPageExt, ProtoUuidExt, UuidExt,
 };
 
-// Re-export Tier 5 unified router surface
-pub use router::{
-    // Tier 5 unified Handler contract
-    BuildError,
-    Built,
-    // Typed runtime routers returned by Router::build()
-    CommandHandlerRouter,
-    // Destination-sequence stamping for saga/PM outbound commands
-    Destinations,
-    DispatchError,
-    Handler,
-    HandlerConfig,
-    HandlerKind,
-    HandlerRequest,
-    HandlerResponse,
-    Kind,
-    ProcessManagerResponse,
-    ProcessManagerRouter,
-    ProjectorRouter,
-    RejectionHandlerResponse,
-    // Builder
-    Router,
-    SagaHandlerResponse,
-    SagaRouter,
-    UpcasterRouter,
-};
-
-// Re-export handler types
-pub use handler::{CommandHandlerGrpc, ProcessManagerGrpc, ProjectorGrpc, SagaGrpc, UpcasterGrpc};
-
-// Re-export server utilities
+// Component host and transport configuration
+pub use host::{ComponentHost, HostAddress, RunningHost};
 pub use server::{
-    cleanup_socket, configure_logging, create_server, get_transport_config, resolve_bind_address,
-    run_command_handler_server, run_process_manager_server, run_projector_server, run_saga_server,
-    run_server, run_upcaster_server, ServerConfig, DEFAULT_BIND_HOST, ENV_BIND_ADDRESS,
+    configure_logging, get_transport_config, resolve_bind_address, ServerConfig, DEFAULT_BIND_HOST,
+    ENV_BIND_ADDRESS,
 };
 
 // Re-export validation helpers
 pub use validation::{
     require_exists, require_non_negative, require_not_empty, require_not_empty_str,
     require_not_exists, require_positive, require_status, require_status_not,
-};
-
-// Re-export proc macros for Tier 5 OO-style component definitions
-pub use angzarr_macros::{
-    applies, command_handler, handles, handles_fact, process_manager, projector, rejected, saga,
-    state_factory, upcaster, upcasts,
 };

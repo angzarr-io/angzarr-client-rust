@@ -4,31 +4,120 @@
 
 set shell := ["bash", "-c"]
 
-ROOT := `git rev-parse --show-toplevel`
+ROOT := justfile_directory()
 
 default:
     @just --list
 
-# Build all workspace crates (build.rs generates protos via prost/tonic)
-build:
+# =============================================================================
+# Proto generation (in-container) — see project_proto_generation_model
+# =============================================================================
+# `generate-proto-force` is the unconditional regen path. `generate-proto`
+# wraps it with the mtime guard so it's safe to use as a recipe-dependency
+# of build/test/lint.
+#
+# Mechanism: build.rs is gated on `GENERATE_PROTOS=1`. When set, build.rs
+# invokes tonic_prost_build to emit `.rs` files into `src/proto/`. Plain
+# `cargo build` skips codegen and consumes the pre-emitted files via
+# `include!`. We use `cargo check` here (vs `cargo build`) because it runs
+# build scripts but skips final linking — fastest path that still triggers
+# codegen.
+
+# Idempotent — skips when bindings are fresher than the newest .proto.
+generate-proto:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src_dir="{{ROOT}}/angzarr-project/proto"
+    out_dir="{{ROOT}}/src/proto"
+    if [ ! -d "$src_dir" ]; then
+        echo "[generate-proto] $src_dir missing — submodule not initialized?" >&2
+        exit 1
+    fi
+    newest_proto=$(find "$src_dir" -name '*.proto' -printf '%T@\n' 2>/dev/null \
+                    | sort -n | tail -1)
+    if [ -d "$out_dir" ]; then
+        oldest_pb=$(find "$out_dir" -name '*.rs' -printf '%T@\n' 2>/dev/null \
+                        | sort -n | head -1)
+    else
+        oldest_pb=""
+    fi
+    if [ -n "$newest_proto" ] && [ -n "$oldest_pb" ] \
+        && awk -v p="$newest_proto" -v b="$oldest_pb" 'BEGIN{exit !(b>p)}'; then
+        echo "[generate-proto] bindings up-to-date, skipping"
+        exit 0
+    fi
+    just generate-proto-force
+
+generate-proto-force:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src_dir="{{ROOT}}/angzarr-project/proto"
+    if [ ! -d "$src_dir" ]; then
+        echo "[generate-proto] $src_dir missing — submodule not initialized?" >&2
+        exit 1
+    fi
+    mkdir -p "{{ROOT}}/src/proto"
+    # Force the build script to re-run even when cargo's incremental cache
+    # thinks the inputs are unchanged. Bumping build.rs's mtime is the
+    # cheapest invalidation — `cargo clean -p` would force a full rebuild.
+    touch "{{ROOT}}/build.rs"
+    # GENERATE_PROTOS=1 flips build.rs from no-op into codegen mode.
+    # `cargo check -p angzarr-client` is the fastest path that runs build
+    # scripts; the actual compilation finishes against the freshly-emitted
+    # src/proto/*.rs files.
+    GENERATE_PROTOS=1 cargo check -p angzarr-client
+    echo "[generate-proto] emitted to src/proto/"
+
+# Build all workspace crates
+build: generate-proto
     cargo build --workspace
 
-# Run all tests: lib tests + cucumber feature suites + trybuild UI snapshots.
-test:
+# Run all tests: lib unit tests, the router integration tests (trybuild UI
+# snapshots + fact/replay + mode inference; serial so trybuild's shared build
+# dir is not contended) and the cucumber feature gate.
+test: generate-proto
     cargo test --workspace --lib
-    cargo test --test features --no-fail-fast
+    cargo test --test router -- --test-threads=1
+    cargo test --test features
+
+# Run angzarr-router's conformance suite against the engine this crate
+# depends on: the router repository at the rev pinned in Cargo.toml, tested
+# with its own Rust harness (crates/conformance; Rust is the router's native
+# API). Runs from the router checkout so its own angzarr-project pin and
+# cargo config apply.
+router-conformance:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rev=$(sed -n 's/^angzarr-router = .*rev = "\([0-9a-f]*\)".*/\1/p' "{{ROOT}}/Cargo.toml")
+    if [ -z "$rev" ]; then
+        echo "[router-conformance] no pinned angzarr-router rev in Cargo.toml" >&2
+        exit 1
+    fi
+    dir="{{ROOT}}/target/angzarr-router-conformance"
+    if [ ! -d "$dir/.git" ]; then
+        git clone --quiet https://github.com/angzarr-io/angzarr-router.git "$dir"
+    fi
+    git -C "$dir" fetch --quiet origin "$rev"
+    git -C "$dir" checkout --quiet --detach "$rev"
+    git -C "$dir" submodule update --init angzarr-project
+    echo "[router-conformance] angzarr-router $rev"
+    cd "$dir"
+    env -u ANGZARR_PROJECT_PROTO -u CARGO_TARGET_DIR cargo test -p angzarr-router-conformance
 
 # Run clippy linter
-lint:
-    cargo clippy --workspace -- -D warnings
+lint: generate-proto
+    cargo clippy --workspace --all-targets --features testing -- -D warnings
 
 # Check formatting (use fmt-fix to auto-format)
-fmt:
+fmt: generate-proto
     cargo fmt --check
 
 # Auto-format code
-fmt-fix:
+fmt-fix: generate-proto
     cargo fmt
+
+# Cross-language alias — `just check` runs lint + fmt-check.
+check: lint fmt
 
 # Remove build artifacts
 clean:
@@ -42,14 +131,16 @@ check-all: build test lint fmt
 # === Additional Targets ===
 
 # Run tests with verbose output
-test-verbose:
+test-verbose: generate-proto
     cargo test --workspace --lib -- --nocapture
 
 # Run mutation testing (70% kill rate threshold)
-mutation-test:
+mutation-test: generate-proto
     #!/usr/bin/env bash
     set -euo pipefail
-    output=$(cargo mutants --jobs 4 2>&1) || true
+    # Unset CARGO_TARGET_DIR: a shared target dir across cargo-mutants'
+    # per-job build dirs lets a job test another job's (or no) mutation.
+    output=$(env -u CARGO_TARGET_DIR cargo mutants --jobs 4 2>&1) || true
     echo "$output"
     total=$(echo "$output" | grep -oP '(\d+) mutants tested' | grep -oP '^\d+' || echo "0")
     killed=$(echo "$output" | grep -oP '(\d+) killed' | grep -oP '^\d+' || echo "0")
@@ -65,14 +156,50 @@ mutation-test:
     fi
     echo "PASS: Kill rate meets 70% threshold"
 
+# Mutation-test only the given source files. Unviable mutants are excluded
+# from the kill rate; survivors are listed for triage. MUTANTS_TEST_ARGS
+# narrows the test run per mutant (e.g. "--lib" or "--test router");
+# MUTANTS_ARGS adds cargo-mutants options (e.g. "--re 'fn_name'").
+mutants +FILES: generate-proto
+    #!/usr/bin/env bash
+    set -uo pipefail
+    args=()
+    for f in {{FILES}}; do args+=(--file "$f"); done
+    # shellcheck disable=SC2086
+    eval "extra=(${MUTANTS_ARGS:-})"
+    # cargo-mutants gives each job its own build dir; a shared
+    # CARGO_TARGET_DIR (the ephemeral runner sets one) lets jobs reuse each
+    # other's artifacts and test unmutated code.
+    env -u CARGO_TARGET_DIR cargo mutants --jobs 4 "${args[@]}" "${extra[@]}" -- ${MUTANTS_TEST_ARGS:-}
+    status=$?
+    out=mutants.out
+    caught=$(wc -l < "$out/caught.txt" 2>/dev/null || echo 0)
+    missed=$(wc -l < "$out/missed.txt" 2>/dev/null || echo 0)
+    timeout=$(wc -l < "$out/timeout.txt" 2>/dev/null || echo 0)
+    total=$((caught + missed + timeout))
+    if [ "$total" -gt 0 ]; then
+        echo "Kill rate: $(( (caught + timeout) * 100 / total ))% (caught=$caught timeout=$timeout missed=$missed)"
+    fi
+    if [ -s "$out/missed.txt" ]; then echo "Missed:"; cat "$out/missed.txt"; fi
+    exit $status
+
 # Dry-run mutation testing (show what would be mutated)
-mutation-test-dry:
+mutation-test-dry: generate-proto
     cargo mutants --list
 
 # Dry-run publish to crates.io
-publish-dry:
+publish-dry: generate-proto
     cargo publish --dry-run
 
 # Publish to crates.io
-publish:
+publish: generate-proto
     cargo publish
+
+# Per-function cyclomatic complexity (lizard) — same tool core/main uses for
+# Rust. Generated proto (src/proto, *.pb.rs) and target/ are excluded so
+# numbers reflect hand-written source. Single-quoted globs so the host shell
+# doesn't expand them. Leading `-` keeps this a report — it does NOT fail the
+# build. `just lint` already gates cognitive complexity via clippy.
+LIZARD_EXCLUDES := "-x '*.pb.rs' -x '*/proto/*' -x '*/target/*'"
+complexity *ARGS:
+    -lizard -l rust -C 15 {{LIZARD_EXCLUDES}} {{ if ARGS == "" { "src" } else { ARGS } }}

@@ -1,7 +1,7 @@
 //! Stacking conflicting method-level decorators (@handles + @applies on the
 //! same method) must fail at macro parse time.
 
-use angzarr_client::command_handler;
+use angzarr_client::router::command_handler;
 use angzarr_client::proto::EventBook;
 use angzarr_client::CommandResult;
 

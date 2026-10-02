@@ -1,4 +1,4 @@
-use angzarr_client::{command_handler, projector};
+use angzarr_client::router::{command_handler, projector};
 
 struct T;
 #[derive(Default)]

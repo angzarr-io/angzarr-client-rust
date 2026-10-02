@@ -4,5 +4,16 @@
 ARG RUST_IMAGE=ghcr.io/angzarr-io/angzarr-rust:latest
 FROM ${RUST_IMAGE}
 
+# INFRA-1: under rootless docker, bind-mounted /workspace (or /angzarr) is
+# owned by host UID but accessed by the image's pre-baked non-root user
+# (angzarr/vscode/nonroot). git refuses to operate on the bind mount with
+# "dubious ownership". `--system` writes /etc/gitconfig so the rule applies
+# to every user (root + non-root) in this image, including any `_container`
+# entry that runs `git rev-parse --show-toplevel`.
+USER root
+RUN git config --system --add safe.directory '*' \
+ && git config --system --add safe.directory '/workspace' \
+ && git config --system --add safe.directory '/angzarr'
+
 # Mark as devcontainer for justfile detection
 ENV DEVCONTAINER=true
