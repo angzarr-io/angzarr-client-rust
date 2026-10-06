@@ -319,7 +319,8 @@ impl QueryClient {
     /// buggy server can otherwise stream forever and OOM the client.
     /// Use [`Self::get_events_with_limit`] for a custom cap.
     pub async fn get_events(&self, query: Query) -> Result<Vec<EventBook>> {
-        self.get_events_with_limit(query, DEFAULT_MAX_EVENT_BOOKS).await
+        self.get_events_with_limit(query, DEFAULT_MAX_EVENT_BOOKS)
+            .await
     }
 
     /// Same as [`Self::get_events`] with a caller-supplied cap on the

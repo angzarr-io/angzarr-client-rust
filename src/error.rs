@@ -124,7 +124,11 @@ pub fn build_status_details(
 #[cfg(test)]
 pub fn unpack_status_details(
     bytes: &[u8],
-) -> Option<(String, BTreeMap<String, String>, Option<crate::proto::Cover>)> {
+) -> Option<(
+    String,
+    BTreeMap<String, String>,
+    Option<crate::proto::Cover>,
+)> {
     let status = GoogleRpcStatus::decode(bytes).ok()?;
     let mut error_code = String::new();
     let mut metadata = BTreeMap::new();
@@ -634,8 +638,7 @@ mod tests {
             edition: None,
         });
         let status: Status = rej.into();
-        let (code, _metadata, unpacked) =
-            unpack_status_details(&status.details()).expect("decode");
+        let (code, _metadata, unpacked) = unpack_status_details(&status.details()).expect("decode");
         assert_eq!(code, "ENTITY_NOT_FOUND");
         let cover = unpacked.expect("cover roundtripped");
         assert_eq!(cover.domain, "player");
@@ -653,8 +656,7 @@ mod tests {
             std::iter::empty::<(String, String)>(),
         );
         let status: Status = rej.into();
-        let (code, _metadata, cover) =
-            unpack_status_details(&status.details()).expect("decode");
+        let (code, _metadata, cover) = unpack_status_details(&status.details()).expect("decode");
         assert_eq!(code, "X");
         assert!(cover.is_none());
     }

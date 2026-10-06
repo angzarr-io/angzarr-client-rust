@@ -1,4 +1,4 @@
-//! Decorator validation step definitions.
+//! Handler declaration validation step definitions.
 //!
 //! Validation is enforced at compile time by the proc macros. These scenarios
 //! delegate to `trybuild` fixtures under `tests/router/ui/`.
@@ -31,73 +31,75 @@ fn run_trybuild(fixture: &str) {
     t.compile_fail(fixture);
 }
 
-// --- @C-0070 command_handler without state ---
-#[when("I declare a @command_handler for domain \"order\" without state")]
+// --- @C-0070 aggregate handler without state ---
+#[when("I declare an aggregate handler for domain \"order\" without state")]
 async fn when_declare_cmd_handler_no_state(world: &mut ValidationWorld) {
     world.fixture = Some("tests/router/ui/command_handler_without_state.rs");
     world.scenario_tag = "C-0070".into();
 }
 
 // --- @C-0071 saga without target ---
-#[when(expr = "I declare a @saga named {string} from {string} without target")]
+#[when(expr = "I declare a saga named {string} from {string} without target")]
 async fn when_declare_saga_no_target(world: &mut ValidationWorld, _name: String, _src: String) {
     world.fixture = Some("tests/router/ui/saga_without_target.rs");
     world.scenario_tag = "C-0071".into();
 }
 
-// --- @C-0072 process_manager without pm_domain ---
-#[when(expr = "I declare a @process_manager for name {string} without pm_domain")]
+// --- @C-0072 process manager without pm_domain ---
+#[when(expr = "I declare a process manager for name {string} without pm_domain")]
 async fn when_declare_pm_no_pm_domain(world: &mut ValidationWorld, _name: String) {
     world.fixture = Some("tests/router/ui/process_manager_without_pm_domain.rs");
     world.scenario_tag = "C-0072".into();
 }
 
-// --- @C-0073 process_manager without sources ---
-#[when(expr = "I declare a @process_manager for name {string} without sources")]
+// --- @C-0073 process manager without sources ---
+#[when(expr = "I declare a process manager for name {string} without sources")]
 async fn when_declare_pm_no_sources(world: &mut ValidationWorld, _name: String) {
     world.fixture = Some("tests/router/ui/process_manager_without_sources.rs");
     world.scenario_tag = "C-0073".into();
 }
 
-// --- @C-0074 process_manager without targets ---
-#[when(expr = "I declare a @process_manager for name {string} without targets")]
+// --- @C-0074 process manager without targets ---
+#[when(expr = "I declare a process manager for name {string} without targets")]
 async fn when_declare_pm_no_targets(world: &mut ValidationWorld, _name: String) {
     world.fixture = Some("tests/router/ui/process_manager_without_targets.rs");
     world.scenario_tag = "C-0074".into();
 }
 
 // --- @C-0075 projector without domains ---
-#[when(expr = "I declare a @projector named {string} without domains")]
+#[when(expr = "I declare a projector named {string} without domains")]
 async fn when_declare_projector_no_domains(world: &mut ValidationWorld, _name: String) {
     world.fixture = Some("tests/router/ui/projector_without_domains.rs");
     world.scenario_tag = "C-0075".into();
 }
 
-// --- @C-0076 stacking two class decorators ---
+// --- @C-0076 a class cannot be both an aggregate handler and a saga ---
 #[given(expr = "a class {word}")]
 async fn given_a_class(world: &mut ValidationWorld, class: String) {
     world.class_name = class;
 }
 
-#[given(expr = "{word} has the @command_handler decorator applied")]
-async fn given_class_has_cmd_handler(_world: &mut ValidationWorld, _class: String) {
-    // Declaratively recorded — fixture already embodies this state.
+#[given(expr = "{word} is declared as an aggregate handler")]
+async fn given_class_is_aggregate_handler(_world: &mut ValidationWorld, _class: String) {
+    // TODO: Implement this step matcher properly. This is a no-op stub
+    // added during the cucumber business-vocabulary rewrite to keep
+    // the step registry matched.
 }
 
-#[when(expr = "I also apply the @saga decorator to {word}")]
-async fn when_also_apply_saga(world: &mut ValidationWorld, _class: String) {
+#[when(expr = "I also declare {word} as a saga")]
+async fn when_also_declare_saga(world: &mut ValidationWorld, _class: String) {
     world.fixture = Some("tests/router/ui/stack_command_handler_saga.rs");
     world.scenario_tag = "C-0076".into();
 }
 
-// --- @C-0077 stacking conflicting method decorators ---
-#[given(expr = "a method {string} with the @handles decorator applied")]
-async fn given_method_has_handles(world: &mut ValidationWorld, method: String) {
+// --- @C-0077 a method cannot both handle a command and apply an event ---
+#[given(expr = "a method {string} declared as a command handler")]
+async fn given_method_is_command_handler(world: &mut ValidationWorld, method: String) {
     world.method_name = method;
 }
 
-#[when(expr = "I also apply the @applies decorator to {string}")]
-async fn when_also_apply_applies(world: &mut ValidationWorld, _method: String) {
+#[when(expr = "I also declare {string} as an event applier")]
+async fn when_also_declare_event_applier(world: &mut ValidationWorld, _method: String) {
     // There's no built-in fixture for method-level stacking, so point at the
     // same-kind class-level fixture as a reasonable compile-fail proxy.
     world.fixture = Some("tests/router/ui/method_stack_handles_applies.rs");

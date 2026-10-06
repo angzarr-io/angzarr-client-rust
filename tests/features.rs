@@ -11,35 +11,36 @@ mod common;
 mod steps;
 
 use cucumber::World;
-use steps::aggregate_client::AggregateClientWorld;
-use steps::builder::BuilderWorld;
+use steps::aggregate_client_steps::AggregateClientWorld;
+use steps::builder_steps::BuilderWorld;
 use steps::command_builder::CommandBuilderWorld;
-use steps::command_handler::CommandHandlerWorld;
-use steps::compensation::CompensationWorld;
+use steps::command_handler_steps::CommandHandlerWorld;
+use steps::compensation_steps::CompensationWorld;
 use steps::connection::ConnectionWorld;
 use steps::decorators::DecoratorsWorldCucumber;
 use steps::destinations::DestinationsWorld;
-use steps::domain_client::DomainClientWorld;
+use steps::domain_client_steps::DomainClientWorld;
+use steps::edition_propagation_steps::EditionPropagationWorld;
 use steps::error_handling::ErrorHandlingWorld;
 use steps::event_decoding::EventDecodingWorld;
-use steps::fact_flow::FactFlowWorld;
+use steps::fact_flow_steps::FactFlowWorld;
 use steps::identity::IdentityWorld;
-use steps::merge_strategy::MergeStrategyWorld;
-use steps::multi_handler::MultiHandlerWorld;
+use steps::merge_strategy_steps::MergeStrategyWorld;
+use steps::multi_handler_steps::MultiHandlerWorld;
 use steps::parity::ParityWorld;
-use steps::process_manager::ProcessManagerWorld;
-use steps::projector::ProjectorWorld;
+use steps::process_manager_steps::ProcessManagerWorld;
+use steps::projector_steps::ProjectorWorld;
 use steps::query_builder::QueryBuilderWorld;
-use steps::query_client::QueryClientWorld;
-use steps::rejected_compensation::RejectedCompensationWorld;
-use steps::rejection::RejectionWorld;
+use steps::query_client_steps::QueryClientWorld;
+use steps::rejected_compensation_steps::RejectedCompensationWorld;
+use steps::rejection_steps::RejectionWorld;
 use steps::retry::RetryWorld;
-use steps::saga::SagaWorld;
-use steps::speculative_client::SpeculativeClientWorld;
-use steps::state_building::StateBuildingWorld;
+use steps::saga_steps::SagaWorld;
+use steps::speculative_client_steps::SpeculativeClientWorld;
+use steps::state_building_steps::StateBuildingWorld;
 use steps::testing::TestingWorld;
-use steps::upcaster::UpcasterWorld;
-use steps::validation::ValidationWorld;
+use steps::upcaster_steps::UpcasterWorld;
+use steps::validation_steps::ValidationWorld;
 use steps::wire_parity::WireParityWorld;
 
 #[tokio::main]
@@ -257,6 +258,12 @@ async fn main() {
     StateBuildingWorld::cucumber()
         .fail_on_skipped()
         .run("angzarr-project/features/coordinator-contract/state_building.feature")
+        .await;
+
+    println!("\n=== Running EditionPropagation (coordinator-contract sim) ===\n");
+    EditionPropagationWorld::cucumber()
+        .fail_on_skipped()
+        .run("angzarr-project/features/coordinator-contract/edition_propagation.feature")
         .await;
 
     // Run Destinations query-surface tests (C-0132..C-0134)

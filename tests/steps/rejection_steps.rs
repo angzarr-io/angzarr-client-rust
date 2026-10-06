@@ -202,3 +202,67 @@ async fn then_no_events(world: &mut RejectionWorld) {
         other => panic!("expected empty Events, got {:?}", other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// WIP stubs: parity-cleanup generated step matchers (panic until implemented).
+// ---------------------------------------------------------------------------
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r#"^Payment is a component in domain "([^"]*)"$"#)]
+async fn wip_given_payment_is_a_component_in_domain_payment(_world: &mut RejectionWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^Payment compensates a rejected ReserveStock from inventory by releasing funds$")]
+async fn wip_given_payment_compensates_a_rejected_reservestock_from_i(_world: &mut RejectionWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^Payment is the active component$")]
+async fn wip_given_payment_is_the_active_component(_world: &mut RejectionWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[when(regex = r"^a rejection of ReserveStock arrives from inventory$")]
+async fn wip_when_a_rejection_of_reservestock_arrives_from_inventory(_world: &mut RejectionWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^a FundsReleased event is emitted$")]
+async fn wip_then_a_fundsreleased_event_is_emitted(_world: &mut RejectionWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[when(regex = r"^a rejection of ProcessPayment arrives from inventory$")]
+async fn wip_when_a_rejection_of_processpayment_arrives_from_invento(_world: &mut RejectionWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^no events are emitted$")]
+async fn wip_then_no_events_are_emitted(_world: &mut RejectionWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^a second compensation handler for the same rejection also releases funds$")]
+async fn wip_given_a_second_compensation_handler_for_the_same_rejecti(_world: &mut RejectionWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(regex = r"^Payment then Payment(-?\d+) are configured$")]
+async fn wip_given_payment_then_payment2_are_configured(_world: &mut RejectionWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then(regex = r"^two FundsReleased events are emitted in registration order$")]
+async fn wip_then_two_fundsreleased_events_are_emitted_in_registrati(_world: &mut RejectionWorld) {
+    panic!("WIP: step needs implementation");
+}

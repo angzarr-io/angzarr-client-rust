@@ -651,10 +651,7 @@ mod tests {
 
     #[test]
     fn ensure_uds_parent_dir_creates_missing_parent() {
-        let tmpdir = std::env::temp_dir().join(format!(
-            "angzarr-uds-{}",
-            std::process::id(),
-        ));
+        let tmpdir = std::env::temp_dir().join(format!("angzarr-uds-{}", std::process::id(),));
         // Make sure we start clean.
         let _ = std::fs::remove_dir_all(&tmpdir);
         let socket_path = tmpdir.join("nested/dir/foo.sock");

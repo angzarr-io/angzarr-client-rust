@@ -234,6 +234,16 @@ fmt-fix: generate-proto
 # Cross-language alias — `just check` runs lint + fmt-check.
 check: lint fmt
 
+# === Code complexity (lizard, in container) ===
+# Per-function cyclomatic complexity via lizard — the same tool core/main
+# uses for Rust (clippy dropped its cyclomatic lint in favour of
+# `cognitive_complexity`, and rust-code-analysis is unmaintained). Baked
+# into the angzarr-rust image. Generated proto (src/proto) and target/ are
+# excluded. Defaults to `src`. Report-only — never fails the build.
+# (`just lint` already runs clippy's cognitive-complexity gate.)
+complexity *ARGS:
+    just _container complexity {{ARGS}}
+
 # Remove build artifacts
 clean:
     just _container clean

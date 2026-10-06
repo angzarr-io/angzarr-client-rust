@@ -43,7 +43,10 @@ pub trait EditionExt {
 
     /// Deprecated: use [`canonical_name`](Self::canonical_name).
     /// Kept as an alias to avoid breaking downstream call sites.
-    #[deprecated(since = "0.6.0", note = "use canonical_name() — clearer about what's returned")]
+    #[deprecated(
+        since = "0.6.0",
+        note = "use canonical_name() — clearer about what's returned"
+    )]
     fn name_or_default(&self) -> &str {
         self.canonical_name()
     }

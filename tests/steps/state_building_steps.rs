@@ -781,3 +781,91 @@ async fn then_correct_handler(_world: &mut StateBuildingWorld) {
 async fn then_state_mutated(world: &mut StateBuildingWorld) {
     assert!(world.built_state.is_some());
 }
+
+// ==========================================================================
+// New business-vocab stubs (envelope / type-erased / handler vocabulary).
+// ==========================================================================
+
+// TODO (WIP): Implement this step matcher properly.
+#[given(expr = "an event whose envelope identifies type {string}")]
+async fn given_envelope_identifies_type(_world: &mut StateBuildingWorld, _type_id: String) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given("events stored in a type-erased envelope")]
+async fn given_events_in_type_erased_envelope(_world: &mut StateBuildingWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given("a starting state and a sequence of type-erased events")]
+async fn given_starting_state_and_type_erased_events(_world: &mut StateBuildingWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[given("a state and a type-erased event")]
+async fn given_state_and_type_erased_event(_world: &mut StateBuildingWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[when("state is built")]
+async fn when_state_is_built(_world: &mut StateBuildingWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[when("the event is applied")]
+async fn when_the_event_is_applied(_world: &mut StateBuildingWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then("each event should be unwrapped from its envelope")]
+async fn then_each_event_unwrapped_from_envelope(_world: &mut StateBuildingWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then("the event application step should run for each event")]
+async fn then_event_application_runs_for_each(_world: &mut StateBuildingWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then("the resulting state should be returned")]
+async fn then_resulting_state_returned(_world: &mut StateBuildingWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then("the envelope should be unwrapped")]
+async fn then_envelope_unwrapped(_world: &mut StateBuildingWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then("the handler registered for that event type should be invoked")]
+async fn then_registered_handler_invoked(_world: &mut StateBuildingWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then("the produced state should reflect the event")]
+async fn then_produced_state_reflects_event(_world: &mut StateBuildingWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then("the type identifier should resolve to that handler")]
+async fn then_type_identifier_resolves(_world: &mut StateBuildingWorld) {
+    panic!("WIP: step needs implementation");
+}
+
+// TODO (WIP): Implement this step matcher properly.
+#[then("the error should indicate the missing field")]
+async fn then_error_indicates_missing_field(_world: &mut StateBuildingWorld) {
+    panic!("WIP: step needs implementation");
+}
