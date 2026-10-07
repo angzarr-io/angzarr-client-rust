@@ -12,7 +12,7 @@ pub const UNKNOWN_DOMAIN: &str = "unknown";
 pub const PROJECTION_DOMAIN_PREFIX: &str = "_projection";
 
 /// Protobuf type URL for serialized Projection messages in synthetic event books.
-pub const PROJECTION_TYPE_URL: &str = "angzarr_client.proto.angzarr.Projection";
+pub const PROJECTION_TYPE_URL: &str = "io.angzarr.v1.Projection";
 
 /// Wildcard domain for catch-all routing (matches any domain).
 pub const WILDCARD_DOMAIN: &str = "*";
@@ -27,7 +27,22 @@ pub const META_ANGZARR_DOMAIN: &str = "_angzarr";
 /// non-empty identifier.
 pub const DEFAULT_EDITION: &str = "";
 
-/// Type URL prefix for googleapis.com protobuf Any messages.
-///
-/// Used by `decode_typed` to match type URLs in Event/Command payloads.
-pub const TYPE_URL_PREFIX: &str = "type.googleapis.com/";
+/// Prefix of every type URL this client emits: a bare `/` followed by the
+/// message's fully-qualified name (`/orders.OrderCreated`). Received type
+/// URLs may carry any prefix; they are matched by the full name after the
+/// last `/`.
+pub const TYPE_URL_PREFIX: &str = "/";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn projection_type_url_is_the_v1_projection_name() {
+        assert_eq!(PROJECTION_TYPE_URL, "io.angzarr.v1.Projection");
+        assert_eq!(
+            PROJECTION_TYPE_URL,
+            <crate::proto::Projection as prost::Name>::full_name()
+        );
+    }
+}

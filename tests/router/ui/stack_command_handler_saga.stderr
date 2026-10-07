@@ -7,9 +7,9 @@ error: #[command_handler] cannot coexist with #[saga] on the same impl; exactly 
   = note: this error originates in the attribute macro `command_handler` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 warning: unused import: `saga`
- --> tests/router/ui/stack_command_handler_saga.rs:1:39
+ --> tests/router/ui/stack_command_handler_saga.rs:1:47
   |
-1 | use angzarr_client::{command_handler, saga};
-  |                                       ^^^^
+1 | use angzarr_client::router::{command_handler, saga};
+  |                                               ^^^^
   |
   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

@@ -3,35 +3,18 @@
 //! # Command-handler Example
 //!
 //! ```rust,ignore
-//! use angzarr_macros::{command_handler, handles, applies, rejected};
+//! use angzarr_client::router::{applies, command_handler, handles};
 //!
-//! #[command_handler(domain = "player", state = PlayerState)]
-//! impl PlayerAggregate {
-//!     type State = PlayerState;
-//!
-//!     #[applies(PlayerRegistered)]
-//!     fn apply_registered(state: &mut PlayerState, event: PlayerRegistered) {
-//!         state.player_id = format!("player_{}", event.email);
-//!         state.display_name = event.display_name;
-//!         state.exists = true;
+//! #[command_handler(domain = "counter", state = CounterState)]
+//! impl Counter {
+//!     #[applies(Increased)]
+//!     fn apply_increased(state: &mut CounterState, event: Increased) {
+//!         state.value += event.by;
 //!     }
 //!
-//!     #[applies(FundsDeposited)]
-//!     fn apply_deposited(state: &mut PlayerState, event: FundsDeposited) {
-//!         if let Some(balance) = event.new_balance {
-//!             state.bankroll = balance.amount;
-//!         }
-//!     }
-//!
-//!     #[handles(RegisterPlayer)]
-//!     fn register(&self, cb: &CommandBook, cmd: RegisterPlayer, state: &PlayerState, seq: u32)
+//!     #[handles(Increase)]
+//!     fn increase(&self, cmd: Increase, state: &CounterState, seq: u32)
 //!         -> CommandResult<EventBook> {
-//!         // ...
-//!     }
-//!
-//!     #[rejected(domain = "payment", command = "ProcessPayment")]
-//!     fn handle_payment_rejected(&self, notification: &Notification, state: &PlayerState)
-//!         -> CommandResult<BusinessResponse> {
 //!         // ...
 //!     }
 //! }
@@ -133,10 +116,10 @@ fn reject_stacked_kinds(this_kind: &str, attrs: &[Attribute]) -> Option<TokenStr
 ///
 /// # Example
 /// ```rust,ignore
-/// #[command_handler(domain = "player", state = PlayerState)]
-/// impl PlayerAggregate {
-///     #[handles(RegisterPlayer)]
-///     fn register(&self, cmd: RegisterPlayer, state: &PlayerState, seq: u32)
+/// #[command_handler(domain = "counter", state = CounterState)]
+/// impl Counter {
+///     #[handles(Increase)]
+///     fn register(&self, cmd: Increase, state: &CounterState, seq: u32)
 ///         -> CommandResult<EventBook> {
 ///         // ...
 ///     }
@@ -208,13 +191,14 @@ impl syn::parse::Parse for AggregateArgs {
 fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
     let domain = &args.domain;
     let state_ty = &args.state;
-    let self_ty_for_applies = input.self_ty.clone();
     let supports_replay = args.supports_replay;
 
-    let meta = collect_method_metadata(&input);
-
-    // Strip method-level marker attributes so rustc doesn't see them as unknown attrs.
+    let meta = match collect_method_metadata(&input) {
+        Ok(meta) => meta,
+        Err(e) => return e.to_compile_error(),
+    };
     strip_method_markers(&mut input);
+    let self_ty = &input.self_ty;
 
     let handled_exprs = meta
         .handled
@@ -224,11 +208,10 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
         .applies
         .iter()
         .map(|ty| quote! { ::angzarr_client::full_type_url::<#ty>() });
-    let rejected_exprs = meta.rejected.iter().map(|(d, c)| {
-        quote! { (#d.to_string(), #c.to_string()) }
-    });
-    // Audit #45: emit handles_fact type URLs for the metadata-gated
-    // HandleFact RPC.
+    let compensates_exprs = meta
+        .rejected_with_methods
+        .iter()
+        .map(|(_, d, c)| compensates_key(d, c));
     let handles_fact_exprs = meta
         .handles_fact
         .iter()
@@ -241,543 +224,341 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
         None => quote! { ::std::option::Option::None },
     };
 
-    let dispatch_arms: Vec<TokenStream2> = meta
-        .handled_with_methods
-        .iter()
-        .map(|(method_ident, cmd_ty)| {
-            quote! {
-                if *type_url == ::angzarr_client::full_type_url::<#cmd_ty>() {
-                    let cmd_val = <#cmd_ty as ::prost::Message>::decode(payload.value.as_slice())
-                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
-                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
-                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
-                            [
-                                (::angzarr_client::error_codes::keys::TYPE_URL, type_url.clone()),
-                                (::angzarr_client::error_codes::keys::CAUSE, e.to_string()),
-                            ],
-                        ))?;
-                    let events = self.#method_ident(cmd_val, &state, seq)
-                        .map_err(::angzarr_client::ClientError::Rejected)?;
-                    return ::std::result::Result::Ok(
-                        ::angzarr_client::router::HandlerResponse::CommandHandler(
-                            ::angzarr_client::proto::BusinessResponse {
-                                result: ::std::option::Option::Some(
-                                    ::angzarr_client::proto::business_response::Result::Events(events),
-                                ),
-                            },
-                        ),
-                    );
-                }
-            }
-        })
-        .collect();
+    let rebuilder = rebuilder_expr(self_ty, state_ty, &meta);
 
-    // `#[applies(E)]` replay arms: for each prior event whose type_url matches E,
-    // decode and call the applier with `&mut state`.
-    let apply_arms: Vec<TokenStream2> = meta
-        .applies_with_methods
-        .iter()
-        .map(|(method_ident, evt_ty)| {
-            quote! {
-                if *evt_type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
-                    let evt_val = <#evt_ty as ::prost::Message>::decode(evt_any.value.as_slice())
-                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
-                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
-                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
-                            [
-                                (::angzarr_client::error_codes::keys::TYPE_URL, evt_type_url.clone()),
-                                (::angzarr_client::error_codes::keys::CAUSE, e.to_string()),
-                            ],
-                        ))?;
-                    <#self_ty_for_applies>::#method_ident(&mut state, evt_val);
-                    continue;
-                }
-            }
-        })
-        .collect();
-
-    // Initial state constructor: `#[state_factory]` if declared, else `Default::default()`.
-    let initial_state_expr = match &meta.state_factory {
-        Some(method_ident) => {
-            quote! { <#self_ty_for_applies>::#method_ident() }
+    let command_regs = meta.handled_with_methods.iter().map(|(method, cmd_ty)| {
+        quote! {
+            let f = ::std::sync::Arc::clone(&factory);
+            table = table.on_command(
+                &<#cmd_ty as ::prost::Name>::full_name(),
+                move |any, state, ctx| {
+                    let cmd: #cmd_ty = __p::decode(any)?;
+                    let handler = f();
+                    handler
+                        .#method(cmd, &*state, ctx.next_sequence)
+                        .map(::std::option::Option::Some)
+                        .map_err(__p::rejected)
+                },
+            );
         }
-        None => {
-            quote! { <#state_ty as ::std::default::Default>::default() }
+    });
+    let rejection_regs = meta.rejected_with_methods.iter().map(|(method, d, c)| {
+        let key = compensates_key(d, c);
+        quote! {
+            let f = ::std::sync::Arc::clone(&factory);
+            table = table.on_rejected(&#key, move |notification, _rejection, state, _ctx| {
+                let handler = f();
+                handler.#method(notification, &*state).map_err(__p::rejected)
+            });
         }
-    };
-
-    // `#[rejected(domain, command)]` arms. Each matches the rejection key
-    // extracted from the incoming Notification's RejectionNotification payload.
-    let rejection_arms: Vec<TokenStream2> = meta
-        .rejected_with_methods
-        .iter()
-        .map(|(method_ident, rej_domain, rej_command)| {
-            quote! {
-                if target_domain == #rej_domain && target_command_suffix == #rej_command {
-                    let response = self.#method_ident(&notification, &state)
-                        .map_err(::angzarr_client::ClientError::Rejected)?;
-                    return ::std::result::Result::Ok(
-                        ::angzarr_client::router::HandlerResponse::CommandHandler(response),
-                    );
-                }
-            }
-        })
-        .collect();
-
-    // Audit #45: HandleFact dispatch arms — one per `#[handles_fact]`
-    // method. Each arm matches the fact event's type_url, decodes the
-    // payload into the typed event, invokes the user method, and
-    // appends emitted events into the merged EventBook.
-    let fact_dispatch_arms: Vec<TokenStream2> = meta
+    });
+    let fact_regs = meta
         .handles_fact_with_methods
         .iter()
-        .map(|(method_ident, evt_ty)| {
+        .map(|(method, fact_ty)| {
             quote! {
-                if *type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
-                    let evt_val = <#evt_ty as ::prost::Message>::decode(payload.value.as_slice())
-                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
-                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
-                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
-                            [
-                                (::angzarr_client::error_codes::keys::TYPE_URL, type_url.clone()),
-                                (::angzarr_client::error_codes::keys::CAUSE, e.to_string()),
-                            ],
-                        ))?;
-                    let events = self.#method_ident(evt_val, &state)
-                        .map_err(::angzarr_client::ClientError::Rejected)?;
-                    for page in events.pages {
-                        merged.pages.push(page);
-                    }
-                    continue;
-                }
+                let f = ::std::sync::Arc::clone(&factory);
+                table = table.on_fact(&<#fact_ty as ::prost::Name>::full_name(), move |any, state| {
+                    let fact: #fact_ty = __p::decode(any)?;
+                    let handler = f();
+                    let recorded = handler.#method(fact, state).map_err(__p::rejected)?;
+                    ::std::result::Result::Ok(__p::fact_record(recorded))
+                });
             }
-        })
-        .collect();
-
-    // Audit #45: replay body. When `supports_replay = true`, decode the
-    // base snapshot's state, apply events through `#[applies]`, and
-    // pack the result back into an Any. When `false`, emit a stub —
-    // the gRPC adapter gates on metadata so this path is unreachable
-    // for non-opted-in aggregates, but we still need a function body.
-    //
-    // The `supports_replay = true` body requires `#state_ty: ::prost::Message`
-    // for snapshot encode/decode. Aggregates that opt in have signed
-    // off on that constraint; failing the bound surfaces as a clear
-    // compile error.
-    let replay_body: TokenStream2 = if supports_replay {
-        let apply_arms_for_replay = apply_arms.iter();
-        quote! {
-            // Decode base snapshot state into the state type, or use
-            // the initial state when no snapshot was supplied.
-            let mut state: #state_ty = match req
-                .base_snapshot
-                .as_ref()
-                .and_then(|s| s.state.as_ref())
-            {
-                ::std::option::Option::Some(any) if !any.value.is_empty() => {
-                    <#state_ty as ::prost::Message>::decode(any.value.as_slice())
-                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
-                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
-                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
-                            [(::angzarr_client::error_codes::keys::CAUSE, e.to_string())],
-                        ))?
-                }
-                _ => #initial_state_expr,
-            };
-
-            // Apply each event through the matching `#[applies]` method.
-            for page in &req.events {
-                let evt_any = match &page.payload {
-                    ::std::option::Option::Some(
-                        ::angzarr_client::proto::event_page::Payload::Event(e),
-                    ) => e,
-                    _ => continue,
-                };
-                let evt_type_url = &evt_any.type_url;
-                #(#apply_arms_for_replay)*
-            }
-
-            // Pack resulting state into Any and wrap in ReplayResponse.
-            let mut value = ::std::vec::Vec::with_capacity(
-                <#state_ty as ::prost::Message>::encoded_len(&state),
-            );
-            <#state_ty as ::prost::Message>::encode(&state, &mut value)
-                .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
-                    ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
-                    ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
-                    [(::angzarr_client::error_codes::keys::CAUSE, e.to_string())],
-                ))?;
-            let state_any = ::prost_types::Any {
-                type_url: ::angzarr_client::full_type_url::<#state_ty>(),
-                value,
-            };
-            ::std::result::Result::Ok(
-                ::angzarr_client::router::HandlerResponse::Replay(
-                    ::angzarr_client::proto::ReplayResponse {
-                        state: ::std::option::Option::Some(state_any),
-                    },
-                ),
-            )
-        }
+        });
+    let replay_expr = if supports_replay {
+        quote! { let table = table.with_message_state(); }
     } else {
-        quote! {
-            // Aggregate did not opt in via
-            // `#[command_handler(supports_replay = true)]`. The gRPC
-            // adapter's metadata gate normally prevents this from
-            // being reached; defensively return an error if it ever is.
-            let _ = req;
-            ::std::result::Result::Err(
-                ::angzarr_client::ClientError::invalid_argument(
-                    ::angzarr_client::error_codes::codes::HANDLER_WRONG_REQUEST_KIND,
-                    ::angzarr_client::error_codes::messages::HANDLER_WRONG_REQUEST_KIND,
-                    [(
-                        ::angzarr_client::error_codes::keys::EXPECTED_KIND,
-                        "CommandHandler (supports_replay=false)",
-                    )],
-                ),
-            )
-        }
+        quote! {}
     };
 
-    let apply_arms_for_fact = apply_arms.iter();
+    let config_expr: TokenStream2 = quote! {
+        ::angzarr_client::router::HandlerConfig::CommandHandler {
+            domain: #domain.to_string(),
+            handled: ::std::vec![#(#handled_exprs),*],
+            compensates: ::std::vec![#(#compensates_exprs),*],
+            applies: ::std::vec![#(#applies_exprs),*],
+            state_factory: #state_factory_expr,
+            handles_fact: ::std::vec![#(#handles_fact_exprs),*],
+            supports_replay: #supports_replay,
+        }
+    };
+    let name = quote!(#self_ty).to_string();
 
-    let self_ty = &input.self_ty;
     quote! {
         #input
 
         impl ::angzarr_client::router::HandlerKind for #self_ty {
             const KIND: ::angzarr_client::router::Kind =
                 ::angzarr_client::router::Kind::CommandHandler;
-        }
-
-        // Audit #45: HandleFact + Replay helper methods. Called from
-        // the unified `Handler::dispatch` route below for the
-        // corresponding HandlerRequest variants. Stay private to the
-        // generated impl — no public API surface.
-        impl #self_ty {
-            #[doc(hidden)]
-            fn __angzarr_dispatch_fact(
-                &self,
-                req: ::angzarr_client::proto::FactRequest,
-            ) -> ::std::result::Result<
-                ::angzarr_client::router::HandlerResponse,
-                ::angzarr_client::ClientError,
-            > {
-                // Rebuild state from prior_events using `#[applies]`.
-                let prior = req.prior_events.clone().unwrap_or_default();
-                let mut state: #state_ty = #initial_state_expr;
-                for page in &prior.pages {
-                    let evt_any = match &page.payload {
-                        ::std::option::Option::Some(
-                            ::angzarr_client::proto::event_page::Payload::Event(e),
-                        ) => e,
-                        _ => continue,
-                    };
-                    let evt_type_url = &evt_any.type_url;
-                    #(#apply_arms_for_fact)*
-                }
-
-                // Walk facts and dispatch matching `#[handles_fact]` methods.
-                let facts = req.facts.unwrap_or_default();
-                let mut merged = ::angzarr_client::proto::EventBook::default();
-                for page in &facts.pages {
-                    let payload = match &page.payload {
-                        ::std::option::Option::Some(
-                            ::angzarr_client::proto::event_page::Payload::Event(e),
-                        ) => e,
-                        _ => continue,
-                    };
-                    let type_url = &payload.type_url;
-                    #(#fact_dispatch_arms)*
-                    // No matching `#[handles_fact]` for this fact —
-                    // silently skip; coordinator persists it as-is via
-                    // its own pass-through path.
-                }
-                ::std::result::Result::Ok(
-                    ::angzarr_client::router::HandlerResponse::HandleFact(merged),
-                )
+            fn handler_config() -> ::angzarr_client::router::HandlerConfig {
+                #config_expr
             }
-
-            #[doc(hidden)]
-            fn __angzarr_dispatch_replay(
-                &self,
-                req: ::angzarr_client::proto::ReplayRequest,
-            ) -> ::std::result::Result<
-                ::angzarr_client::router::HandlerResponse,
-                ::angzarr_client::ClientError,
-            > {
-                #replay_body
+            fn component(
+                factory: ::angzarr_client::router::component::Factory<Self>,
+            ) -> ::angzarr_client::router::component::Component {
+                use ::angzarr_client::router::component as __p;
+                #[allow(unused_mut)]
+                let mut table = ::angzarr_client::router::binding::aggregate::AggregateDispatch::new(
+                    #name, #domain, #rebuilder,
+                );
+                #(#command_regs)*
+                #(#rejection_regs)*
+                #(#fact_regs)*
+                let _ = &factory;
+                #replay_expr
+                __p::Component::CommandHandler(::std::boxed::Box::new(table))
             }
         }
 
         impl ::angzarr_client::router::Handler for #self_ty {
             fn config(&self) -> ::angzarr_client::router::HandlerConfig {
-                ::angzarr_client::router::HandlerConfig::CommandHandler {
-                    domain: #domain.to_string(),
-                    handled: ::std::vec![#(#handled_exprs),*],
-                    rejected: ::std::vec![#(#rejected_exprs),*],
-                    applies: ::std::vec![#(#applies_exprs),*],
-                    state_factory: #state_factory_expr,
-                    handles_fact: ::std::vec![#(#handles_fact_exprs),*],
-                    supports_replay: #supports_replay,
-                }
-            }
-
-            fn dispatch(
-                &self,
-                request: ::angzarr_client::router::HandlerRequest,
-            ) -> ::std::result::Result<
-                ::angzarr_client::router::HandlerResponse,
-                ::angzarr_client::ClientError,
-            > {
-                // Audit #45: route HandleFact and Replay request variants
-                // to the dedicated paths emitted below before falling
-                // through to the CommandHandler dispatch.
-                let ctx_cmd = match request {
-                    ::angzarr_client::router::HandlerRequest::CommandHandler(c) => c,
-                    ::angzarr_client::router::HandlerRequest::HandleFact(req) => {
-                        return Self::__angzarr_dispatch_fact(self, req);
-                    }
-                    ::angzarr_client::router::HandlerRequest::Replay(req) => {
-                        return Self::__angzarr_dispatch_replay(self, req);
-                    }
-                    _ => {
-                        return ::std::result::Result::Err(
-                            ::angzarr_client::ClientError::invalid_argument(
-                                ::angzarr_client::error_codes::codes::HANDLER_WRONG_REQUEST_KIND,
-                                ::angzarr_client::error_codes::messages::HANDLER_WRONG_REQUEST_KIND,
-                                [(
-                                    ::angzarr_client::error_codes::keys::EXPECTED_KIND,
-                                    "CommandHandler",
-                                )],
-                            ),
-                        );
-                    }
-                };
-
-                let cmd_book = ctx_cmd.command.as_ref().ok_or_else(|| {
-                    ::angzarr_client::ClientError::invalid_argument(
-                        ::angzarr_client::error_codes::codes::MISSING_COMMAND_BOOK,
-                        ::angzarr_client::error_codes::messages::MISSING_COMMAND_BOOK,
-                        ::std::iter::empty::<(&str, ::std::string::String)>(),
-                    )
-                })?;
-                let cmd_page = cmd_book.pages.first().ok_or_else(|| {
-                    ::angzarr_client::ClientError::invalid_argument(
-                        ::angzarr_client::error_codes::codes::MISSING_COMMAND_PAGE,
-                        ::angzarr_client::error_codes::messages::MISSING_COMMAND_PAGE,
-                        ::std::iter::empty::<(&str, ::std::string::String)>(),
-                    )
-                })?;
-                let payload = match &cmd_page.payload {
-                    ::std::option::Option::Some(
-                        ::angzarr_client::proto::command_page::Payload::Command(c),
-                    ) => c,
-                    _ => {
-                        return ::std::result::Result::Err(
-                            ::angzarr_client::ClientError::invalid_argument(
-                                ::angzarr_client::error_codes::codes::MISSING_COMMAND_PAYLOAD,
-                                ::angzarr_client::error_codes::messages::MISSING_COMMAND_PAYLOAD,
-                                ::std::iter::empty::<(&str, ::std::string::String)>(),
-                            ),
-                        );
-                    }
-                };
-                let type_url = &payload.type_url;
-
-                let prior_events = ctx_cmd.events.clone().unwrap_or_default();
-                let seq = ::angzarr_client::EventBookExt::next_sequence(&prior_events);
-
-                // R7: construct initial state (via `#[state_factory]` if declared)
-                // and replay prior events through `#[applies]` methods.
-                let mut state: #state_ty = #initial_state_expr;
-                for page in &prior_events.pages {
-                    let evt_any = match &page.payload {
-                        ::std::option::Option::Some(
-                            ::angzarr_client::proto::event_page::Payload::Event(e),
-                        ) => e,
-                        _ => continue,
-                    };
-                    let evt_type_url = &evt_any.type_url;
-                    #(#apply_arms)*
-                    // No `#[applies]` match → skip silently (handlers may choose
-                    // to ignore events they don't apply on).
-                }
-
-                // R10: Notification → rejection branch.
-                if *type_url == ::angzarr_client::full_type_url::<
-                    ::angzarr_client::proto::Notification
-                >() {
-                    let notification =
-                        <::angzarr_client::proto::Notification as ::prost::Message>::decode(
-                            payload.value.as_slice(),
-                        )
-                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
-                            ::angzarr_client::error_codes::codes::NOTIFICATION_DECODE_FAILED,
-                            ::angzarr_client::error_codes::messages::NOTIFICATION_DECODE_FAILED,
-                            [(::angzarr_client::error_codes::keys::CAUSE, e.to_string())],
-                        ))?;
-
-                    let rejection = match notification.payload.as_ref() {
-                        ::std::option::Option::Some(p) => {
-                            <::angzarr_client::proto::RejectionNotification as ::prost::Message>::decode(
-                                p.value.as_slice(),
-                            )
-                            .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
-                                ::angzarr_client::error_codes::codes::REJECTION_NOTIFICATION_DECODE_FAILED,
-                                ::angzarr_client::error_codes::messages::REJECTION_NOTIFICATION_DECODE_FAILED,
-                                [(::angzarr_client::error_codes::keys::CAUSE, e.to_string())],
-                            ))?
-                        }
-                        ::std::option::Option::None =>
-                            ::angzarr_client::proto::RejectionNotification::default(),
-                    };
-
-                    let target_domain = rejection
-                        .rejected_command
-                        .as_ref()
-                        .and_then(|cb| cb.cover.as_ref().map(|c| c.domain.clone()))
-                        .unwrap_or_default();
-                    let target_command_suffix = rejection
-                        .rejected_command
-                        .as_ref()
-                        .and_then(|cb| {
-                            cb.pages.first().and_then(|p| match &p.payload {
-                                ::std::option::Option::Some(
-                                    ::angzarr_client::proto::command_page::Payload::Command(a),
-                                ) => ::std::option::Option::Some(a.type_url.clone()),
-                                _ => ::std::option::Option::None,
-                            })
-                        })
-                        .map(|url| {
-                            url.rsplit('/')
-                                .next()
-                                .unwrap_or("")
-                                .rsplit('.')
-                                .next()
-                                .unwrap_or("")
-                                .to_string()
-                        })
-                        .unwrap_or_default();
-                    let _ = &seq; // seq unused on rejection path for R10
-
-                    #(#rejection_arms)*
-
-                    // No matching rejection handler → empty compensation.
-                    return ::std::result::Result::Ok(
-                        ::angzarr_client::router::HandlerResponse::CommandHandler(
-                            ::angzarr_client::proto::BusinessResponse {
-                                result: ::std::option::Option::Some(
-                                    ::angzarr_client::proto::business_response::Result::Events(
-                                        ::angzarr_client::proto::EventBook::default(),
-                                    ),
-                                ),
-                            },
-                        ),
-                    );
-                }
-
-                #(#dispatch_arms)*
-
-                ::std::result::Result::Err(
-                    ::angzarr_client::ClientError::invalid_argument(
-                        ::angzarr_client::error_codes::codes::NO_HANDLER_REGISTERED,
-                        ::angzarr_client::error_codes::messages::NO_HANDLER_REGISTERED,
-                        [(::angzarr_client::error_codes::keys::TYPE_URL, type_url.clone())],
-                    ),
-                )
+                <#self_ty as ::angzarr_client::router::HandlerKind>::handler_config()
             }
         }
     }
+}
+
+/// An angzarr-router `Rebuilder<S>` for the impl's state: the
+/// `#[state_factory]` (or `Default`), every `#[applies]` method, and the
+/// snapshot loader when `S` is a protobuf message.
+fn rebuilder_expr(self_ty: &syn::Type, state_ty: &Ident, meta: &MethodMetadata) -> TokenStream2 {
+    let initial = match &meta.state_factory {
+        Some(method) => quote! { <#self_ty>::#method() },
+        None => quote! { <#state_ty as ::std::default::Default>::default() },
+    };
+    let appliers = meta.applies_with_methods.iter().map(|(method, evt_ty)| {
+        quote! {
+            let rebuilder = rebuilder.apply(
+                &<#evt_ty as ::prost::Name>::full_name(),
+                |state: &mut #state_ty, any| {
+                    let event: #evt_ty = ::angzarr_client::router::component::decode_applied(any)?;
+                    <#self_ty>::#method(state, event);
+                    ::std::result::Result::Ok(())
+                },
+            );
+        }
+    });
+    quote! {{
+        use ::angzarr_client::router::component::{IgnoresSnapshot as _, LoadsSnapshot as _};
+        let rebuilder = ::angzarr_client::router::binding::rebuild::Rebuilder::<#state_ty>::new(|| #initial);
+        #(#appliers)*
+        ::angzarr_client::router::component::with_snapshot(
+            rebuilder,
+            (&::angzarr_client::router::component::SnapshotState::<#state_ty>::new())
+                .snapshot_loader(),
+        )
+    }}
+}
+
+/// Which component a handler's optional context parameters come from.
+#[derive(Clone, Copy, PartialEq)]
+enum ContextKind {
+    /// `dests` and the triggering `page` context are in scope.
+    Saga,
+    /// `dests` and `source_cover` are in scope.
+    ProcessManager,
+}
+
+/// The optional context parameters a saga / process-manager handler may
+/// declare after its required ones, by name: `destinations` (the declared
+/// output domains), `source_cover` (the triggering book's cover) and, for a
+/// saga, `source_seq` (the triggering event's sequence).
+fn context_args(
+    method: &syn::ImplItemFn,
+    required: usize,
+    kind: ContextKind,
+) -> syn::Result<Vec<TokenStream2>> {
+    let mut out = Vec::new();
+    for arg in method.sig.inputs.iter().skip(1 + required) {
+        let syn::FnArg::Typed(pat) = arg else {
+            continue;
+        };
+        let syn::Pat::Ident(ident) = &*pat.pat else {
+            return Err(syn::Error::new_spanned(
+                &pat.pat,
+                "context parameters are matched by name; use a plain identifier",
+            ));
+        };
+        match (ident.ident.to_string().as_str(), kind) {
+            ("destinations", _) => out.push(quote! { dests }),
+            ("source_cover", ContextKind::Saga) => out.push(quote! { page.cover.cloned() }),
+            ("source_cover", ContextKind::ProcessManager) => {
+                out.push(quote! { source_cover.cloned() })
+            }
+            ("source_seq", ContextKind::Saga) => out.push(quote! { page.sequence }),
+            (other, ContextKind::Saga) => {
+                return Err(syn::Error::new_spanned(
+                    &ident.ident,
+                    format!(
+                        "unsupported handler parameter `{other}`: optional parameters are \
+                         `destinations`, `source_cover` and `source_seq`"
+                    ),
+                ))
+            }
+            (other, ContextKind::ProcessManager) => {
+                return Err(syn::Error::new_spanned(
+                    &ident.ident,
+                    format!(
+                        "unsupported handler parameter `{other}`: optional parameters are \
+                         `destinations` and `source_cover`"
+                    ),
+                ))
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The method named `name` in the impl.
+fn find_method<'a>(input: &'a ItemImpl, name: &Ident) -> &'a syn::ImplItemFn {
+    input
+        .items
+        .iter()
+        .find_map(|item| match item {
+            ImplItem::Fn(m) if &m.sig.ident == name => Some(m),
+            _ => None,
+        })
+        .expect("metadata names a method of this impl")
 }
 
 /// Metadata harvested from method-level attribute markers inside a kind-impl.
 struct MethodMetadata {
     /// Types named in `#[handles(T)]` (kept for config emission).
-    handled: Vec<Ident>,
+    handled: Vec<syn::Path>,
     /// `(method name, command type)` pairs for dispatch-arm generation.
-    handled_with_methods: Vec<(Ident, Ident)>,
-    /// `(domain, command)` pairs from `#[rejected(domain = "...", command = "...")]`.
-    rejected: Vec<(String, String)>,
-    /// `(method name, domain, command)` triples for rejection-arm generation.
-    rejected_with_methods: Vec<(Ident, String, String)>,
+    handled_with_methods: Vec<(Ident, syn::Path)>,
+    /// `(method name, domain qualifier, command type)` from `#[rejected]`.
+    rejected_with_methods: Vec<(Ident, Option<String>, syn::Path)>,
     /// Types named in `#[applies(T)]` (kept for config emission).
-    applies: Vec<Ident>,
+    applies: Vec<syn::Path>,
     /// `(method name, event type)` pairs for state-rebuild-arm generation.
-    applies_with_methods: Vec<(Ident, Ident)>,
+    applies_with_methods: Vec<(Ident, syn::Path)>,
     /// Name of the method annotated with `#[state_factory]`, if any.
     state_factory: Option<Ident>,
     /// `(method name, from type, to type)` triples for upcaster dispatch arms.
-    upcasts_with_methods: Vec<(Ident, Ident, Ident)>,
-    /// Audit #45: types named in `#[handles_fact(T)]` for config emission.
-    handles_fact: Vec<Ident>,
-    /// Audit #45: `(method name, fact event type)` pairs for HandleFact
+    upcasts_with_methods: Vec<(Ident, syn::Path, syn::Path)>,
+    /// Types named in `#[handles_fact(T)]` for config emission.
+    handles_fact: Vec<syn::Path>,
+    /// `(method name, fact event type)` pairs for HandleFact
     /// dispatch-arm generation.
-    handles_fact_with_methods: Vec<(Ident, Ident)>,
+    handles_fact_with_methods: Vec<(Ident, syn::Path)>,
 }
 
-fn collect_method_metadata(input: &ItemImpl) -> MethodMetadata {
-    let mut handled = Vec::new();
-    let mut handled_with_methods = Vec::new();
-    let mut rejected = Vec::new();
-    let mut rejected_with_methods = Vec::new();
-    let mut applies = Vec::new();
-    let mut applies_with_methods = Vec::new();
-    let mut state_factory = None;
-    let mut upcasts_with_methods = Vec::new();
-    let mut handles_fact = Vec::new();
-    let mut handles_fact_with_methods = Vec::new();
+/// Method-level markers a kind macro consumes. A method carries at most one
+/// of them: a handler, applier, compensator, state factory and upcast are
+/// different roles with different signatures.
+const METHOD_MARKERS: &[&str] = &[
+    "handles",
+    "handles_fact",
+    "applies",
+    "rejected",
+    "state_factory",
+    "upcasts",
+];
+
+fn marker_name(attr: &Attribute) -> Option<&'static str> {
+    METHOD_MARKERS
+        .iter()
+        .copied()
+        .find(|m| attr.path().is_ident(m))
+}
+
+/// Collect every method marker of a kind impl. A malformed marker, or a
+/// method carrying two different markers, is a compile error (all such
+/// errors are reported together) rather than a silently unrouted method.
+fn collect_method_metadata(input: &ItemImpl) -> syn::Result<MethodMetadata> {
+    let mut meta = MethodMetadata {
+        handled: Vec::new(),
+        handled_with_methods: Vec::new(),
+        rejected_with_methods: Vec::new(),
+        applies: Vec::new(),
+        applies_with_methods: Vec::new(),
+        state_factory: None,
+        upcasts_with_methods: Vec::new(),
+        handles_fact: Vec::new(),
+        handles_fact_with_methods: Vec::new(),
+    };
+    let mut errors: Option<syn::Error> = None;
+    let mut push_err = |e: syn::Error| match errors.as_mut() {
+        Some(acc) => acc.combine(e),
+        None => errors = Some(e),
+    };
 
     for item in &input.items {
         let ImplItem::Fn(method) = item else { continue };
+        let name = &method.sig.ident;
+        let mut role: Option<&'static str> = None;
         for attr in &method.attrs {
-            if attr.path().is_ident("handles") {
-                if let Ok(ty) = get_attr_ident(attr) {
-                    handled.push(ty.clone());
-                    handled_with_methods.push((method.sig.ident.clone(), ty));
+            let Some(marker) = marker_name(attr) else {
+                continue;
+            };
+            match role {
+                Some(first) if first != marker => push_err(syn::Error::new_spanned(
+                    attr,
+                    format!(
+                        "#[{marker}] conflicts with #[{first}] on `{name}`: a method takes exactly one role"
+                    ),
+                )),
+                _ => role = Some(marker),
+            }
+            match marker {
+                "handles" => match get_attr_path(attr) {
+                    Ok(ty) => {
+                        meta.handled.push(ty.clone());
+                        meta.handled_with_methods.push((name.clone(), ty));
+                    }
+                    Err(e) => push_err(e),
+                },
+                "handles_fact" => match get_attr_path(attr) {
+                    Ok(ty) => {
+                        meta.handles_fact.push(ty.clone());
+                        meta.handles_fact_with_methods.push((name.clone(), ty));
+                    }
+                    Err(e) => push_err(e),
+                },
+                "applies" => match get_attr_path(attr) {
+                    Ok(ty) => {
+                        meta.applies.push(ty.clone());
+                        meta.applies_with_methods.push((name.clone(), ty));
+                    }
+                    Err(e) => push_err(e),
+                },
+                "rejected" => match get_rejected_args(attr) {
+                    Ok((d, c)) => meta.rejected_with_methods.push((name.clone(), d, c)),
+                    Err(e) => push_err(e),
+                },
+                "state_factory" => {
+                    if !matches!(attr.meta, Meta::Path(_)) {
+                        push_err(syn::Error::new_spanned(
+                            attr,
+                            "#[state_factory] takes no arguments",
+                        ));
+                    } else if let Some(prev) = &meta.state_factory {
+                        push_err(syn::Error::new_spanned(
+                            attr,
+                            format!("#[state_factory] is already declared on `{prev}`"),
+                        ));
+                    } else {
+                        meta.state_factory = Some(name.clone());
+                    }
                 }
-            } else if attr.path().is_ident("handles_fact") {
-                // Audit #45: fact-event handler. Same shape as
-                // `#[handles]` but routed through HandleFact RPC.
-                if let Ok(ty) = get_attr_ident(attr) {
-                    handles_fact.push(ty.clone());
-                    handles_fact_with_methods.push((method.sig.ident.clone(), ty));
-                }
-            } else if attr.path().is_ident("applies") {
-                if let Ok(ty) = get_attr_ident(attr) {
-                    applies.push(ty.clone());
-                    applies_with_methods.push((method.sig.ident.clone(), ty));
-                }
-            } else if attr.path().is_ident("rejected") {
-                if let Ok((d, c)) = get_rejected_args(attr) {
-                    rejected.push((d.clone(), c.clone()));
-                    rejected_with_methods.push((method.sig.ident.clone(), d, c));
-                }
-            } else if attr.path().is_ident("state_factory") {
-                state_factory = Some(method.sig.ident.clone());
-            } else if attr.path().is_ident("upcasts") {
-                if let Ok((from, to)) = get_upcasts_args(attr) {
-                    upcasts_with_methods.push((method.sig.ident.clone(), from, to));
-                }
+                "upcasts" => match get_upcasts_args(attr) {
+                    Ok((from, to)) => meta.upcasts_with_methods.push((name.clone(), from, to)),
+                    Err(e) => push_err(e),
+                },
+                _ => {}
             }
         }
     }
 
-    MethodMetadata {
-        handled,
-        handled_with_methods,
-        rejected,
-        rejected_with_methods,
-        applies,
-        applies_with_methods,
-        state_factory,
-        upcasts_with_methods,
-        handles_fact,
-        handles_fact_with_methods,
+    match errors {
+        Some(e) => Err(e),
+        None => Ok(meta),
     }
 }
 
-fn get_upcasts_args(attr: &Attribute) -> syn::Result<(Ident, Ident)> {
+fn get_upcasts_args(attr: &Attribute) -> syn::Result<(syn::Path, syn::Path)> {
     let meta = attr.meta.clone();
     match meta {
         Meta::List(list) => {
@@ -792,8 +573,8 @@ fn get_upcasts_args(attr: &Attribute) -> syn::Result<(Ident, Ident)> {
 }
 
 struct UpcastsArgsParse {
-    from: Ident,
-    to: Ident,
+    from: syn::Path,
+    to: syn::Path,
 }
 
 impl syn::parse::Parse for UpcastsArgsParse {
@@ -804,12 +585,17 @@ impl syn::parse::Parse for UpcastsArgsParse {
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
             input.parse::<Token![=]>()?;
-            let value: Ident = input.parse()?;
+            let value: syn::Path = input.parse()?;
 
             match ident.to_string().as_str() {
                 "from" => from = Some(value),
                 "to" => to = Some(value),
-                _ => return Err(syn::Error::new(ident.span(), "unknown attribute")),
+                _ => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        "unknown #[upcasts] argument: expected `from` or `to`",
+                    ))
+                }
             }
 
             if input.peek(Token![,]) {
@@ -849,8 +635,8 @@ fn strip_method_markers(input: &mut ItemImpl) {
 ///
 /// # Example
 /// ```rust,ignore
-/// #[handles(RegisterPlayer)]
-/// fn register(&self, cmd: RegisterPlayer, state: &PlayerState, seq: u32)
+/// #[handles(Increase)]
+/// fn register(&self, cmd: Increase, state: &CounterState, seq: u32)
 ///     -> CommandResult<EventBook> {
 ///     // ...
 /// }
@@ -862,25 +648,31 @@ pub fn handles(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 
-/// Marks a method as a fact-event handler — audit #45.
+/// Marks a method as a fact handler.
 ///
 /// Triggered when the coordinator dispatches a fact (an external
 /// reality, e.g. a payment confirmation) via the `HandleFact` RPC. The
-/// method receives `(self, event, state)` after state has been rebuilt
-/// from prior events; it returns the events to persist on the
-/// aggregate.
+/// method receives `(self, fact, state)` after state has been rebuilt
+/// from prior events (and the facts and flags recorded before it in the
+/// same request). It returns the fact to record, optionally followed by
+/// events that flag it, as a `FactRecord`; returning the fact message
+/// itself records it with no flags. Facts cannot be refused.
 ///
-/// Aggregates with at least one `#[handles_fact]` method opt into the
-/// `HandleFact` RPC. Aggregates with none get UNIMPLEMENTED from the
-/// framework's gRPC adapter — the coordinator falls back to
-/// pass-through-persist per the proto's Optional contract.
+/// Each `#[handles_fact]` type is a `ComponentOptions.facts` entry. A fact
+/// of any other type is refused with INVALID_ARGUMENT / NO_FACT_HANDLER and
+/// nothing is recorded.
 ///
 /// # Example
 /// ```rust,ignore
-/// #[handles_fact(StockReserved)]
-/// fn on_stock_reserved(&self, event: StockReserved, state: &PlayerState)
-///     -> CommandResult<EventBook> {
-///     // ...
+/// #[handles_fact(ShipmentDispatched)]
+/// fn on_dispatched(&self, fact: ShipmentDispatched, state: &OrderState)
+///     -> CommandResult<FactRecord> {
+///     let record = FactRecord::new(&fact);
+///     Ok(if state.awaiting_shipment {
+///         record
+///     } else {
+///         record.flag(&ShipmentDiscrepancy { order_id: fact.order_id })
+///     })
 /// }
 /// ```
 #[proc_macro_attribute]
@@ -890,24 +682,30 @@ pub fn handles_fact(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 
-/// Marks a method as a rejection handler.
+/// Marks a method as a rejection (compensation) handler on a command
+/// handler or process manager — a `compensates` entry.
 ///
 /// # Attributes
-/// - `domain = "name"` - The domain of the rejected command
-/// - `command = "name"` - The type of the rejected command
+/// - `command = Type` - The rejected command's type (required); matched by
+///   its fully-qualified name
+/// - `domain = "name"` - Only when the command was sent to this domain
+///   (optional; without it any domain matches)
+///
+/// A `#[saga]` never receives rejections; `#[rejected]` there is a compile
+/// error.
 ///
 /// # Example
 /// ```rust,ignore
-/// #[rejected(domain = "payment", command = "ProcessPayment")]
-/// fn handle_payment_rejected(&self, notification: &Notification, state: &PlayerState)
+/// #[rejected(domain = "payment", command = ProcessPayment)]
+/// fn handle_payment_rejected(&self, notification: &Notification, state: &CounterState)
 ///     -> CommandResult<BusinessResponse> {
 ///     // ...
 /// }
 /// ```
 #[proc_macro_attribute]
 pub fn rejected(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    // The actual work is done by the #[command_handler] or #[process_manager] macro
-    // This is just a marker attribute
+    // Marker consumed by #[command_handler] / #[process_manager]; a #[saga]
+    // rejects it at compile time.
     item
 }
 
@@ -922,15 +720,15 @@ pub fn rejected(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Example
 /// ```rust,ignore
-/// #[applies(PlayerRegistered)]
-/// fn apply_registered(state: &mut PlayerState, event: PlayerRegistered) {
-///     state.player_id = format!("player_{}", event.email);
+/// #[applies(Increased)]
+/// fn apply_registered(state: &mut CounterState, event: Increased) {
+///     state.value += event.by;
 ///     state.display_name = event.display_name;
 ///     state.exists = true;
 /// }
 ///
 /// #[applies(FundsDeposited)]
-/// fn apply_deposited(state: &mut PlayerState, event: FundsDeposited) {
+/// fn apply_deposited(state: &mut CounterState, event: FundsDeposited) {
 ///     if let Some(balance) = event.new_balance {
 ///         state.bankroll = balance.amount;
 ///     }
@@ -945,8 +743,15 @@ pub fn applies(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Marks an impl block as a saga with event handlers.
 ///
-/// Sagas are pure translators: they receive source events and produce commands
-/// with deferred sequences. The framework handles sequence assignment on delivery.
+/// Sagas are pure translators: they receive source events and produce
+/// commands. Emitted commands are deferred: the router stamps their
+/// `angzarr_deferred` provenance and the destination assigns the sequence.
+///
+/// A handler takes the event and may also declare, by name, `destinations:
+/// &Destinations` (the declared output domains), `source_cover:
+/// Option<Cover>` (the triggering book's cover) and `source_seq: u32` (the
+/// triggering event's sequence). Process-manager handlers take
+/// `destinations` and `source_cover` after their state.
 ///
 /// # Attributes
 /// - `name = "saga-name"` - The saga's name (required)
@@ -980,7 +785,6 @@ pub fn saga(attr: TokenStream, item: TokenStream) -> TokenStream {
 struct SagaArgs {
     name: String,
     source: String,
-    #[allow(dead_code)] // consumed once the saga macro is R1-ified in R11
     target: String,
     /// Audit #74: whether commands emitted to ``target`` ever use sync
     /// mode. Default ``false`` — async-only target rides the bus, no
@@ -1033,129 +837,103 @@ impl syn::parse::Parse for SagaArgs {
     }
 }
 
+/// A saga never receives a rejection: a rejected saga-emitted command is
+/// compensated by the component whose event triggered the saga (its
+/// `angzarr_deferred.source`). `#[rejected]` on a saga is a compile error.
+fn reject_saga_compensation(input: &ItemImpl) -> Option<TokenStream2> {
+    let mut errors: Option<syn::Error> = None;
+    for item in &input.items {
+        let ImplItem::Fn(method) = item else { continue };
+        for attr in method
+            .attrs
+            .iter()
+            .filter(|a| a.path().is_ident("rejected"))
+        {
+            let e = syn::Error::new_spanned(
+                attr,
+                "#[rejected] is not allowed on a #[saga]: a saga never receives rejections; \
+                 declare the compensation on the component whose event triggered the saga",
+            );
+            match errors.as_mut() {
+                Some(acc) => acc.combine(e),
+                None => errors = Some(e),
+            }
+        }
+    }
+    errors.map(|e| e.to_compile_error())
+}
+
 fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
+    if let Some(err) = reject_saga_compensation(&input) {
+        return err;
+    }
     let name = &args.name;
     let source = &args.source;
     let target = &args.target;
     let sync = args.sync;
 
-    let meta = collect_method_metadata(&input);
+    let meta = match collect_method_metadata(&input) {
+        Ok(meta) => meta,
+        Err(e) => return e.to_compile_error(),
+    };
+    let mut regs = Vec::new();
+    for (method, evt_ty) in &meta.handled_with_methods {
+        let extra = match context_args(find_method(&input, method), 1, ContextKind::Saga) {
+            Ok(extra) => extra,
+            Err(e) => return e.to_compile_error(),
+        };
+        regs.push(quote! {
+            let f = ::std::sync::Arc::clone(&factory);
+            table = table.on_event_with_context(
+                &<#evt_ty as ::prost::Name>::full_name(),
+                move |any, dests, page| {
+                    let _ = (&dests, &page);
+                    let event: #evt_ty = __p::decode(any)?;
+                    let handler = f();
+                    let response = handler.#method(event #(, #extra)*).map_err(__p::rejected)?;
+                    ::std::result::Result::Ok((response.commands, response.events))
+                },
+            );
+        });
+    }
     strip_method_markers(&mut input);
+    let self_ty = &input.self_ty;
 
     let handled_exprs = meta
         .handled
         .iter()
         .map(|ty| quote! { ::angzarr_client::full_type_url::<#ty>() });
-    let rejected_exprs = meta.rejected.iter().map(|(d, c)| {
-        quote! { (#d.to_string(), #c.to_string()) }
-    });
 
-    let dispatch_arms: Vec<TokenStream2> = meta
-        .handled_with_methods
-        .iter()
-        .map(|(method_ident, evt_ty)| {
-            quote! {
-                if event_any.type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
-                    let evt = <#evt_ty as ::prost::Message>::decode(event_any.value.as_slice())
-                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
-                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
-                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
-                            [
-                                (::angzarr_client::error_codes::keys::TYPE_URL, event_any.type_url.clone()),
-                                (::angzarr_client::error_codes::keys::CAUSE, e.to_string()),
-                            ],
-                        ))?;
-                    let response = self.#method_ident(evt)
-                        .map_err(::angzarr_client::ClientError::Rejected)?;
-                    return ::std::result::Result::Ok(
-                        ::angzarr_client::router::HandlerResponse::Saga(response),
-                    );
-                }
-            }
-        })
-        .collect();
-
-    let self_ty = &input.self_ty;
     quote! {
         #input
 
         impl ::angzarr_client::router::HandlerKind for #self_ty {
             const KIND: ::angzarr_client::router::Kind =
                 ::angzarr_client::router::Kind::Saga;
-        }
-
-        impl ::angzarr_client::router::Handler for #self_ty {
-            fn config(&self) -> ::angzarr_client::router::HandlerConfig {
+            fn handler_config() -> ::angzarr_client::router::HandlerConfig {
                 ::angzarr_client::router::HandlerConfig::Saga {
                     name: #name.to_string(),
                     source: #source.to_string(),
                     target: #target.to_string(),
                     sync: #sync,
                     handled: ::std::vec![#(#handled_exprs),*],
-                    rejected: ::std::vec![#(#rejected_exprs),*],
                 }
             }
+            fn component(
+                factory: ::angzarr_client::router::component::Factory<Self>,
+            ) -> ::angzarr_client::router::component::Component {
+                use ::angzarr_client::router::component as __p;
+                let mut table =
+                    ::angzarr_client::router::binding::saga::SagaDispatch::new(#name, #source, [#target]);
+                #(#regs)*
+                let _ = &factory;
+                __p::Component::Saga(table)
+            }
+        }
 
-            fn dispatch(
-                &self,
-                request: ::angzarr_client::router::HandlerRequest,
-            ) -> ::std::result::Result<
-                ::angzarr_client::router::HandlerResponse,
-                ::angzarr_client::ClientError,
-            > {
-                let saga_req = match request {
-                    ::angzarr_client::router::HandlerRequest::Saga(r) => r,
-                    _ => {
-                        return ::std::result::Result::Err(
-                            ::angzarr_client::ClientError::invalid_argument(
-                                ::angzarr_client::error_codes::codes::HANDLER_WRONG_REQUEST_KIND,
-                                ::angzarr_client::error_codes::messages::HANDLER_WRONG_REQUEST_KIND,
-                                [(
-                                    ::angzarr_client::error_codes::keys::EXPECTED_KIND,
-                                    "Saga",
-                                )],
-                            ),
-                        );
-                    }
-                };
-
-                let source_book = saga_req.source.as_ref().ok_or_else(|| {
-                    ::angzarr_client::ClientError::invalid_argument(
-                        ::angzarr_client::error_codes::codes::MISSING_SAGA_SOURCE,
-                        ::angzarr_client::error_codes::messages::MISSING_SAGA_SOURCE,
-                        ::std::iter::empty::<(&str, ::std::string::String)>(),
-                    )
-                })?;
-                let event_page = source_book.pages.last().ok_or_else(|| {
-                    ::angzarr_client::ClientError::invalid_argument(
-                        ::angzarr_client::error_codes::codes::EMPTY_SAGA_SOURCE,
-                        ::angzarr_client::error_codes::messages::EMPTY_SAGA_SOURCE,
-                        ::std::iter::empty::<(&str, ::std::string::String)>(),
-                    )
-                })?;
-                let event_any = match &event_page.payload {
-                    ::std::option::Option::Some(
-                        ::angzarr_client::proto::event_page::Payload::Event(e),
-                    ) => e,
-                    _ => {
-                        return ::std::result::Result::Err(
-                            ::angzarr_client::ClientError::invalid_argument(
-                                ::angzarr_client::error_codes::codes::MISSING_SAGA_EVENT_PAYLOAD,
-                                ::angzarr_client::error_codes::messages::MISSING_SAGA_EVENT_PAYLOAD,
-                                ::std::iter::empty::<(&str, ::std::string::String)>(),
-                            ),
-                        );
-                    }
-                };
-
-                #(#dispatch_arms)*
-
-                // No #[handles] match → empty SagaResponse (runtime merge handles it).
-                ::std::result::Result::Ok(
-                    ::angzarr_client::router::HandlerResponse::Saga(
-                        ::angzarr_client::proto::SagaResponse::default(),
-                    ),
-                )
+        impl ::angzarr_client::router::Handler for #self_ty {
+            fn config(&self) -> ::angzarr_client::router::HandlerConfig {
+                <#self_ty as ::angzarr_client::router::HandlerKind>::handler_config()
             }
         }
     }
@@ -1165,13 +943,16 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
 ///
 /// # Attributes
 /// - `name = "pm-name"` - The PM's name (required)
-/// - `domain = "pm-domain"` - The PM's own domain for state (required)
+/// - `pm_domain = "pm-domain"` - The PM's own domain for state (required)
 /// - `state = StateType` - The PM's state type (required)
-/// - `inputs = ["domain1", "domain2"]` - Input domains to subscribe to (required)
+/// - `sources = ["domain1", "domain2"]` - Domains whose events trigger it (required)
+/// - `targets = ["domain"]` - Domains it issues commands to (required)
+/// - `sync_targets = ["domain"]` - Targets addressed synchronously (optional, ⊆ targets)
 ///
 /// # Example
 /// ```rust,ignore
-/// #[process_manager(name = "hand-flow", domain = "hand-flow", state = PMState, inputs = ["table", "hand"])]
+/// #[process_manager(name = "hand-flow", pm_domain = "hand-flow", state = PMState,
+///                   sources = ["table", "hand"], targets = ["hand"])]
 /// impl HandFlowPM {
 ///     #[applies(PMStateUpdated)]
 ///     fn apply_state(state: &mut PMState, event: PMStateUpdated) {
@@ -1203,7 +984,6 @@ struct ProcessManagerArgs {
     pm_domain: String,
     state: Ident,
     sources: Vec<String>,
-    #[allow(dead_code)] // consumed once the process_manager macro is R1-ified in R12
     targets: Vec<String>,
     /// Audit #74: subset of ``targets`` whose commands ever use sync
     /// mode. Drives readiness probing — only sync targets get an
@@ -1310,10 +1090,49 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
     let sources = &args.sources;
     let targets = &args.targets;
     let sync_targets = &args.sync_targets;
-    let self_ty_for_applies = input.self_ty.clone();
 
-    let meta = collect_method_metadata(&input);
+    let meta = match collect_method_metadata(&input) {
+        Ok(meta) => meta,
+        Err(e) => return e.to_compile_error(),
+    };
+    let mut regs = Vec::new();
+    for (method, evt_ty) in &meta.handled_with_methods {
+        let extra = match context_args(find_method(&input, method), 2, ContextKind::ProcessManager)
+        {
+            Ok(extra) => extra,
+            Err(e) => return e.to_compile_error(),
+        };
+        for source in sources {
+            regs.push(quote! {
+                let f = ::std::sync::Arc::clone(&factory);
+                table = table.on_event(
+                    #source,
+                    &<#evt_ty as ::prost::Name>::full_name(),
+                    move |any, state, dests, source_cover| {
+                        let _ = (&dests, &source_cover);
+                        let event: #evt_ty = __p::decode(any)?;
+                        let handler = f();
+                        handler
+                            .#method(event, &*state #(, #extra)*)
+                            .map_err(__p::rejected)
+                    },
+                );
+            });
+        }
+    }
+    let rejection_regs = meta.rejected_with_methods.iter().map(|(method, d, c)| {
+        let key = compensates_key(d, c);
+        quote! {
+            let f = ::std::sync::Arc::clone(&factory);
+            table = table.on_rejected(&#key, move |notification, _rejection, state| {
+                let handler = f();
+                handler.#method(notification, &*state).map_err(__p::rejected)
+            });
+        }
+    });
     strip_method_markers(&mut input);
+    let self_ty = &input.self_ty;
+    let rebuilder = rebuilder_expr(self_ty, state_ty, &meta);
 
     let handled_exprs = meta
         .handled
@@ -1323,9 +1142,10 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
         .applies
         .iter()
         .map(|ty| quote! { ::angzarr_client::full_type_url::<#ty>() });
-    let rejected_exprs = meta.rejected.iter().map(|(d, c)| {
-        quote! { (#d.to_string(), #c.to_string()) }
-    });
+    let compensates_exprs = meta
+        .rejected_with_methods
+        .iter()
+        .map(|(_, d, c)| compensates_key(d, c));
     let state_factory_expr = match &meta.state_factory {
         Some(name) => {
             let s = name.to_string();
@@ -1333,78 +1153,17 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
         }
         None => quote! { ::std::option::Option::None },
     };
-
-    let dispatch_arms: Vec<TokenStream2> = meta
-        .handled_with_methods
-        .iter()
-        .map(|(method_ident, evt_ty)| {
-            quote! {
-                if event_any.type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
-                    let evt = <#evt_ty as ::prost::Message>::decode(event_any.value.as_slice())
-                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
-                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
-                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
-                            [
-                                (::angzarr_client::error_codes::keys::TYPE_URL, event_any.type_url.clone()),
-                                (::angzarr_client::error_codes::keys::CAUSE, e.to_string()),
-                            ],
-                        ))?;
-                    let response = self.#method_ident(evt, &state)
-                        .map_err(::angzarr_client::ClientError::Rejected)?;
-                    return ::std::result::Result::Ok(
-                        ::angzarr_client::router::HandlerResponse::ProcessManager(response),
-                    );
-                }
-            }
-        })
-        .collect();
-
-    let apply_arms: Vec<TokenStream2> = meta
-        .applies_with_methods
-        .iter()
-        .map(|(method_ident, evt_ty)| {
-            quote! {
-                if *evt_type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
-                    let evt_val = <#evt_ty as ::prost::Message>::decode(evt_any.value.as_slice())
-                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
-                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
-                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
-                            [
-                                (::angzarr_client::error_codes::keys::TYPE_URL, evt_type_url.clone()),
-                                (::angzarr_client::error_codes::keys::CAUSE, e.to_string()),
-                            ],
-                        ))?;
-                    <#self_ty_for_applies>::#method_ident(&mut state, evt_val);
-                    continue;
-                }
-            }
-        })
-        .collect();
-
-    let initial_state_expr = match &meta.state_factory {
-        Some(method_ident) => {
-            quote! { <#self_ty_for_applies>::#method_ident() }
-        }
-        None => {
-            quote! { <#state_ty as ::std::default::Default>::default() }
-        }
-    };
-
     let sources_vec = sources.iter().map(|s| quote! { #s.to_string() });
     let targets_vec = targets.iter().map(|s| quote! { #s.to_string() });
     let sync_targets_vec = sync_targets.iter().map(|s| quote! { #s.to_string() });
 
-    let self_ty = &input.self_ty;
     quote! {
         #input
 
         impl ::angzarr_client::router::HandlerKind for #self_ty {
             const KIND: ::angzarr_client::router::Kind =
                 ::angzarr_client::router::Kind::ProcessManager;
-        }
-
-        impl ::angzarr_client::router::Handler for #self_ty {
-            fn config(&self) -> ::angzarr_client::router::HandlerConfig {
+            fn handler_config() -> ::angzarr_client::router::HandlerConfig {
                 ::angzarr_client::router::HandlerConfig::ProcessManager {
                     name: #name.to_string(),
                     pm_domain: #pm_domain.to_string(),
@@ -1412,86 +1171,29 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
                     targets: ::std::vec![#(#targets_vec),*],
                     sync_targets: ::std::vec![#(#sync_targets_vec),*],
                     handled: ::std::vec![#(#handled_exprs),*],
-                    rejected: ::std::vec![#(#rejected_exprs),*],
+                    compensates: ::std::vec![#(#compensates_exprs),*],
                     applies: ::std::vec![#(#applies_exprs),*],
                     state_factory: #state_factory_expr,
                 }
             }
+            fn component(
+                factory: ::angzarr_client::router::component::Factory<Self>,
+            ) -> ::angzarr_client::router::component::Component {
+                use ::angzarr_client::router::component as __p;
+                #[allow(unused_mut)]
+                let mut table = ::angzarr_client::router::binding::process_manager::ProcessManagerDispatch::new(
+                    #name, #pm_domain, [#(#targets),*], #rebuilder,
+                );
+                #(#regs)*
+                #(#rejection_regs)*
+                let _ = &factory;
+                __p::Component::ProcessManager(::std::boxed::Box::new(table))
+            }
+        }
 
-            fn dispatch(
-                &self,
-                request: ::angzarr_client::router::HandlerRequest,
-            ) -> ::std::result::Result<
-                ::angzarr_client::router::HandlerResponse,
-                ::angzarr_client::ClientError,
-            > {
-                let pm_req = match request {
-                    ::angzarr_client::router::HandlerRequest::ProcessManager(r) => r,
-                    _ => {
-                        return ::std::result::Result::Err(
-                            ::angzarr_client::ClientError::invalid_argument(
-                                ::angzarr_client::error_codes::codes::HANDLER_WRONG_REQUEST_KIND,
-                                ::angzarr_client::error_codes::messages::HANDLER_WRONG_REQUEST_KIND,
-                                [(
-                                    ::angzarr_client::error_codes::keys::EXPECTED_KIND,
-                                    "ProcessManager",
-                                )],
-                            ),
-                        );
-                    }
-                };
-
-                // Rebuild PM state from process_state events.
-                let mut state: #state_ty = #initial_state_expr;
-                let process_state = pm_req.process_state.clone().unwrap_or_default();
-                for page in &process_state.pages {
-                    let evt_any = match &page.payload {
-                        ::std::option::Option::Some(
-                            ::angzarr_client::proto::event_page::Payload::Event(e),
-                        ) => e,
-                        _ => continue,
-                    };
-                    let evt_type_url = &evt_any.type_url;
-                    #(#apply_arms)*
-                }
-
-                // Extract triggering event from trigger EventBook's last page.
-                let trigger = pm_req.trigger.as_ref().ok_or_else(|| {
-                    ::angzarr_client::ClientError::invalid_argument(
-                        ::angzarr_client::error_codes::codes::MISSING_PM_TRIGGER,
-                        ::angzarr_client::error_codes::messages::MISSING_PM_TRIGGER,
-                        ::std::iter::empty::<(&str, ::std::string::String)>(),
-                    )
-                })?;
-                let event_page = trigger.pages.last().ok_or_else(|| {
-                    ::angzarr_client::ClientError::invalid_argument(
-                        ::angzarr_client::error_codes::codes::EMPTY_PM_TRIGGER,
-                        ::angzarr_client::error_codes::messages::EMPTY_PM_TRIGGER,
-                        ::std::iter::empty::<(&str, ::std::string::String)>(),
-                    )
-                })?;
-                let event_any = match &event_page.payload {
-                    ::std::option::Option::Some(
-                        ::angzarr_client::proto::event_page::Payload::Event(e),
-                    ) => e,
-                    _ => {
-                        return ::std::result::Result::Err(
-                            ::angzarr_client::ClientError::invalid_argument(
-                                ::angzarr_client::error_codes::codes::MISSING_PM_EVENT_PAYLOAD,
-                                ::angzarr_client::error_codes::messages::MISSING_PM_EVENT_PAYLOAD,
-                                ::std::iter::empty::<(&str, ::std::string::String)>(),
-                            ),
-                        );
-                    }
-                };
-
-                #(#dispatch_arms)*
-
-                ::std::result::Result::Ok(
-                    ::angzarr_client::router::HandlerResponse::ProcessManager(
-                        ::angzarr_client::proto::ProcessManagerHandleResponse::default(),
-                    ),
-                )
+        impl ::angzarr_client::router::Handler for #self_ty {
+            fn config(&self) -> ::angzarr_client::router::HandlerConfig {
+                <#self_ty as ::angzarr_client::router::HandlerKind>::handler_config()
             }
         }
     }
@@ -1501,18 +1203,19 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
 ///
 /// # Attributes
 /// - `name = "projector-name"` - The projector's name (required)
+/// - `domains = ["domain", ...]` - Domains it consumes; `"*"` matches any (required)
 ///
 /// # Example
 /// ```rust,ignore
-/// #[projector(name = "output")]
+/// #[projector(name = "output", domains = ["counter", "ledger"])]
 /// impl OutputProjector {
-///     #[projects(PlayerRegistered)]
-///     fn project_registered(&self, event: PlayerRegistered) -> Projection {
-///         // ...
+///     #[handles(Increased)]
+///     fn project_registered(&self, event: Increased) -> CommandResult<()> {
+///         // side effects through &self
 ///     }
 ///
-///     #[projects(HandComplete)]
-///     fn project_hand_complete(&self, event: HandComplete) -> Projection {
+///     #[handles(HandComplete)]
+///     fn project_hand_complete(&self, event: HandComplete) -> CommandResult<()> {
 ///         // ...
 ///     }
 /// }
@@ -1532,7 +1235,6 @@ pub fn projector(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 struct ProjectorArgs {
     name: String,
-    #[allow(dead_code)] // consumed once the projector macro is R1-ified in R13
     domains: Vec<String>,
 }
 
@@ -1572,105 +1274,62 @@ fn expand_projector(args: ProjectorArgs, mut input: ItemImpl) -> TokenStream2 {
     let name = &args.name;
     let domains = &args.domains;
 
-    let meta = collect_method_metadata(&input);
+    let meta = match collect_method_metadata(&input) {
+        Ok(meta) => meta,
+        Err(e) => return e.to_compile_error(),
+    };
     strip_method_markers(&mut input);
+    let self_ty = &input.self_ty;
 
     let handled_exprs = meta
         .handled
         .iter()
         .map(|ty| quote! { ::angzarr_client::full_type_url::<#ty>() });
     let domains_vec = domains.iter().map(|d| quote! { #d.to_string() });
+    let domain_filter = quote! { let table = table.for_domains([#(#domains),*]); };
+    let regs = meta.handled_with_methods.iter().map(|(method, evt_ty)| {
+        quote! {
+            let table = table.on_event(
+                &<#evt_ty as ::prost::Name>::full_name(),
+                |handler: &mut #self_ty, any, _page| {
+                    let event: #evt_ty = __p::decode(any)?;
+                    handler.#method(event).map(|_| ()).map_err(__p::rejected)
+                },
+            );
+        }
+    });
 
-    let dispatch_arms: Vec<TokenStream2> = meta
-        .handled_with_methods
-        .iter()
-        .map(|(method_ident, evt_ty)| {
-            quote! {
-                if event_any.type_url == ::angzarr_client::full_type_url::<#evt_ty>() {
-                    let evt = <#evt_ty as ::prost::Message>::decode(event_any.value.as_slice())
-                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
-                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
-                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
-                            [
-                                (::angzarr_client::error_codes::keys::TYPE_URL, event_any.type_url.clone()),
-                                (::angzarr_client::error_codes::keys::CAUSE, e.to_string()),
-                            ],
-                        ))?;
-                    self.#method_ident(evt)
-                        .map_err(::angzarr_client::ClientError::Rejected)?;
-                    continue;
-                }
-            }
-        })
-        .collect();
-
-    let self_ty = &input.self_ty;
     quote! {
         #input
 
         impl ::angzarr_client::router::HandlerKind for #self_ty {
             const KIND: ::angzarr_client::router::Kind =
                 ::angzarr_client::router::Kind::Projector;
-        }
-
-        impl ::angzarr_client::router::Handler for #self_ty {
-            fn config(&self) -> ::angzarr_client::router::HandlerConfig {
+            fn handler_config() -> ::angzarr_client::router::HandlerConfig {
                 ::angzarr_client::router::HandlerConfig::Projector {
                     name: #name.to_string(),
                     domains: ::std::vec![#(#domains_vec),*],
                     handled: ::std::vec![#(#handled_exprs),*],
                 }
             }
+            fn component(
+                factory: ::angzarr_client::router::component::Factory<Self>,
+            ) -> ::angzarr_client::router::component::Component {
+                use ::angzarr_client::router::component as __p;
+                // One instance per delivered book, reused across its pages.
+                let table = ::angzarr_client::router::binding::projector::ProjectorDispatch::new(
+                    #name,
+                    move || factory(),
+                );
+                #domain_filter
+                #(#regs)*
+                __p::Component::Projector(::std::boxed::Box::new(table))
+            }
+        }
 
-            fn dispatch(
-                &self,
-                request: ::angzarr_client::router::HandlerRequest,
-            ) -> ::std::result::Result<
-                ::angzarr_client::router::HandlerResponse,
-                ::angzarr_client::ClientError,
-            > {
-                let book = match request {
-                    ::angzarr_client::router::HandlerRequest::Projector(b) => b,
-                    _ => {
-                        return ::std::result::Result::Err(
-                            ::angzarr_client::ClientError::invalid_argument(
-                                ::angzarr_client::error_codes::codes::HANDLER_WRONG_REQUEST_KIND,
-                                ::angzarr_client::error_codes::messages::HANDLER_WRONG_REQUEST_KIND,
-                                [(
-                                    ::angzarr_client::error_codes::keys::EXPECTED_KIND,
-                                    "Projector",
-                                )],
-                            ),
-                        );
-                    }
-                };
-
-                // R13: one instance, many events. Iterate each page and route
-                // to the matching `#[handles]` arm. Side effects accumulate on
-                // &self; no return value to merge.
-                for page in &book.pages {
-                    let event_any = match &page.payload {
-                        ::std::option::Option::Some(
-                            ::angzarr_client::proto::event_page::Payload::Event(e),
-                        ) => e,
-                        _ => continue,
-                    };
-                    #(#dispatch_arms)*
-                    // Unmatched event type → skip silently.
-                }
-
-                // Return a skeleton Projection (no merged payload — side effects
-                // are the projector's interface, not the return value).
-                ::std::result::Result::Ok(
-                    ::angzarr_client::router::HandlerResponse::Projector(
-                        ::angzarr_client::proto::Projection {
-                            cover: book.cover.clone(),
-                            projector: #name.to_string(),
-                            sequence: book.next_sequence,
-                            projection: ::std::option::Option::None,
-                        },
-                    ),
-                )
+        impl ::angzarr_client::router::Handler for #self_ty {
+            fn config(&self) -> ::angzarr_client::router::HandlerConfig {
+                <#self_ty as ::angzarr_client::router::HandlerKind>::handler_config()
             }
         }
     }
@@ -1678,34 +1337,47 @@ fn expand_projector(args: ProjectorArgs, mut input: ItemImpl) -> TokenStream2 {
 
 // Helper functions
 
-fn get_attr_ident(attr: &Attribute) -> syn::Result<Ident> {
-    let meta = attr.meta.clone();
-    match meta {
-        Meta::List(list) => {
-            let ident: Ident = syn::parse2(list.tokens)?;
-            Ok(ident)
-        }
-        _ => Err(syn::Error::new_spanned(attr, "expected #[attr(Type)]")),
-    }
-}
-
-fn get_rejected_args(attr: &Attribute) -> syn::Result<(String, String)> {
-    let meta = attr.meta.clone();
-    match meta {
-        Meta::List(list) => {
-            let args: RejectedArgs = syn::parse2(list.tokens)?;
-            Ok((args.domain, args.command))
-        }
+fn get_attr_path(attr: &Attribute) -> syn::Result<syn::Path> {
+    match &attr.meta {
+        Meta::List(list) => syn::parse2::<syn::Path>(list.tokens.clone()).map_err(|_| {
+            syn::Error::new_spanned(
+                &list.tokens,
+                format!(
+                    "expected a message type, e.g. #[{}(MyMessage)]",
+                    attr.path()
+                        .get_ident()
+                        .map(|i| i.to_string())
+                        .unwrap_or_default()
+                ),
+            )
+        }),
         _ => Err(syn::Error::new_spanned(
             attr,
-            "expected #[rejected(domain = \"...\", command = \"...\")]",
+            "expected a message type argument, e.g. #[handles(MyMessage)]",
         )),
     }
 }
 
+fn get_rejected_args(attr: &Attribute) -> syn::Result<(Option<String>, syn::Path)> {
+    match &attr.meta {
+        Meta::List(list) => {
+            let args: RejectedArgs = syn::parse2(list.tokens.clone())
+                .map_err(|e| syn::Error::new_spanned(attr, format!("#[rejected]: {e}")))?;
+            Ok((args.domain, args.command))
+        }
+        _ => Err(syn::Error::new_spanned(
+            attr,
+            "expected #[rejected(command = Type)] or #[rejected(domain = \"...\", command = Type)]",
+        )),
+    }
+}
+
+/// `#[rejected(command = Type)]` or `#[rejected(domain = "d", command = Type)]`:
+/// a `compensates` entry — the rejected command's type, optionally only
+/// when it was sent to `domain`.
 struct RejectedArgs {
-    domain: String,
-    command: String,
+    domain: Option<String>,
+    command: syn::Path,
 }
 
 impl syn::parse::Parse for RejectedArgs {
@@ -1716,11 +1388,16 @@ impl syn::parse::Parse for RejectedArgs {
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
             input.parse::<Token![=]>()?;
-            let value: syn::LitStr = input.parse()?;
-
             match ident.to_string().as_str() {
-                "domain" => domain = Some(value.value()),
-                "command" => command = Some(value.value()),
+                "domain" => {
+                    let value: syn::LitStr = input.parse()?;
+                    domain = Some(require_non_empty_str(Some(value.value()), "domain")?);
+                }
+                "command" => {
+                    command = Some(input.parse::<syn::Path>().map_err(|_| {
+                        syn::Error::new(ident.span(), "command must be the rejected command's type")
+                    })?);
+                }
                 _ => return Err(syn::Error::new(ident.span(), "unknown attribute")),
             }
 
@@ -1730,9 +1407,22 @@ impl syn::parse::Parse for RejectedArgs {
         }
 
         Ok(RejectedArgs {
-            domain: require_non_empty_str(domain, "domain")?,
-            command: require_non_empty_str(command, "command")?,
+            domain,
+            command: command.ok_or_else(|| {
+                syn::Error::new(proc_macro2::Span::call_site(), "command is required")
+            })?,
         })
+    }
+}
+
+/// The `compensates` entry expression for a `#[rejected]` method:
+/// `"fq.Type"` or `"domain:fq.Type"`.
+fn compensates_key(domain: &Option<String>, command: &syn::Path) -> TokenStream2 {
+    match domain {
+        Some(d) => quote! {
+            ::std::format!("{}:{}", #d, <#command as ::prost::Name>::full_name())
+        },
+        None => quote! { <#command as ::prost::Name>::full_name() },
     }
 }
 
@@ -1761,9 +1451,9 @@ pub fn state_factory(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Example
 /// ```rust,ignore
-/// #[upcasts(from = PlayerRegisteredV1, to = PlayerRegisteredV2)]
-/// fn upgrade(old: PlayerRegisteredV1) -> PlayerRegisteredV2 {
-///     PlayerRegisteredV2 { /* ... */ }
+/// #[upcasts(from = IncreasedV1, to = IncreasedV2)]
+/// fn upgrade(old: IncreasedV1) -> IncreasedV2 {
+///     IncreasedV2 { /* ... */ }
 /// }
 /// ```
 ///
@@ -1828,16 +1518,18 @@ impl syn::parse::Parse for UpcastsArgs {
 ///
 /// # Example
 /// ```rust,ignore
-/// #[upcaster(name = "player-v1-to-v2", domain = "player")]
-/// impl PlayerUpcaster {
-///     #[upcasts(from = PlayerRegisteredV1, to = PlayerRegisteredV2)]
-///     fn upgrade(old: PlayerRegisteredV1) -> PlayerRegisteredV2 { /* ... */ }
+/// #[upcaster(name = "counter-v1-to-v2", domain = "counter")]
+/// impl CounterUpcaster {
+///     #[upcasts(from = IncreasedV1, to = IncreasedV2)]
+///     fn upgrade(old: IncreasedV1) -> IncreasedV2 { /* ... */ }
 /// }
 ///
-/// let router = Router::new("upcaster-player")
-///     .with_handler(|| PlayerUpcaster)
+/// let Built::Upcaster(router) = Router::new("upcaster-counter")
+///     .with_handler(|| CounterUpcaster)
 ///     .build()?
-///     .into_upcaster()?; // or match Built::Upcaster(r)
+/// else {
+///     unreachable!("a router of upcasters builds an upcaster router")
+/// };
 /// ```
 ///
 /// The macro emits `impl HandlerKind` + `impl Handler` on the annotated
@@ -1862,12 +1554,14 @@ pub fn upcaster(attr: TokenStream, item: TokenStream) -> TokenStream {
 fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
     let name = &args.name;
     let domain = &args.domain;
-    let self_ty = input.self_ty.clone();
 
-    let meta = collect_method_metadata(&input);
+    let meta = match collect_method_metadata(&input) {
+        Ok(meta) => meta,
+        Err(e) => return e.to_compile_error(),
+    };
     strip_method_markers(&mut input);
+    let self_ty = &input.self_ty;
 
-    // (from_url, to_url) pairs for HandlerConfig::Upcaster.upcasts
     let upcast_pairs = meta.upcasts_with_methods.iter().map(|(_, from, to)| {
         quote! {
             (
@@ -1876,109 +1570,52 @@ fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
             )
         }
     });
-
-    // Dispatch arms: match each method's `from` type URL against the incoming
-    // event's type URL; the first matching method transforms it.
-    let dispatch_arms = meta
-        .upcasts_with_methods
-        .iter()
-        .map(|(method_ident, from, to)| {
-            quote! {
-                if event_any.type_url == ::angzarr_client::full_type_url::<#from>() {
-                    let old = <#from as ::prost::Message>::decode(event_any.value.as_slice())
-                        .map_err(|e| ::angzarr_client::ClientError::invalid_argument(
-                            ::angzarr_client::error_codes::codes::ANY_DECODE_FAILED,
-                            ::angzarr_client::error_codes::messages::ANY_DECODE_FAILED,
-                            [
-                                (::angzarr_client::error_codes::keys::TYPE_URL, event_any.type_url.clone()),
-                                (::angzarr_client::error_codes::keys::CAUSE, e.to_string()),
-                            ],
-                        ))?;
-                    let new: #to = <#self_ty>::#method_ident(old);
-                    let new_any = ::prost_types::Any {
-                        type_url: ::angzarr_client::full_type_url::<#to>(),
-                        value: ::prost::Message::encode_to_vec(&new),
-                    };
-                    out_pages.push(::angzarr_client::proto::EventPage {
-                        header: page.header.clone(),
-                        created_at: page.created_at,
-                        payload: Some(::angzarr_client::proto::event_page::Payload::Event(new_any)),
-                        no_commit: page.no_commit,
-                        cascade_id: page.cascade_id.clone(),
-                    });
-                    continue;
-                }
-            }
-        });
+    // Rules run in declaration order, each matching the event as the
+    // previous rules left it.
+    let regs = meta.upcasts_with_methods.iter().map(|(method, from, to)| {
+        quote! {
+            let table = table.on_event(&<#from as ::prost::Name>::full_name(), |any| {
+                let old: #from = __p::decode(any)?;
+                let new: #to = <#self_ty>::#method(old);
+                ::std::result::Result::Ok(__p::pack(&new))
+            });
+        }
+    });
 
     quote! {
         #input
 
-        impl ::angzarr_client::HandlerKind for #self_ty {
-            const KIND: ::angzarr_client::Kind = ::angzarr_client::Kind::Upcaster;
-        }
-
-        impl ::angzarr_client::Handler for #self_ty {
-            fn config(&self) -> ::angzarr_client::HandlerConfig {
-                ::angzarr_client::HandlerConfig::Upcaster {
+        impl ::angzarr_client::router::HandlerKind for #self_ty {
+            const KIND: ::angzarr_client::router::Kind = ::angzarr_client::router::Kind::Upcaster;
+            fn handler_config() -> ::angzarr_client::router::HandlerConfig {
+                ::angzarr_client::router::HandlerConfig::Upcaster {
                     name: #name.to_string(),
                     domain: #domain.to_string(),
-                    upcasts: vec![#( #upcast_pairs ),*],
+                    upcasts: ::std::vec![#( #upcast_pairs ),*],
                 }
             }
+            fn component(
+                factory: ::angzarr_client::router::component::Factory<Self>,
+            ) -> ::angzarr_client::router::component::Component {
+                use ::angzarr_client::router::component as __p;
+                // Upcasts are associated functions; no instance is needed.
+                let _ = factory;
+                let table = ::angzarr_client::router::binding::upcaster::UpcasterDispatch::new(#name, #domain);
+                #(#regs)*
+                __p::Component::Upcaster(table)
+            }
+        }
 
-            fn dispatch(
-                &self,
-                request: ::angzarr_client::HandlerRequest,
-            ) -> ::core::result::Result<
-                ::angzarr_client::HandlerResponse,
-                ::angzarr_client::ClientError,
-            > {
-                let req = match request {
-                    ::angzarr_client::HandlerRequest::Upcaster(r) => r,
-                    _ => {
-                        return Err(::angzarr_client::ClientError::invalid_argument(
-                            ::angzarr_client::error_codes::codes::HANDLER_WRONG_REQUEST_KIND,
-                            ::angzarr_client::error_codes::messages::HANDLER_WRONG_REQUEST_KIND,
-                            [(
-                                ::angzarr_client::error_codes::keys::EXPECTED_KIND,
-                                "Upcaster",
-                            )],
-                        ));
-                    }
-                };
-
-                let mut out_pages: Vec<::angzarr_client::proto::EventPage> =
-                    Vec::with_capacity(req.events.len());
-
-                'page: for page in req.events.iter() {
-                    // Only event payloads are candidates for upcasting; external
-                    // payloads and headerless pages pass through untouched.
-                    let Some(::angzarr_client::proto::event_page::Payload::Event(ref event_any)) =
-                        page.payload
-                    else {
-                        out_pages.push(page.clone());
-                        continue 'page;
-                    };
-
-                    #( #dispatch_arms )*
-
-                    // No matching upcast — pass the page through unchanged.
-                    out_pages.push(page.clone());
-                }
-
-                Ok(::angzarr_client::HandlerResponse::Upcaster(
-                    ::angzarr_client::proto::UpcastResponse { events: out_pages },
-                ))
+        impl ::angzarr_client::router::Handler for #self_ty {
+            fn config(&self) -> ::angzarr_client::router::HandlerConfig {
+                <#self_ty as ::angzarr_client::router::HandlerKind>::handler_config()
             }
         }
     }
 }
 
 struct UpcasterArgs {
-    #[allow(dead_code)]
     name: String,
-    #[allow(dead_code)]
     domain: String,
 }
 

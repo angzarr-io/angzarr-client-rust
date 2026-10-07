@@ -75,6 +75,18 @@ impl TransportMode {
 /// - `Standalone` → `{uds_base}/ch-{domain}.sock` (default `/tmp/angzarr`)
 /// - `Distributed` → `ch-{domain}.{namespace}.svc:{port}` (default `angzarr`, `1310`)
 ///
+/// **FQDN form note**: distributed mode emits the bare `.svc` form
+/// (`ch-player.angzarr.svc:1310`), not the absolute
+/// `…svc.cluster.local` form. This depends on the pod's DNS search path
+/// including the namespace's `.svc.cluster.local` — the standard K8s
+/// default. All sibling clients (Python `client.py:86`, Go
+/// `client.go:79`, Java, C#, C++) emit the identical form for parity;
+/// changing it requires coordinated rollout across every client.
+/// Deployments where the bare form doesn't resolve (some service-mesh /
+/// NetworkPolicy / sidecar-interception configurations) need to either
+/// configure the cluster's DNS or route through an explicit endpoint
+/// override at the call site.
+///
 /// Resolution precedence for each value matches Python's
 /// `resolve_ch_endpoint(domain, mode, *, uds_base, namespace, port)`:
 /// **env var > explicit arg > hardcoded default**.

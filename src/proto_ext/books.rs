@@ -103,7 +103,9 @@ impl CommandBookExt for CommandBook {
     fn merge_strategy(&self) -> MergeStrategy {
         self.pages
             .first()
-            .map(|p| p.merge_strategy())
+            // Fully qualified: prost's inherent `CommandPage::merge_strategy`
+            // getter would return MERGE_UNSPECIFIED for an unset field.
+            .map(super::pages::CommandPageExt::merge_strategy)
             .unwrap_or(MergeStrategy::MergeCommutative)
     }
 }
@@ -138,5 +140,23 @@ mod tests {
         assert_eq!(map.len(), 1, "rootless EventBook must be skipped");
         let key = with_root.root_id_hex().unwrap();
         assert!(map.contains_key(&key));
+    }
+}
+
+#[cfg(test)]
+mod merge_strategy_tests {
+    use super::*;
+    use crate::proto::{CommandBook, CommandPage};
+
+    #[test]
+    fn unset_merge_strategy_reads_as_commutative() {
+        let book = CommandBook {
+            pages: vec![CommandPage::default()],
+            ..Default::default()
+        };
+        assert_eq!(
+            CommandBookExt::merge_strategy(&book),
+            MergeStrategy::MergeCommutative
+        );
     }
 }

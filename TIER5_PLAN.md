@@ -1,5 +1,14 @@
 # Tier 5 Phase 2 — Rust unified Router
 
+> **Status: historical implementation plan, not the shipped surface.** The
+> crate as built differs from the sketch below: the aggregate macro is
+> `#[command_handler]`; `Router::build` returns `Built`, which callers
+> `match` (there are no `into_*()` accessors); command-handler dispatch is
+> single-handler per `(domain, command type)` (duplicates fail `build`), only
+> saga / PM / projector / upcaster fan out; there is no `dispatch.rs`. The
+> engine is scheduled to move onto angzarr-router's `crates/router`
+> (docs/decision-shared-rust-router.md in that repo).
+
 Adaptation of the cross-language Tier 5 design for the Rust client. Reference: `client-python/main/TIER5_PLAN.md`.
 
 ## Design (agreed, Rust-adapted)

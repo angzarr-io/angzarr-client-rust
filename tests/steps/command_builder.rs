@@ -1,521 +1,582 @@
-//! Command builder step definitions.
+//! Step definitions for `parity/client/command_builder.feature`.
+//!
+//! Every scenario drives the real [`CommandBuilder`] obtained from
+//! [`CommandBuilderExt`]. Steps record only what the scenario sets; the
+//! builder is then run with exactly those calls, so its own defaults and
+//! validation decide the outcome.
 
-use angzarr_client::error_codes::{codes, messages};
-use angzarr_client::proto::{CommandBook, CommandResponse, MergeStrategy};
-use angzarr_client::proto_ext::CommandPageExt;
+use std::sync::Arc;
+
+use angzarr_client::proto::{
+    command_page, page_header::SequenceType, CommandBook, CommandResponse, MergeStrategy,
+};
 use angzarr_client::traits::GatewayClient;
-use angzarr_client::{ClientError, CommandBuilderExt, Result};
-use async_trait::async_trait;
+use angzarr_client::{full_type_url, ClientError, CommandBuilderExt, CommandHandlerClient};
 use cucumber::{given, then, when, World};
 use prost::Message;
-use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-/// Mock command for testing.
-#[derive(Clone, Message)]
+use crate::common::backend::{root_for, Hidden};
+use crate::common::fixtures::CreateOrder;
+use angzarr_client::testing::RecordingGatewayClient;
+
+/// Generic payload for "the command type and payload".
+#[derive(Clone, PartialEq, Message)]
 pub struct TestCommand {
     #[prost(string, tag = "1")]
     pub data: String,
 }
 
-/// Mock gateway client that records executed commands.
-#[derive(Clone, Default, Debug)]
-pub struct MockGateway {
-    pub last_command: Arc<Mutex<Option<CommandBook>>>,
-}
+const TEST_COMMAND_URL: &str = "type.googleapis.com/test.TestCommand";
 
-#[async_trait]
-impl GatewayClient for MockGateway {
-    async fn execute(&self, command: CommandBook) -> Result<CommandResponse> {
-        *self.last_command.lock().unwrap() = Some(command);
-        Ok(CommandResponse::default())
-    }
-}
-
-/// Test context for CommandBuilder scenarios.
-#[derive(Debug, World)]
-#[world(init = Self::new)]
-pub struct CommandBuilderWorld {
-    mock_client: MockGateway,
-    built_command: Option<CommandBook>,
-    build_error: Option<ClientError>,
+/// What a scenario asked the builder to do.
+#[derive(Debug, Default, Clone)]
+struct Recipe {
     domain: String,
+    /// `None` → `command_new` (auto-generated root).
     root: Option<Uuid>,
     correlation_id: Option<String>,
     sequence: Option<u32>,
-    command_type: Option<String>,
-    type_url_set: bool,
-    payload_set: bool,
-    execute_response: Option<CommandResponse>,
+    merge: Option<MergeStrategy>,
+    /// Payload passed to `with_command`.
+    command: Option<Payload>,
+    /// Type URL set on its own via `with_type_url`.
+    type_url: Option<String>,
+    /// Encoded payload set on its own via `with_payload`.
+    payload: Option<Vec<u8>>,
+}
+
+/// Typed payload a recipe passes to `with_command`.
+#[derive(Debug, Clone)]
+enum Payload {
+    CreateOrder(CreateOrder),
+    Test(TestCommand),
+}
+
+fn apply<'a, C: GatewayClient>(client: &'a C, r: &Recipe) -> angzarr_client::CommandBuilder<'a, C> {
+    let mut b = match r.root {
+        Some(root) => client.command(&r.domain, root),
+        None => client.command_new(&r.domain),
+    };
+    if let Some(id) = &r.correlation_id {
+        b = b.with_correlation_id(id);
+    }
+    if let Some(seq) = r.sequence {
+        b = b.with_sequence(seq);
+    }
+    if let Some(m) = r.merge {
+        b = b.with_merge_strategy(m);
+    }
+    match &r.command {
+        Some(Payload::CreateOrder(m)) => b = b.with_command(full_type_url::<CreateOrder>(), m),
+        Some(Payload::Test(m)) => b = b.with_command(TEST_COMMAND_URL, m),
+        None => {}
+    }
+    if let Some(url) = &r.type_url {
+        b = b.with_type_url(url.clone());
+    }
+    if let Some(bytes) = &r.payload {
+        b = b.with_payload(bytes.clone());
+    }
+    b
+}
+
+#[derive(Debug, World)]
+#[world(init = Self::new)]
+pub struct CommandBuilderWorld {
+    mock: Arc<RecordingGatewayClient>,
+    real: Hidden<CommandHandlerClient>,
+    recipe: Recipe,
+    built: Option<Result<CommandBook, ClientError>>,
+    built_pair: Vec<CommandBook>,
+    pair_roots: Vec<Uuid>,
+    executed: Option<Result<CommandResponse, ClientError>>,
 }
 
 impl CommandBuilderWorld {
     fn new() -> Self {
         Self {
-            mock_client: MockGateway::default(),
-            built_command: None,
-            build_error: None,
-            domain: String::new(),
-            root: None,
-            correlation_id: None,
-            sequence: None,
-            command_type: None,
-            type_url_set: false,
-            payload_set: false,
-            execute_response: None,
+            mock: Arc::new(RecordingGatewayClient::new()),
+            real: Hidden::default(),
+            recipe: Recipe::default(),
+            built: None,
+            built_pair: Vec::new(),
+            pair_roots: Vec::new(),
+            executed: None,
         }
     }
 
-    fn try_build(&mut self) {
-        let cmd = TestCommand {
-            data: "test".to_string(),
-        };
-
-        let builder = if let Some(root) = self.root {
-            self.mock_client.command(&self.domain, root)
+    fn build(&mut self) {
+        let result = if self.real.is_some() {
+            apply(self.real.get(), &self.recipe).build()
         } else {
-            self.mock_client.command_new(&self.domain)
+            apply(self.mock.as_ref(), &self.recipe).build()
         };
+        self.built = Some(result);
+    }
 
-        let builder = if let Some(ref cid) = self.correlation_id {
-            builder.with_correlation_id(cid)
-        } else {
-            builder
-        };
-
-        // Default to sequence=0 when no scenario step set one explicitly,
-        // mirroring Python's test_command_builder.py:77 simulation. The
-        // real builder requires `with_sequence` (builder.py:83-84) — that
-        // contract is exercised by the unit test
-        // `test_command_builder_build_missing_sequence_is_invalid_argument`.
-        let builder = builder.with_sequence(self.sequence.unwrap_or(0));
-
-        // Handle the different scenarios for type_url and payload
-        if self.type_url_set && self.payload_set {
-            // Both set - normal case, build with command
-            let type_url = if let Some(ref cmd_type) = self.command_type {
-                format!("type.googleapis.com/{}.{}", self.domain, cmd_type)
-            } else {
-                "type.googleapis.com/test.TestCommand".to_string()
-            };
-            let builder = builder.with_command(&type_url, &cmd);
-            match builder.build() {
-                Ok(cmd) => self.built_command = Some(cmd),
-                Err(e) => self.build_error = Some(e),
-            }
-        } else if self.type_url_set && !self.payload_set {
-            // Type set but no payload - simulate the error
-            self.build_error = Some(ClientError::invalid_argument(
-                codes::COMMAND_PAYLOAD_MISSING,
-                messages::COMMAND_PAYLOAD_MISSING,
-                ::std::iter::empty::<(&str, ::std::string::String)>(),
-            ));
-        } else if !self.type_url_set && self.payload_set {
-            // Payload set but no type - simulate the error
-            self.build_error = Some(ClientError::invalid_argument(
-                codes::COMMAND_TYPE_URL_MISSING,
-                messages::COMMAND_TYPE_URL_MISSING,
-                ::std::iter::empty::<(&str, ::std::string::String)>(),
-            ));
-        } else {
-            // Neither set - try to build (will fail)
-            match builder.build() {
-                Ok(cmd) => self.built_command = Some(cmd),
-                Err(e) => self.build_error = Some(e),
-            }
+    fn built(&self) -> &CommandBook {
+        match self.built.as_ref().expect("a command was built") {
+            Ok(b) => b,
+            Err(e) => panic!("build failed: {e:?}"),
         }
+    }
+
+    fn cover(&self) -> &angzarr_client::proto::Cover {
+        self.built().cover.as_ref().expect("cover")
+    }
+
+    fn page(&self) -> &angzarr_client::proto::CommandPage {
+        self.built().pages.first().expect("a command page")
     }
 }
 
-// --- Background ---
-
-#[given("a mock GatewayClient for testing")]
-async fn given_mock_gateway(world: &mut CommandBuilderWorld) {
-    world.mock_client = MockGateway::default();
+fn create_order_command() -> Payload {
+    Payload::CreateOrder(CreateOrder {
+        order_id: "o-1".into(),
+        customer_id: "c-1".into(),
+        items: vec![],
+    })
 }
 
-// --- Basic Command Construction ---
+fn test_command() -> Payload {
+    Payload::Test(TestCommand {
+        data: "test".into(),
+    })
+}
+
+fn canned_response() -> CommandResponse {
+    CommandResponse {
+        events: Some(angzarr_client::proto::EventBook {
+            next_sequence: 42,
+            ..Default::default()
+        }),
+        projections: vec![],
+        ..Default::default()
+    }
+}
+
+fn root_bytes(cover: &angzarr_client::proto::Cover) -> [u8; 16] {
+    cover
+        .root
+        .as_ref()
+        .expect("root present")
+        .value
+        .as_slice()
+        .try_into()
+        .expect("16-byte UUID root")
+}
+
+// --------------------------------------------------------------------------
+// Arrangement
+// --------------------------------------------------------------------------
+
+#[given("a mock CommandHandlerClient for testing")]
+async fn given_mock(world: &mut CommandBuilderWorld) {
+    world.mock = Arc::new(RecordingGatewayClient::new());
+}
+
+#[given("a CommandHandlerClient implementation")]
+async fn given_real_client(world: &mut CommandBuilderWorld) {
+    let channel = tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
+    world.real.set(CommandHandlerClient::from_channel(channel));
+}
+
+#[given(expr = "a builder configured for domain {string}")]
+async fn given_builder_for(world: &mut CommandBuilderWorld, domain: String) {
+    world.recipe.domain = domain;
+}
+
+// --------------------------------------------------------------------------
+// Recipe steps
+// --------------------------------------------------------------------------
 
 #[when(expr = "I build a command for domain {string} root {string}")]
-async fn when_build_command_domain_root(
-    world: &mut CommandBuilderWorld,
-    domain: String,
-    root: String,
-) {
-    world.domain = domain;
-    world.root = Some(Uuid::parse_str(&root).unwrap_or_else(|_| Uuid::new_v4()));
+async fn when_domain_root(world: &mut CommandBuilderWorld, domain: String, root: String) {
+    world.recipe.domain = domain;
+    world.recipe.root = Some(root_for(&root));
 }
 
 #[when(expr = "I build a command for domain {string}")]
-async fn when_build_command_domain(world: &mut CommandBuilderWorld, domain: String) {
-    world.domain = domain;
+async fn when_domain(world: &mut CommandBuilderWorld, domain: String) {
+    world.recipe.domain = domain;
+    world.recipe.root = Some(Uuid::new_v4());
 }
 
 #[when(expr = "I build a command for new aggregate in domain {string}")]
-async fn when_build_command_new_aggregate(world: &mut CommandBuilderWorld, domain: String) {
-    world.domain = domain;
-    world.root = None;
+async fn when_new_aggregate(world: &mut CommandBuilderWorld, domain: String) {
+    world.recipe.domain = domain;
+    world.recipe.root = None;
 }
 
 #[when(expr = "I set the command type to {string}")]
-async fn when_set_command_type(world: &mut CommandBuilderWorld, type_name: String) {
-    world.command_type = Some(type_name);
-    world.type_url_set = true;
+async fn when_set_type(world: &mut CommandBuilderWorld, name: String) {
+    assert_eq!(name, "CreateOrder", "fixtures provide CreateOrder");
+    world.recipe.type_url = Some(full_type_url::<CreateOrder>());
 }
 
 #[when("I set the command payload")]
-async fn when_set_command_payload(world: &mut CommandBuilderWorld) {
-    world.payload_set = true;
-    world.try_build();
+async fn when_set_payload(world: &mut CommandBuilderWorld) {
+    let Payload::CreateOrder(cmd) = create_order_command() else {
+        unreachable!("create_order_command builds a CreateOrder");
+    };
+    world.recipe.payload = Some(prost::Message::encode_to_vec(&cmd));
+    world.build();
 }
 
 #[when("I set the command type and payload")]
 async fn when_set_type_and_payload(world: &mut CommandBuilderWorld) {
-    world.type_url_set = true;
-    world.payload_set = true;
-    world.try_build();
+    world.recipe.command = Some(test_command());
+    world.build();
 }
 
 #[when(expr = "I set correlation ID to {string}")]
-async fn when_set_correlation_id(world: &mut CommandBuilderWorld, cid: String) {
-    world.correlation_id = Some(cid);
+async fn when_set_correlation(world: &mut CommandBuilderWorld, id: String) {
+    world.recipe.correlation_id = Some(id);
 }
 
 #[when(expr = "I set sequence to {int}")]
 async fn when_set_sequence(world: &mut CommandBuilderWorld, seq: u32) {
-    world.sequence = Some(seq);
+    world.recipe.sequence = Some(seq);
 }
 
 #[when("I do NOT set the command type")]
-async fn when_not_set_type(world: &mut CommandBuilderWorld) {
-    world.type_url_set = false;
-    world.payload_set = true;
-    world.try_build();
+async fn when_no_type(world: &mut CommandBuilderWorld) {
+    world.recipe.command = None;
+    world.build();
 }
 
+/// `with_command(type_url, msg)` is the only way to set either value, so
+/// "type without payload" cannot be expressed: the recipe keeps no command
+/// and the builder reports what is missing.
 #[when("I do NOT set the payload")]
-async fn when_not_set_payload(world: &mut CommandBuilderWorld) {
-    world.type_url_set = true;
-    world.payload_set = false;
-    world.try_build();
+async fn when_no_payload(world: &mut CommandBuilderWorld) {
+    world.recipe.payload = None;
+    world.recipe.command = None;
+    world.build();
 }
 
 #[when("I build a command without specifying merge strategy")]
-async fn when_build_without_merge_strategy(world: &mut CommandBuilderWorld) {
-    world.domain = "test".to_string();
-    world.type_url_set = true;
-    world.payload_set = true;
-    world.try_build();
+async fn when_default_merge(world: &mut CommandBuilderWorld) {
+    world.recipe = Recipe {
+        domain: "orders".into(),
+        root: Some(Uuid::new_v4()),
+        command: Some(test_command()),
+        ..Default::default()
+    };
+    world.build();
 }
 
-#[when(expr = "I build a command with merge strategy STRICT")]
-async fn when_build_with_strict_strategy(world: &mut CommandBuilderWorld) {
-    // Materialize via the real builder with `with_merge_strategy(MergeStrict)`.
-    // Previous simulation never called with_merge_strategy and the
-    // matching Then-step asserted COMMUTATIVE — a fake that papered
-    // over the API. Now the page actually carries MERGE_STRICT.
-    let cmd = TestCommand {
-        data: "test".to_string(),
+#[when("I build a command with merge strategy STRICT")]
+async fn when_strict_merge(world: &mut CommandBuilderWorld) {
+    world.recipe = Recipe {
+        domain: "orders".into(),
+        root: Some(Uuid::new_v4()),
+        merge: Some(MergeStrategy::MergeStrict),
+        command: Some(test_command()),
+        ..Default::default()
     };
-    let result = world
-        .mock_client
-        .command("test", Uuid::new_v4())
-        .with_sequence(0)
-        .with_merge_strategy(MergeStrategy::MergeStrict)
-        .with_command("type.googleapis.com/test.TestCommand", &cmd)
-        .build();
-    match result {
-        Ok(book) => world.built_command = Some(book),
-        Err(e) => world.build_error = Some(e),
-    }
+    world.build();
 }
 
 #[when("I build a command using fluent chaining:")]
-async fn when_build_fluent_chaining(world: &mut CommandBuilderWorld) {
-    world.domain = "orders".to_string();
-    world.root = Some(Uuid::new_v4());
-    world.correlation_id = Some("trace-456".to_string());
-    world.sequence = Some(3);
-    world.type_url_set = true;
-    world.payload_set = true;
-    world.try_build();
+async fn when_fluent(world: &mut CommandBuilderWorld) {
+    world.recipe = Recipe {
+        domain: "orders".into(),
+        root: Some(root_for("order-chained")),
+        correlation_id: Some("trace-456".into()),
+        sequence: Some(3),
+        command: Some(create_order_command()),
+        ..Default::default()
+    };
+    world.build();
 }
 
 #[when(expr = "I build and execute a command for domain {string}")]
-async fn when_build_and_execute(world: &mut CommandBuilderWorld, domain: String) {
-    let cmd = TestCommand {
-        data: "exec-test".to_string(),
+async fn when_build_execute(world: &mut CommandBuilderWorld, domain: String) {
+    world.recipe = Recipe {
+        domain,
+        root: Some(Uuid::new_v4()),
+        command: Some(test_command()),
+        ..Default::default()
     };
-    let result = world
-        .mock_client
-        .command(&domain, Uuid::new_v4())
-        .with_sequence(0)
-        .with_command("type.googleapis.com/test.TestCommand", &cmd)
-        .execute(angzarr_client::proto::SyncMode::Async)
-        .await;
-    match result {
-        Ok(resp) => world.execute_response = Some(resp),
-        Err(e) => world.build_error = Some(e),
-    }
+    world.mock.respond(canned_response());
+    world.built = Some(apply(world.mock.as_ref(), &world.recipe).build());
+    world.executed = Some(apply(world.mock.as_ref(), &world.recipe).execute().await);
 }
 
 #[when("I use the builder to execute directly:")]
 async fn when_execute_directly(world: &mut CommandBuilderWorld) {
-    let cmd = TestCommand {
-        data: "direct-exec".to_string(),
+    world.recipe = Recipe {
+        domain: "orders".into(),
+        root: Some(Uuid::new_v4()),
+        command: Some(create_order_command()),
+        ..Default::default()
     };
-    let root = Uuid::new_v4();
-    let result = world
-        .mock_client
-        .command("orders", root)
-        .with_sequence(0)
-        .with_command("type.googleapis.com/test.CreateOrder", &cmd)
-        .execute(angzarr_client::proto::SyncMode::Async)
-        .await;
-    match result {
-        Ok(resp) => world.execute_response = Some(resp),
-        Err(e) => world.build_error = Some(e),
-    }
-}
-
-#[given(expr = "a builder configured for domain {string}")]
-async fn given_builder_configured(world: &mut CommandBuilderWorld, domain: String) {
-    world.domain = domain;
+    world.executed = Some(apply(world.mock.as_ref(), &world.recipe).execute().await);
 }
 
 #[when("I create two commands with different roots")]
-async fn when_create_two_commands(world: &mut CommandBuilderWorld) {
-    // Builder pattern returns new builder on each call, so no contamination
-    let cmd = TestCommand {
-        data: "test".to_string(),
-    };
-    let root1 = Uuid::new_v4();
-    let root2 = Uuid::new_v4();
-
-    let _ = world
-        .mock_client
-        .command(&world.domain, root1)
-        .with_sequence(0)
-        .with_command("type.googleapis.com/test.TestCommand", &cmd)
-        .build();
-
-    let result = world
-        .mock_client
-        .command(&world.domain, root2)
-        .with_sequence(0)
-        .with_command("type.googleapis.com/test.TestCommand", &cmd)
-        .build();
-
-    if let Ok(cmd) = result {
-        world.built_command = Some(cmd);
+async fn when_two_roots(world: &mut CommandBuilderWorld) {
+    let roots = [root_for("pair-a"), root_for("pair-b")];
+    for root in roots {
+        let mut recipe = world.recipe.clone();
+        recipe.root = Some(root);
+        recipe.command = Some(test_command());
+        let book = apply(world.mock.as_ref(), &recipe)
+            .build()
+            .expect("builder builds each command");
+        world.built_pair.push(book);
     }
-}
-
-#[given("a GatewayClient implementation")]
-async fn given_gateway_impl(world: &mut CommandBuilderWorld) {
-    world.mock_client = MockGateway::default();
+    world.pair_roots = roots.to_vec();
 }
 
 #[when(expr = "I call client.command\\({string}, root\\)")]
-async fn when_call_command_method(world: &mut CommandBuilderWorld, domain: String) {
-    world.domain = domain;
-    world.root = Some(Uuid::new_v4());
-    world.type_url_set = true;
-    world.payload_set = true;
-    world.try_build();
+async fn when_call_command(world: &mut CommandBuilderWorld, domain: String) {
+    world.recipe = Recipe {
+        domain,
+        root: Some(root_for("shortcut-root")),
+        command: Some(test_command()),
+        ..Default::default()
+    };
+    world.build();
 }
 
 #[when(expr = "I call client.command_new\\({string}\\)")]
-async fn when_call_command_new_method(world: &mut CommandBuilderWorld, domain: String) {
-    world.domain = domain;
-    world.root = None;
-    world.type_url_set = true;
-    world.payload_set = true;
-    world.try_build();
+async fn when_call_command_new(world: &mut CommandBuilderWorld, domain: String) {
+    world.recipe = Recipe {
+        domain,
+        root: None,
+        command: Some(test_command()),
+        ..Default::default()
+    };
+    world.build();
 }
 
-// --- Then steps ---
+// --------------------------------------------------------------------------
+// Outcomes
+// --------------------------------------------------------------------------
 
 #[then(expr = "the built command should have domain {string}")]
-async fn then_command_has_domain(world: &mut CommandBuilderWorld, expected: String) {
-    let cmd = world.built_command.as_ref().expect("command not built");
-    let cover = cmd.cover.as_ref().expect("cover missing");
-    assert_eq!(cover.domain, expected);
+async fn then_domain(world: &mut CommandBuilderWorld, domain: String) {
+    assert_eq!(world.cover().domain, domain);
 }
 
 #[then(expr = "the built command should have root {string}")]
-async fn then_command_has_root(world: &mut CommandBuilderWorld, _expected: String) {
-    let cmd = world.built_command.as_ref().expect("command not built");
-    let cover = cmd.cover.as_ref().expect("cover missing");
-    assert!(cover.root.is_some());
+async fn then_root(world: &mut CommandBuilderWorld, root: String) {
+    assert_eq!(root_bytes(world.cover()), *root_for(&root).as_bytes());
 }
 
 #[then("the built command should have an auto-generated UUID root")]
-async fn then_command_has_auto_root(world: &mut CommandBuilderWorld) {
-    // P2.4a / finding #20 closed: command_new auto-generates a UUID v4
-    // for the root. The materialized CommandBook's cover must have a
-    // populated root (16 bytes).
-    let cmd = world.built_command.as_ref().expect("command not built");
-    let cover = cmd.cover.as_ref().expect("cover missing");
-    let root = cover.root.as_ref().expect("root must be auto-generated");
-    assert_eq!(root.value.len(), 16, "UUID v4 must be 16 bytes");
-    assert!(
-        world.root.is_none(),
-        "scenario went through command_new — caller didn't pass a root"
-    );
+async fn then_auto_root(world: &mut CommandBuilderWorld) {
+    assert!(world.recipe.root.is_none(), "scenario used command_new");
+    assert_ne!(root_bytes(world.cover()), [0u8; 16]);
 }
 
 #[then("the auto-generated root should be a valid UUID")]
-async fn then_auto_root_is_valid_uuid(world: &mut CommandBuilderWorld) {
-    let cmd = world.built_command.as_ref().expect("command not built");
-    let cover = cmd.cover.as_ref().expect("cover missing");
-    let root = cover.root.as_ref().expect("root present");
-    let bytes: [u8; 16] = root
-        .value
-        .as_slice()
-        .try_into()
-        .expect("UUID must be exactly 16 bytes");
-    let parsed = Uuid::from_bytes(bytes);
-    // Sanity: a real UUID v4 has the version nibble set to 4.
-    assert_eq!(
-        parsed.get_version_num(),
-        4,
-        "command_new must produce UUID v4, got version {}",
-        parsed.get_version_num()
-    );
+async fn then_auto_root_v4(world: &mut CommandBuilderWorld) {
+    let uuid = Uuid::from_bytes(root_bytes(world.cover()));
+    assert_eq!(uuid.get_version_num(), 4);
 }
 
 #[then(expr = "the built command should have type URL containing {string}")]
-async fn then_command_has_type_url(world: &mut CommandBuilderWorld, expected: String) {
-    let cmd = world.built_command.as_ref().expect("command not built");
-    let page = cmd.pages.first().expect("no pages");
-    if let Some(angzarr_client::proto::command_page::Payload::Command(any)) = &page.payload {
-        assert!(any.type_url.contains(&expected));
-    } else {
-        panic!("no command payload");
+async fn then_type_url(world: &mut CommandBuilderWorld, part: String) {
+    match &world.page().payload {
+        Some(command_page::Payload::Command(any)) => {
+            assert!(any.type_url.contains(&part), "type_url: {}", any.type_url)
+        }
+        other => panic!("expected command payload, got {other:?}"),
     }
 }
 
 #[then("the built command should have a non-empty correlation ID")]
-async fn then_command_has_nonempty_correlation_id(world: &mut CommandBuilderWorld) {
-    let cmd = world.built_command.as_ref().expect("command not built");
-    let cover = cmd.cover.as_ref().expect("cover missing");
-    assert!(!cover.correlation_id.is_empty());
+async fn then_nonempty_correlation(world: &mut CommandBuilderWorld) {
+    assert!(!world.cover().correlation_id.is_empty());
 }
 
 #[then("the correlation ID should be a valid UUID")]
-async fn then_correlation_id_is_uuid(world: &mut CommandBuilderWorld) {
-    let cmd = world.built_command.as_ref().expect("command not built");
-    let cover = cmd.cover.as_ref().expect("cover missing");
-    assert!(Uuid::parse_str(&cover.correlation_id).is_ok());
+async fn then_correlation_uuid(world: &mut CommandBuilderWorld) {
+    Uuid::parse_str(&world.cover().correlation_id).expect("correlation id is a UUID");
 }
 
 #[then(expr = "the built command should have correlation ID {string}")]
-async fn then_command_has_correlation_id(world: &mut CommandBuilderWorld, expected: String) {
-    let cmd = world.built_command.as_ref().expect("command not built");
-    let cover = cmd.cover.as_ref().expect("cover missing");
-    assert_eq!(cover.correlation_id, expected);
+async fn then_correlation(world: &mut CommandBuilderWorld, id: String) {
+    assert_eq!(world.cover().correlation_id, id);
 }
 
 #[then(expr = "the built command should have sequence {int}")]
-async fn then_command_has_sequence(world: &mut CommandBuilderWorld, expected: u32) {
-    let cmd = world.built_command.as_ref().expect("command not built");
-    let page = cmd.pages.first().expect("no pages");
-    assert_eq!(page.sequence_num(), expected);
+async fn then_sequence(world: &mut CommandBuilderWorld, seq: u32) {
+    let header = world.page().header.as_ref().expect("page header");
+    assert_eq!(header.sequence_type, Some(SequenceType::Sequence(seq)));
 }
 
 #[then("building should fail")]
-async fn then_building_fails(world: &mut CommandBuilderWorld) {
-    assert!(world.build_error.is_some());
+async fn then_build_fails(world: &mut CommandBuilderWorld) {
+    let built = world.built.as_ref().expect("a build was attempted");
+    assert!(built.is_err(), "build unexpectedly succeeded: {built:?}");
 }
 
 #[then("the error should indicate missing type URL")]
-async fn then_error_missing_type_url(world: &mut CommandBuilderWorld) {
-    let err = world.build_error.as_ref().expect("expected error");
-    assert!(err.message().contains("type_url"));
+async fn then_missing_type(world: &mut CommandBuilderWorld) {
+    let err = world
+        .built
+        .as_ref()
+        .expect("built")
+        .as_ref()
+        .expect_err("build failed");
+    assert_eq!(
+        err.code(),
+        angzarr_client::error_codes::codes::COMMAND_TYPE_URL_MISSING
+    );
 }
 
 #[then("the error should indicate missing payload")]
-async fn then_error_missing_payload(world: &mut CommandBuilderWorld) {
-    let err = world.build_error.as_ref().expect("expected error");
-    assert!(err.message().contains("payload"));
+async fn then_missing_payload(world: &mut CommandBuilderWorld) {
+    let err = world
+        .built
+        .as_ref()
+        .expect("built")
+        .as_ref()
+        .expect_err("build failed");
+    assert_eq!(
+        err.code(),
+        angzarr_client::error_codes::codes::COMMAND_PAYLOAD_MISSING
+    );
 }
 
 #[then("the build should succeed")]
-async fn then_build_succeeds(world: &mut CommandBuilderWorld) {
-    assert!(world.built_command.is_some());
+async fn then_build_ok(world: &mut CommandBuilderWorld) {
+    world.built();
 }
 
 #[then("all chained values should be preserved")]
-async fn then_chained_values_preserved(world: &mut CommandBuilderWorld) {
-    let cmd = world.built_command.as_ref().expect("command not built");
-    let cover = cmd.cover.as_ref().expect("cover missing");
+async fn then_chained(world: &mut CommandBuilderWorld) {
+    let cover = world.cover();
+    assert_eq!(cover.domain, "orders");
+    assert_eq!(root_bytes(cover), *root_for("order-chained").as_bytes());
     assert_eq!(cover.correlation_id, "trace-456");
-    let page = cmd.pages.first().expect("no pages");
-    assert_eq!(page.sequence_num(), 3);
+    let header = world.page().header.as_ref().expect("header");
+    assert_eq!(header.sequence_type, Some(SequenceType::Sequence(3)));
+    match &world.page().payload {
+        Some(command_page::Payload::Command(any)) => {
+            assert_eq!(any.type_url, full_type_url::<CreateOrder>());
+            let cmd = CreateOrder::decode(any.value.as_slice()).expect("decodes");
+            assert_eq!(cmd.customer_id, "c-1");
+        }
+        other => panic!("expected command payload, got {other:?}"),
+    }
 }
 
 #[then("the command should be sent to the gateway")]
-async fn then_command_sent_to_gateway(world: &mut CommandBuilderWorld) {
-    let recorded = world.mock_client.last_command.lock().unwrap();
-    assert!(recorded.is_some());
+async fn then_sent(world: &mut CommandBuilderWorld) {
+    let call = world
+        .mock
+        .last_call("execute")
+        .expect("gateway received execute");
+    let built = world.built();
+    // build() and execute() each mint a fresh correlation id, so compare
+    // the addressing and the command itself.
+    let sent = call.command.cover.as_ref().expect("sent cover");
+    let expected = built.cover.as_ref().expect("built cover");
+    assert_eq!(
+        (&sent.domain, &sent.root),
+        (&expected.domain, &expected.root)
+    );
+    assert!(!sent.correlation_id.is_empty());
+    // execute() additionally stamps its sync mode into the page header.
+    assert_eq!(call.command.pages.len(), 1);
+    assert_eq!(call.command.pages[0].payload, built.pages[0].payload);
+    assert_eq!(
+        call.command.pages[0]
+            .header
+            .as_ref()
+            .map(|h| h.sequence_type.clone()),
+        built.pages[0]
+            .header
+            .as_ref()
+            .map(|h| h.sequence_type.clone())
+    );
 }
 
 #[then("the response should be returned")]
-async fn then_response_returned(world: &mut CommandBuilderWorld) {
-    assert!(world.execute_response.is_some());
+async fn then_response(world: &mut CommandBuilderWorld) {
+    let resp = world
+        .executed
+        .as_ref()
+        .expect("executed")
+        .as_ref()
+        .expect("execute succeeds");
+    assert_eq!(resp, &canned_response());
 }
 
 #[then("the command should be built and executed in one call")]
 async fn then_built_and_executed(world: &mut CommandBuilderWorld) {
-    assert!(world.execute_response.is_some());
-    let recorded = world.mock_client.last_command.lock().unwrap();
-    assert!(recorded.is_some());
+    world
+        .executed
+        .as_ref()
+        .expect("executed")
+        .as_ref()
+        .expect("execute succeeds");
+    assert_eq!(world.mock.call_count("execute"), 1);
+    let call = world.mock.last_call("execute").expect("recorded");
+    match &call.command.pages[0].payload {
+        Some(command_page::Payload::Command(any)) => {
+            assert_eq!(any.type_url, full_type_url::<CreateOrder>())
+        }
+        other => panic!("expected command payload, got {other:?}"),
+    }
 }
 
-#[then(expr = "the command page should have MERGE_COMMUTATIVE strategy")]
-async fn then_merge_commutative(world: &mut CommandBuilderWorld) {
-    let cmd = world.built_command.as_ref().expect("command not built");
-    let page = cmd.pages.first().expect("no pages");
-    assert_eq!(page.merge_strategy, MergeStrategy::MergeCommutative as i32);
+#[then("the command page should have MERGE_COMMUTATIVE strategy")]
+async fn then_commutative(world: &mut CommandBuilderWorld) {
+    assert_eq!(
+        world.page().merge_strategy,
+        MergeStrategy::MergeCommutative as i32
+    );
 }
 
-#[then(expr = "the command page should have MERGE_STRICT strategy")]
-async fn then_merge_strict(world: &mut CommandBuilderWorld) {
-    let cmd = world.built_command.as_ref().expect("command not built");
-    let page = cmd.pages.first().expect("no pages");
-    assert_eq!(page.merge_strategy, MergeStrategy::MergeStrict as i32);
+#[then("the command page should have MERGE_STRICT strategy")]
+async fn then_strict(world: &mut CommandBuilderWorld) {
+    assert_eq!(
+        world.page().merge_strategy,
+        MergeStrategy::MergeStrict as i32
+    );
 }
 
 #[then("each command should have its own root")]
-async fn then_each_command_own_root(world: &mut CommandBuilderWorld) {
-    // Builder pattern guarantees this by design
-    assert!(world.built_command.is_some());
+async fn then_own_roots(world: &mut CommandBuilderWorld) {
+    let roots: Vec<[u8; 16]> = world
+        .built_pair
+        .iter()
+        .map(|b| root_bytes(b.cover.as_ref().expect("cover")))
+        .collect();
+    let expected: Vec<[u8; 16]> = world.pair_roots.iter().map(|u| *u.as_bytes()).collect();
+    assert_eq!(roots, expected);
 }
 
 #[then("builder reuse should not cause cross-contamination")]
-async fn then_no_cross_contamination(world: &mut CommandBuilderWorld) {
-    // Builder pattern guarantees this by design
-    assert!(world.built_command.is_some());
+async fn then_no_contamination(world: &mut CommandBuilderWorld) {
+    assert_eq!(world.built_pair.len(), 2);
+    let a = world.built_pair[0].cover.as_ref().expect("cover");
+    let b = world.built_pair[1].cover.as_ref().expect("cover");
+    assert_eq!(a.domain, world.recipe.domain);
+    assert_eq!(b.domain, world.recipe.domain);
+    assert_ne!(
+        a.correlation_id, b.correlation_id,
+        "each build gets its own correlation id"
+    );
 }
 
-#[then(expr = "I should receive a CommandBuilder for that domain and root")]
-async fn then_receive_command_builder(world: &mut CommandBuilderWorld) {
-    assert!(world.built_command.is_some());
-    let cmd = world.built_command.as_ref().unwrap();
-    let cover = cmd.cover.as_ref().expect("cover missing");
-    assert!(!cover.domain.is_empty());
+#[then("I should receive a CommandBuilder for that domain and root")]
+async fn then_builder_domain_root(world: &mut CommandBuilderWorld) {
+    let cover = world.cover();
+    assert_eq!(cover.domain, world.recipe.domain);
+    assert_eq!(root_bytes(cover), *root_for("shortcut-root").as_bytes());
 }
 
 #[then("I should receive a CommandBuilder for that domain and an auto-generated root")]
-async fn then_receive_builder_command_new(world: &mut CommandBuilderWorld) {
-    // P2.4a / finding #20 closed: command_new auto-generates a UUID v4.
-    let cmd = world.built_command.as_ref().expect("command not built");
-    let cover = cmd.cover.as_ref().expect("cover missing");
-    assert!(!cover.domain.is_empty());
-    let root = cover
-        .root
-        .as_ref()
-        .expect("auto-generated root must be present");
-    assert_eq!(root.value.len(), 16, "UUID v4 must be 16 bytes");
+async fn then_builder_domain_auto_root(world: &mut CommandBuilderWorld) {
+    let cover = world.cover();
+    assert_eq!(cover.domain, world.recipe.domain);
+    assert_eq!(Uuid::from_bytes(root_bytes(cover)).get_version_num(), 4);
 }

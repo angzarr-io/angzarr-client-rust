@@ -5,12 +5,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/babbitt/go/bin/scm hook inject-context 08af581bda35bf5d",
-            "timeout": 60,
-            "_scm": "660c4931facabb28"
+            "command": "\"/home/babbitt/go/bin/ctxloom\" hook inject-context --project \"/home/babbitt/workspace/angzarr/client-rust/main\" 90f2d949711d4049",
+            "timeout": 60
           }
         ]
       }
     ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "\"/home/babbitt/go/bin/ctxloom\" meta hud"
   }
 }

@@ -1,32 +1,18 @@
 //! Query builder step definitions.
 
 use angzarr_client::proto::{query::Selection, EventBook, EventPage, Query};
-use angzarr_client::traits::QueryClient as QueryClientTrait;
-use angzarr_client::{ClientError, QueryBuilderExt, Result};
-use async_trait::async_trait;
+use angzarr_client::{ClientError, QueryBuilderExt};
 use cucumber::{given, then, when, World};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use uuid::Uuid;
 
-/// Mock query client that records executed queries.
-#[derive(Clone, Default, Debug)]
-pub struct MockQueryClient {
-    pub last_query: Arc<Mutex<Option<Query>>>,
-}
-
-#[async_trait]
-impl QueryClientTrait for MockQueryClient {
-    async fn get_event_book(&self, query: Query) -> Result<EventBook> {
-        *self.last_query.lock().unwrap() = Some(query);
-        Ok(EventBook::default())
-    }
-}
+use angzarr_client::testing::RecordingQueryClient;
 
 /// Test context for QueryBuilder scenarios.
 #[derive(Debug, World)]
 #[world(init = Self::new)]
 pub struct QueryBuilderWorld {
-    mock_client: MockQueryClient,
+    mock_client: Arc<RecordingQueryClient>,
     built_query: Option<Query>,
     build_error: Option<ClientError>,
     domain: String,
@@ -40,7 +26,7 @@ pub struct QueryBuilderWorld {
 impl QueryBuilderWorld {
     fn new() -> Self {
         Self {
-            mock_client: MockQueryClient::default(),
+            mock_client: Arc::new(RecordingQueryClient::new()),
             built_query: None,
             build_error: None,
             domain: String::new(),
@@ -57,7 +43,7 @@ impl QueryBuilderWorld {
 
 #[given("a mock QueryClient for testing")]
 async fn given_mock_query_client(world: &mut QueryBuilderWorld) {
-    world.mock_client = MockQueryClient::default();
+    world.mock_client = Arc::new(RecordingQueryClient::new());
 }
 
 // --- Basic Query Construction ---
@@ -99,7 +85,7 @@ async fn when_set_range_from(world: &mut QueryBuilderWorld, lower: u32) {
     let query = world
         .mock_client
         .query(&world.domain, root)
-        .range(lower)
+        .range(lower..)
         .build();
     world.built_query = Some(query);
 }
@@ -110,7 +96,7 @@ async fn when_set_range_from_to(world: &mut QueryBuilderWorld, lower: u32, upper
     let query = world
         .mock_client
         .query(&world.domain, root)
-        .range_to(lower, upper)
+        .range(lower..=upper)
         .build();
     world.built_query = Some(query);
 }
@@ -177,7 +163,7 @@ async fn when_build_fluent_chaining(world: &mut QueryBuilderWorld) {
         .mock_client
         .query("orders", root)
         .with_edition("test-branch")
-        .range(10)
+        .range(10..)
         .build();
     world.built_query = Some(query);
 }
@@ -188,11 +174,11 @@ async fn when_build_query_last_wins(world: &mut QueryBuilderWorld) {
     let root = Uuid::new_v4();
     world.root = Some(root);
 
-    // range(5) then as_of_sequence(10) - last wins
+    // range(5..) then as_of_sequence(10) - last wins
     let query = world
         .mock_client
         .query("orders", root)
-        .range(5)
+        .range(5..)
         .as_of_sequence(10)
         .build();
     world.built_query = Some(query);
@@ -224,7 +210,7 @@ async fn when_build_and_get_pages(world: &mut QueryBuilderWorld, domain: String,
 
 #[given("a QueryClient implementation")]
 async fn given_query_client_impl(world: &mut QueryBuilderWorld) {
-    world.mock_client = MockQueryClient::default();
+    world.mock_client = Arc::new(RecordingQueryClient::new());
 }
 
 #[when(expr = "I call client.query\\({string}, root\\)")]
@@ -420,7 +406,7 @@ async fn then_range_replaced(world: &mut QueryBuilderWorld) {
 
 #[then("the query should be sent to the query service")]
 async fn then_query_sent(world: &mut QueryBuilderWorld) {
-    let recorded = world.mock_client.last_query.lock().unwrap();
+    let recorded = world.mock_client.last_call("get_event_book");
     assert!(recorded.is_some());
 }
 

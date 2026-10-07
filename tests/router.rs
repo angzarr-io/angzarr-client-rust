@@ -26,3 +26,21 @@ mod fact_replay;
 
 #[path = "router/mode_inference.rs"]
 mod mode_inference;
+
+#[path = "router/blocking.rs"]
+mod blocking;
+
+#[path = "router/markers.rs"]
+mod markers;
+
+#[path = "router/context.rs"]
+mod context;
+
+#[path = "router/composition.rs"]
+mod composition;
+
+#[path = "router/metadata.rs"]
+mod metadata;
+
+#[path = "router/host.rs"]
+mod host;

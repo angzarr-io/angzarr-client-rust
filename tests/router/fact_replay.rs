@@ -3,13 +3,13 @@
 //! Covers:
 //! - `CommandHandlerRouter::supports_handle_fact()` and `supports_replay()`
 //!   correctly read metadata from the `#[command_handler]`-emitted config.
-//! - `dispatch_fact` routes facts to the matching `#[handles_fact]` method
-//!   and concatenates emitted events.
+//! - `dispatch_fact` routes facts by their cover domain to the matching
+//!   `#[handles_fact]` method, which records (possibly annotated) facts.
 //! - `dispatch_replay` round-trips state through `Any` using the
 //!   `#[applies]` machinery.
-//! - Aggregates that don't opt in get `false` from `supports_*` —
-//!   the gRPC adapter then returns `UNIMPLEMENTED` (covered in the
-//!   adapter-level integration tests).
+//! - Aggregates that don't opt in get `false` from `supports_*`. Replay
+//!   then answers `UNIMPLEMENTED`; HandleFact refuses every fact with
+//!   `INVALID_ARGUMENT` / `NO_FACT_HANDLER`.
 
 use angzarr_client::proto::{
     EventBook, EventPage, FactRequest, PageHeader, ReplayRequest, Snapshot,
@@ -19,9 +19,9 @@ use angzarr_client::router::Router;
 // `#[command_handler]`; the compiler counts the imports as unused once
 // the parent macro strips the markers. Allow at the import level.
 #[allow(unused_imports)]
-use angzarr_client::{
-    applies, command_handler, full_type_url, handles, handles_fact, CommandResult,
-};
+use angzarr_client::router::{applies, command_handler, handles, handles_fact};
+#[allow(unused_imports)]
+use angzarr_client::{full_type_url, CommandResult};
 use prost_types::Any;
 
 // Test-local proto stubs. Real prost messages so Any pack/unpack works
@@ -140,20 +140,11 @@ impl FactOrder {
         &self,
         evt: StockReserved,
         state: &OrderState,
-    ) -> CommandResult<EventBook> {
-        // Emit a derived event (semantically: "we acknowledge the stock fact").
-        let mut book = EventBook::default();
-        let mut page = EventPage::default();
-        let any = Any {
-            type_url: full_type_url::<OrderCreated>(),
-            value: ::prost::Message::encode_to_vec(&OrderCreated {
-                order_id: format!("{}-derived", evt.order_id),
-            }),
-        };
-        page.payload = Some(angzarr_client::proto::event_page::Payload::Event(any));
-        page.header = Some(PageHeader::default());
-        book.pages.push(page);
-        Ok(book)
+    ) -> CommandResult<StockReserved> {
+        // Facts cannot be refused; the handler records them, here annotated.
+        Ok(StockReserved {
+            order_id: format!("{}-seen", evt.order_id),
+        })
     }
 }
 
@@ -182,7 +173,13 @@ fn dispatch_fact_routes_to_matching_handler() {
     };
 
     let mut req = FactRequest::default();
-    let mut facts = EventBook::default();
+    let mut facts = EventBook {
+        cover: Some(angzarr_client::proto::Cover {
+            domain: "order".into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
     let mut page = EventPage::default();
     let any = Any {
         type_url: full_type_url::<StockReserved>(),
@@ -197,6 +194,13 @@ fn dispatch_fact_routes_to_matching_handler() {
 
     let book = r.dispatch_fact(req).expect("dispatch_fact");
     assert_eq!(book.pages.len(), 1);
+    let Some(angzarr_client::proto::event_page::Payload::Event(recorded)) = &book.pages[0].payload
+    else {
+        panic!("expected an event page");
+    };
+    assert_eq!(recorded.type_url, full_type_url::<StockReserved>());
+    let recorded: StockReserved = ::prost::Message::decode(recorded.value.as_slice()).unwrap();
+    assert_eq!(recorded.order_id, "o-1-seen");
 }
 
 // --------------------------------------------------------------------------
@@ -247,14 +251,16 @@ fn dispatch_replay_round_trips_state_through_any() {
 
     // Base snapshot: order_id="initial", apply_count=5.
     let mut req = ReplayRequest::default();
-    let mut snap = Snapshot::default();
-    snap.state = Some(Any {
-        type_url: full_type_url::<OrderState>(),
-        value: ::prost::Message::encode_to_vec(&OrderState {
-            order_id: "initial".into(),
-            apply_count: 5,
+    let snap = Snapshot {
+        state: Some(Any {
+            type_url: full_type_url::<OrderState>(),
+            value: ::prost::Message::encode_to_vec(&OrderState {
+                order_id: "initial".into(),
+                apply_count: 5,
+            }),
         }),
-    });
+        ..Default::default()
+    };
     req.base_snapshot = Some(snap);
 
     // One OrderCreated event to apply.
@@ -277,4 +283,42 @@ fn dispatch_replay_round_trips_state_through_any() {
     // apply_created bumped apply_count to 6 and overwrote order_id.
     assert_eq!(resulting.apply_count, 6);
     assert_eq!(resulting.order_id, "after-replay");
+}
+
+#[tokio::test]
+async fn handle_fact_without_fact_handlers_refuses_with_no_fact_handler() {
+    use angzarr_client::proto::command_handler_service_server::CommandHandlerService;
+    let angzarr_client::router::Built::CommandHandler(r) = Router::new("orders")
+        .with_handler(|| PlainOrder)
+        .build()
+        .expect("build")
+    else {
+        panic!("expected CommandHandler");
+    };
+    let grpc = angzarr_client::handler::CommandHandlerGrpc::new(r);
+    let request = FactRequest {
+        facts: Some(EventBook {
+            cover: Some(angzarr_client::proto::Cover {
+                domain: "order".into(),
+                ..Default::default()
+            }),
+            pages: vec![EventPage {
+                payload: Some(angzarr_client::proto::event_page::Payload::Event(Any {
+                    type_url: full_type_url::<StockReserved>(),
+                    value: vec![],
+                })),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let status = grpc
+        .handle_fact(tonic::Request::new(request))
+        .await
+        .expect_err("undeclared fact is refused");
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    let (code, _meta, _cover) =
+        angzarr_client::error::unpack_status_details(status.details()).expect("details");
+    assert_eq!(code, angzarr_client::error_codes::codes::NO_FACT_HANDLER);
 }

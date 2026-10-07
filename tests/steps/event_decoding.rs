@@ -17,6 +17,11 @@ pub struct OrderCreated {
     pub order_id: String,
 }
 
+impl prost::Name for OrderCreated {
+    const NAME: &'static str = "OrderCreated";
+    const PACKAGE: &'static str = "orders";
+}
+
 /// Another test event.
 #[derive(Clone, Message, PartialEq)]
 pub struct ItemAdded {
@@ -38,8 +43,6 @@ fn make_event_page(seq: u32, type_url: &str, value: Vec<u8>) -> EventPage {
             type_url: type_url.to_string(),
             value,
         })),
-        cascade_id: None,
-        no_commit: false,
     }
 }
 
@@ -53,6 +56,7 @@ fn make_event_book(events: Vec<EventPage>) -> EventBook {
             }),
             correlation_id: String::new(),
             edition: None,
+            ..Default::default()
         }),
         pages: events,
         snapshot: None,
@@ -68,6 +72,7 @@ pub struct EventDecodingWorld {
     decode_result: Option<OrderCreated>,
     decode_is_none: bool,
     match_result: bool,
+    packed: Option<Any>,
     events_list: Vec<EventPage>,
     command_response: Option<CommandResponse>,
     last_error: Option<String>,
@@ -80,6 +85,7 @@ impl EventDecodingWorld {
             decode_result: None,
             decode_is_none: false,
             match_result: false,
+            packed: None,
             events_list: Vec::new(),
             command_response: None,
             last_error: None,
@@ -157,8 +163,6 @@ async fn given_event_page_with_offloaded(world: &mut EventDecodingWorld) {
                 stored_at: None,
             },
         )),
-        cascade_id: None,
-        no_commit: false,
     });
 }
 
@@ -232,8 +236,6 @@ async fn given_event_page_no_payload(world: &mut EventDecodingWorld) {
         }),
         created_at: None,
         payload: None,
-        cascade_id: None,
-        no_commit: false,
     });
 }
 
@@ -282,6 +284,7 @@ async fn given_command_response_with_events(world: &mut EventDecodingWorld) {
     world.command_response = Some(CommandResponse {
         events: Some(event_book),
         projections: vec![],
+        ..Default::default()
     });
 }
 
@@ -290,6 +293,7 @@ async fn given_command_response_no_events(world: &mut EventDecodingWorld) {
     world.command_response = Some(CommandResponse {
         events: Some(make_event_book(vec![])),
         projections: vec![],
+        ..Default::default()
     });
 }
 
@@ -742,4 +746,22 @@ async fn then_both_item_added(world: &mut EventDecodingWorld) {
             assert!(any.type_url.ends_with("ItemAdded"));
         }
     }
+}
+
+#[when(expr = "I pack an OrderCreated event from package {string}")]
+async fn when_pack(world: &mut EventDecodingWorld, package: String) {
+    assert_eq!(package, <OrderCreated as prost::Name>::PACKAGE);
+    world.packed = Some(angzarr_client::testing::pack_event(&OrderCreated {
+        order_id: "o-1".into(),
+    }));
+}
+
+#[then(expr = "the event's type_url is {string}")]
+async fn then_packed_type_url(world: &mut EventDecodingWorld, url: String) {
+    let any = world.packed.as_ref().expect("packed event");
+    assert_eq!(any.type_url, url);
+    assert_eq!(
+        OrderCreated::decode(any.value.as_slice()).unwrap().order_id,
+        "o-1"
+    );
 }

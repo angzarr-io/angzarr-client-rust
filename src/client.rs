@@ -1,5 +1,7 @@
 //! Default client implementations wrapping tonic gRPC clients.
 
+use std::time::Duration;
+
 use crate::error::{ClientError, Result};
 use crate::error_codes::{codes, keys, messages};
 use crate::proto::{
@@ -18,6 +20,77 @@ use crate::transport::{resolve_ch_endpoint, TransportMode};
 use async_trait::async_trait;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tracing::warn;
+
+/// Per-RPC deadline applied to every request issued via this client.
+///
+/// Without this, a stalled server keeps the client awaiting forever
+/// (the TCP RST never fires under packet loss). Matches polyglot
+/// sibling defaults — siblings expose this as `--rpc-timeout` /
+/// `RpcTimeout` config; in Rust we wire it once on the channel.
+const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// HTTP/2 keepalive ping interval.
+///
+/// Without keepalive, a half-open TCP connection won't surface as a
+/// failure until the OS-level keepalive eventually fires (often >2h).
+const DEFAULT_HTTP2_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Time to wait for a keepalive PONG before treating the connection
+/// as dead.
+const DEFAULT_HTTP2_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Cap on the number of `EventBook`s returned from a streaming
+/// `get_events` call. Without this, a hostile or buggy server can
+/// stream forever and OOM the client.
+const DEFAULT_MAX_EVENT_BOOKS: usize = 100_000;
+
+/// Apply the standard set of resilience knobs to a [`tonic::transport::Endpoint`].
+///
+/// - per-RPC deadline so stalled servers don't hang the client,
+/// - HTTP/2 keepalive ping so half-open connections surface fast,
+/// - TCP keepalive for the same reason at the socket layer.
+fn apply_endpoint_defaults(ep: Endpoint) -> Endpoint {
+    ep.timeout(DEFAULT_RPC_TIMEOUT)
+        .tcp_keepalive(Some(DEFAULT_HTTP2_KEEPALIVE_INTERVAL))
+        .http2_keep_alive_interval(DEFAULT_HTTP2_KEEPALIVE_INTERVAL)
+        .keep_alive_timeout(DEFAULT_HTTP2_KEEPALIVE_TIMEOUT)
+        .keep_alive_while_idle(true)
+}
+
+/// Normalize a TCP endpoint string. Adds a default `http://` scheme
+/// when the caller hands us a bare `host:port` (e.g., the form
+/// `transport::resolve_ch_endpoint` emits in distributed mode).
+///
+/// UDS endpoints are out of scope here — they go through their own
+/// connector path; only call this for TCP-class strings.
+fn normalize_tcp_endpoint(endpoint: &str) -> String {
+    if endpoint.contains("://") {
+        endpoint.to_string()
+    } else {
+        format!("http://{}", endpoint)
+    }
+}
+
+/// Validate a UDS path: reject empty / NUL-bearing paths up front so
+/// they surface as a non-retryable `ENDPOINT_INVALID_URI` instead of a
+/// retried `CONNECTION_FAILED` storm against `UnixStream::connect`.
+fn validate_uds_path(path: &str) -> Result<()> {
+    if path.is_empty() {
+        return Err(ClientError::connection(
+            codes::ENDPOINT_INVALID_URI,
+            messages::ENDPOINT_INVALID_URI,
+            [(keys::CAUSE, "UDS path is empty".to_string())],
+        ));
+    }
+    if path.contains('\0') {
+        return Err(ClientError::connection(
+            codes::ENDPOINT_INVALID_URI,
+            messages::ENDPOINT_INVALID_URI,
+            [(keys::CAUSE, "UDS path contains a NUL byte".to_string())],
+        ));
+    }
+    Ok(())
+}
 
 /// Detect a UDS endpoint and return the socket path, or `None` for TCP.
 ///
@@ -43,6 +116,32 @@ fn detect_uds_path(endpoint: &str) -> Option<String> {
     }
 }
 
+/// The endpoint named by `env_var`, or `default` when the variable is
+/// unset or empty.
+fn endpoint_from_env(env_var: &str, default: &str) -> String {
+    std::env::var(env_var)
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
+/// `err` and every error in its `source()` chain, joined by `": "`, so
+/// the root cause (e.g. "Connection refused", "No such file or
+/// directory") survives into structured error details.
+fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
+    while let Some(e) = source {
+        let text = e.to_string();
+        if !out.ends_with(&text) {
+            out.push_str(": ");
+            out.push_str(&text);
+        }
+        source = e.source();
+    }
+    out
+}
+
 /// Retries connection with the provided `RetryPolicy` on failure.
 ///
 /// Audit finding #44: backoff math comes from
@@ -55,10 +154,50 @@ fn detect_uds_path(endpoint: &str) -> Option<String> {
 /// connector.
 async fn create_channel(endpoint: &str, retry: &RetryPolicy) -> Result<Channel> {
     let uds_path = detect_uds_path(endpoint);
+    if let Some(ref path) = uds_path {
+        validate_uds_path(path)?;
+    }
+
+    // Build the TCP-class Endpoint once outside the retry loop — a
+    // parse error is operator-typo-class and shouldn't be retried.
+    let tcp_endpoint: Option<Endpoint> = if uds_path.is_none() {
+        let normalized = normalize_tcp_endpoint(endpoint);
+        match Channel::from_shared(normalized.clone()) {
+            Ok(ep) => Some(apply_endpoint_defaults(ep)),
+            Err(e) => {
+                return Err(ClientError::connection(
+                    codes::ENDPOINT_INVALID_URI,
+                    messages::ENDPOINT_INVALID_URI,
+                    [
+                        (keys::ENDPOINT, endpoint.to_string()),
+                        (keys::CAUSE, error_chain(&e)),
+                    ],
+                ));
+            }
+        }
+    } else {
+        None
+    };
+
+    // Pre-build the dummy Endpoint used for UDS — its URI is ignored
+    // by `connect_with_connector`, so any failure here is logic bug
+    // territory and should not retry.
+    let uds_dummy: Option<Endpoint> = if uds_path.is_some() {
+        let ep = Endpoint::try_from("http://[::]:50051").map_err(|e| {
+            ClientError::connection(
+                codes::ENDPOINT_PARSE_FAILED,
+                messages::ENDPOINT_PARSE_FAILED,
+                [(keys::CAUSE, e.to_string())],
+            )
+        })?;
+        Some(apply_endpoint_defaults(ep))
+    } else {
+        None
+    };
 
     let mut last_error: Option<ClientError> = None;
 
-    for attempt in 0..retry.max_attempts {
+    for attempt in 0..retry.attempts() {
         if attempt > 0 {
             // RetryPolicy::compute_delay(N) = the delay before the N+1-th
             // attempt. attempt=1 sleeps compute_delay(0) = min_delay,
@@ -71,22 +210,18 @@ async fn create_channel(endpoint: &str, retry: &RetryPolicy) -> Result<Channel> 
                 backoff_ms = %delay.as_millis(),
                 "gRPC connection failed, retrying after backoff"
             );
+            if let (Some(cb), Some(err)) = (&retry.on_retry, &last_error) {
+                cb(attempt - 1, &err.to_string());
+            }
             tokio::time::sleep(delay).await;
         }
 
         let result = if let Some(ref path) = uds_path {
-            // Unix Domain Socket - use custom connector
-            // NOTE: The URI is ignored for UDS, but tonic requires a valid one.
-            // We use a dummy URI and override the connector to use UnixStream.
             let path = path.clone();
-            Endpoint::try_from("http://[::]:50051")
-                .map_err(|e| {
-                    ClientError::connection(
-                        codes::ENDPOINT_PARSE_FAILED,
-                        messages::ENDPOINT_PARSE_FAILED,
-                        [(keys::CAUSE, e.to_string())],
-                    )
-                })?
+            uds_dummy
+                .as_ref()
+                .expect("uds_dummy is Some when uds_path is Some")
+                .clone()
                 .connect_with_connector(tower::service_fn(move |_: Uri| {
                     let path = path.clone();
                     async move {
@@ -97,21 +232,11 @@ async fn create_channel(endpoint: &str, retry: &RetryPolicy) -> Result<Channel> 
                 }))
                 .await
         } else {
-            // TCP endpoint
-            match Channel::from_shared(endpoint.to_string()) {
-                Ok(ep) => ep.connect().await,
-                Err(e) => {
-                    // Invalid URI is not retryable
-                    return Err(ClientError::connection(
-                        codes::ENDPOINT_INVALID_URI,
-                        messages::ENDPOINT_INVALID_URI,
-                        [
-                            (keys::ENDPOINT, endpoint.to_string()),
-                            (keys::CAUSE, e.to_string()),
-                        ],
-                    ));
-                }
-            }
+            tcp_endpoint
+                .as_ref()
+                .expect("tcp_endpoint is Some when uds_path is None")
+                .connect()
+                .await
         };
 
         match result {
@@ -122,7 +247,7 @@ async fn create_channel(endpoint: &str, retry: &RetryPolicy) -> Result<Channel> 
                     messages::CONNECTION_FAILED,
                     [
                         (keys::ENDPOINT, endpoint.to_string()),
-                        (keys::CAUSE, e.to_string()),
+                        (keys::CAUSE, error_chain(&e)),
                     ],
                 ));
             }
@@ -160,7 +285,7 @@ impl QueryClient {
 
     /// Connect using an endpoint from environment variable with fallback.
     pub async fn from_env(env_var: &str, default: &str) -> Result<Self> {
-        let endpoint = std::env::var(env_var).unwrap_or_else(|_| default.to_string());
+        let endpoint = endpoint_from_env(env_var, default);
         Self::connect(&endpoint).await
     }
 
@@ -174,9 +299,11 @@ impl QueryClient {
     /// Explicitly release this client's channel handle.
     ///
     /// Equivalent to letting the client drop; provided for symmetry with the
-    /// synchronous client libraries (Java/C#/Python/C++/Go) where explicit
-    /// close is idiomatic. If other clones hold the same channel, the
-    /// connection stays open until the last reference drops.
+    /// synchronous sibling clients (Java/C#/Python/C++/Go) where explicit
+    /// close is idiomatic. `tonic::transport::Channel` is reference-counted
+    /// internally — `close` on one clone is a no-op for connection
+    /// lifecycle; the underlying channel only tears down when the last
+    /// clone drops.
     pub fn close(self) {
         drop(self);
     }
@@ -216,7 +343,22 @@ impl QueryClient {
     ///
     /// Uses the streaming `GetEvents` RPC to fetch multiple EventBooks.
     /// For a single EventBook, use `get_event_book()` instead.
+    ///
+    /// Capped at 100,000 books — a hostile or
+    /// buggy server can otherwise stream forever and OOM the client.
+    /// Use [`Self::get_events_with_limit`] for a custom cap.
     pub async fn get_events(&self, query: Query) -> Result<Vec<EventBook>> {
+        self.get_events_with_limit(query, DEFAULT_MAX_EVENT_BOOKS)
+            .await
+    }
+
+    /// Same as [`Self::get_events`] with a caller-supplied cap on the
+    /// number of EventBooks read from the stream.
+    pub async fn get_events_with_limit(
+        &self,
+        query: Query,
+        max_books: usize,
+    ) -> Result<Vec<EventBook>> {
         let corr_id = query
             .cover
             .as_ref()
@@ -224,8 +366,18 @@ impl QueryClient {
             .unwrap_or_default();
         let req = crate::proto_ext::correlated_request(query, &corr_id);
         let mut stream = self.inner.clone().get_events(req).await?.into_inner();
-        let mut results = Vec::new();
+        let mut results = Vec::with_capacity(max_books.min(1024));
         while let Some(book) = stream.message().await? {
+            if results.len() >= max_books {
+                return Err(ClientError::invalid_argument(
+                    codes::STREAM_LIMIT_EXCEEDED,
+                    messages::STREAM_LIMIT_EXCEEDED,
+                    [
+                        (keys::EXPECTED, max_books.to_string()),
+                        (keys::ACTUAL, format!("{}+", max_books)),
+                    ],
+                ));
+            }
             results.push(book);
         }
         Ok(results)
@@ -265,7 +417,7 @@ impl CommandHandlerClient {
 
     /// Connect using an endpoint from environment variable with fallback.
     pub async fn from_env(env_var: &str, default: &str) -> Result<Self> {
-        let endpoint = std::env::var(env_var).unwrap_or_else(|_| default.to_string());
+        let endpoint = endpoint_from_env(env_var, default);
         Self::connect(&endpoint).await
     }
 
@@ -313,7 +465,6 @@ impl CommandHandlerClient {
             command: Some(command),
             sync_mode: SyncMode::Async as i32,
             cascade_error_mode: CascadeErrorMode::CascadeErrorFailFast as i32,
-            cascade_id: None,
         })
         .await
     }
@@ -352,7 +503,6 @@ impl traits::GatewayClient for CommandHandlerClient {
             command: Some(command),
             sync_mode: sync_mode as i32,
             cascade_error_mode: CascadeErrorMode::CascadeErrorFailFast as i32,
-            cascade_id: None,
         })
         .await
     }
@@ -392,7 +542,7 @@ impl DomainClient {
 
     /// Connect using an endpoint from environment variable with fallback.
     pub async fn from_env(env_var: &str, default: &str) -> Result<Self> {
-        let endpoint = std::env::var(env_var).unwrap_or_else(|_| default.to_string());
+        let endpoint = endpoint_from_env(env_var, default);
         Self::connect(&endpoint).await
     }
 
@@ -455,7 +605,6 @@ impl DomainClient {
                 command: Some(command),
                 sync_mode: sync_mode as i32,
                 cascade_error_mode: CascadeErrorMode::CascadeErrorFailFast as i32,
-                cascade_id: None,
             })
             .await
     }
@@ -527,7 +676,7 @@ impl SpeculativeClient {
 
     /// Connect using an endpoint from environment variable with fallback.
     pub async fn from_env(env_var: &str, default: &str) -> Result<Self> {
-        let endpoint = std::env::var(env_var).unwrap_or_else(|_| default.to_string());
+        let endpoint = endpoint_from_env(env_var, default);
         Self::connect(&endpoint).await
     }
 
@@ -626,7 +775,171 @@ impl traits::SpeculativeClient for SpeculativeClient {
 
 #[cfg(test)]
 mod tests {
-    use super::detect_uds_path;
+    /// Connection retries report through the policy's on_retry hook, and a
+    /// zero-attempt policy still tries once.
+    #[tokio::test]
+    async fn create_channel_fires_on_retry_and_tries_at_least_once() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+        let seen = Arc::new(AtomicU32::new(0));
+        let s = Arc::clone(&seen);
+        let indices = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let idx = Arc::clone(&indices);
+        let policy = crate::retry::RetryPolicy::default()
+            .with_max_attempts(3)
+            .with_min_delay(std::time::Duration::from_millis(1))
+            .with_max_delay(std::time::Duration::from_millis(2))
+            .with_on_retry(move |attempt, _cause| {
+                s.fetch_add(1, Ordering::SeqCst);
+                idx.lock().unwrap().push(attempt);
+            });
+        let missing = "/nonexistent/angzarr-on-retry.sock";
+        let err = super::create_channel(missing, &policy)
+            .await
+            .expect_err("no socket");
+        assert_eq!(err.code(), crate::error_codes::codes::CONNECTION_FAILED);
+        assert_eq!(seen.load(Ordering::SeqCst), 2);
+        assert_eq!(*indices.lock().unwrap(), vec![0, 1]);
+
+        let zero = crate::retry::RetryPolicy {
+            max_attempts: 0,
+            ..Default::default()
+        };
+        let err = super::create_channel(missing, &zero)
+            .await
+            .expect_err("no socket");
+        assert_eq!(err.code(), crate::error_codes::codes::CONNECTION_FAILED);
+    }
+
+    /// Exceeding the caller's stream cap is a caller-limit error, not a
+    /// (retryable) connection failure.
+    #[tokio::test]
+    async fn stream_limit_is_not_a_connection_error() {
+        use super::QueryClient;
+        use crate::proto::event_query_service_server::{
+            EventQueryService, EventQueryServiceServer,
+        };
+        use crate::proto::{AggregateRoot, EventBook, Query};
+        use futures::stream::{self, BoxStream};
+        use tonic::{Request, Response, Status, Streaming};
+
+        struct ThreeBooks;
+        #[tonic::async_trait]
+        impl EventQueryService for ThreeBooks {
+            async fn get_event_book(
+                &self,
+                _: Request<Query>,
+            ) -> Result<Response<EventBook>, Status> {
+                Ok(Response::new(EventBook::default()))
+            }
+            type GetEventsStream = BoxStream<'static, Result<EventBook, Status>>;
+            async fn get_events(
+                &self,
+                _: Request<Query>,
+            ) -> Result<Response<Self::GetEventsStream>, Status> {
+                let books = (0..3).map(|_| Ok(EventBook::default()));
+                Ok(Response::new(Box::pin(stream::iter(books))))
+            }
+            type SynchronizeStream = BoxStream<'static, Result<EventBook, Status>>;
+            async fn synchronize(
+                &self,
+                _: Request<Streaming<Query>>,
+            ) -> Result<Response<Self::SynchronizeStream>, Status> {
+                Err(Status::unimplemented("synchronize"))
+            }
+            type GetAggregateRootsStream = BoxStream<'static, Result<AggregateRoot, Status>>;
+            async fn get_aggregate_roots(
+                &self,
+                _: Request<()>,
+            ) -> Result<Response<Self::GetAggregateRootsStream>, Status> {
+                Err(Status::unimplemented("get_aggregate_roots"))
+            }
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(EventQueryServiceServer::new(ThreeBooks))
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
+        );
+        let client = QueryClient::connect(&format!("http://{addr}"))
+            .await
+            .expect("connect");
+        let err = client
+            .get_events_with_limit(Query::default(), 2)
+            .await
+            .expect_err("three books exceed a cap of two");
+        let books = client
+            .get_events_with_limit(Query::default(), 3)
+            .await
+            .expect("exactly the cap is allowed");
+        assert_eq!(books.len(), 3);
+        server.abort();
+        assert_eq!(err.code(), codes::STREAM_LIMIT_EXCEEDED);
+        assert!(!err.is_connection_error());
+        assert!(err.is_invalid_argument());
+    }
+
+    /// The first retry waits the policy's minimum delay (compute_delay(0)).
+    #[tokio::test(start_paused = true)]
+    async fn create_channel_first_retry_waits_min_delay() {
+        let policy = crate::retry::RetryPolicy::default()
+            .with_max_attempts(2)
+            .with_jitter(false)
+            .with_min_delay(std::time::Duration::from_millis(50))
+            .with_max_delay(std::time::Duration::from_secs(10));
+        let start = tokio::time::Instant::now();
+        super::create_channel("/nonexistent/angzarr-delay.sock", &policy)
+            .await
+            .expect_err("no socket");
+        assert_eq!(start.elapsed(), std::time::Duration::from_millis(50));
+    }
+
+    #[test]
+    fn endpoint_from_env_treats_unset_and_empty_as_default() {
+        let var = "ANGZARR_CLIENT_TEST_ENDPOINT_FROM_ENV";
+        std::env::remove_var(var);
+        assert_eq!(
+            super::endpoint_from_env(var, "localhost:1310"),
+            "localhost:1310"
+        );
+        std::env::set_var(var, "");
+        assert_eq!(
+            super::endpoint_from_env(var, "localhost:1310"),
+            "localhost:1310"
+        );
+        std::env::set_var(var, "host:9");
+        assert_eq!(super::endpoint_from_env(var, "localhost:1310"), "host:9");
+        std::env::remove_var(var);
+    }
+
+    #[test]
+    fn error_chain_includes_every_source() {
+        #[derive(Debug)]
+        struct Outer(std::io::Error);
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("transport error")
+            }
+        }
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        let err = Outer(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "Connection refused (os error 111)",
+        ));
+        assert_eq!(
+            super::error_chain(&err),
+            "transport error: Connection refused (os error 111)"
+        );
+    }
+
+    use super::{detect_uds_path, normalize_tcp_endpoint, validate_uds_path};
+    use crate::error_codes::codes;
 
     // Audit #39: lenient UDS prefix detection matching Python's
     // client.py::_create_channel. Each test pins one of the recognized
@@ -680,5 +993,46 @@ mod tests {
         assert_eq!(detect_uds_path("localhost:50051"), None);
         assert_eq!(detect_uds_path("http://localhost:50051"), None);
         assert_eq!(detect_uds_path("[::1]:50051"), None);
+    }
+
+    #[test]
+    fn normalize_tcp_endpoint_prepends_scheme_when_missing() {
+        // resolve_ch_endpoint emits bare host:port in distributed
+        // mode; without normalization Channel::from_shared rejects it
+        // as INVALID_URI and the caller hits a non-retryable error
+        // for what should be a perfectly valid endpoint.
+        assert_eq!(
+            normalize_tcp_endpoint("ch-player.angzarr.svc:1310"),
+            "http://ch-player.angzarr.svc:1310",
+        );
+    }
+
+    #[test]
+    fn normalize_tcp_endpoint_preserves_explicit_scheme() {
+        assert_eq!(
+            normalize_tcp_endpoint("https://example.com:443"),
+            "https://example.com:443",
+        );
+        assert_eq!(
+            normalize_tcp_endpoint("http://localhost:8080"),
+            "http://localhost:8080",
+        );
+    }
+
+    #[test]
+    fn validate_uds_path_rejects_empty_with_invalid_uri_code() {
+        let err = validate_uds_path("").unwrap_err();
+        assert_eq!(err.code(), codes::ENDPOINT_INVALID_URI);
+    }
+
+    #[test]
+    fn validate_uds_path_rejects_nul_byte_with_invalid_uri_code() {
+        let err = validate_uds_path("/var/run/has\0nul.sock").unwrap_err();
+        assert_eq!(err.code(), codes::ENDPOINT_INVALID_URI);
+    }
+
+    #[test]
+    fn validate_uds_path_accepts_normal_path() {
+        assert!(validate_uds_path("/var/run/foo.sock").is_ok());
     }
 }

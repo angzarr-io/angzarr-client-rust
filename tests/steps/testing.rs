@@ -1,6 +1,6 @@
 //! Step definitions for features/client/testing.feature.
 
-use angzarr_client::{
+use angzarr_client::testing::{
     make_cover, make_event_book, uuid_for, uuid_obj_for, uuid_str_for, ScenarioContext,
     DEFAULT_TEST_NAMESPACE,
 };

@@ -8,7 +8,7 @@
 //! # Example in aggregate
 //!
 //! ```rust,ignore
-//! #[rejected(domain = "inventory", command = "ReserveStock")]
+//! #[rejected(domain = "inventory", command = ReserveStock)]
 //! fn on_reserve_rejected(&self, notification: &Notification, state: &OrderState)
 //!     -> CommandResult<BusinessResponse>
 //! {
@@ -19,25 +19,29 @@
 //! }
 //! ```
 
-use crate::convert::TYPE_URL_PREFIX;
+use crate::error::ClientError;
+use crate::error_codes::{codes, keys, messages};
 use crate::proto::{
     business_response, command_page, page_header, BusinessResponse, CommandBook, Cover, EventBook,
     Notification, RejectionNotification, RevocationResponse,
 };
 use prost::Message;
 
-/// Fully-qualified proto type name for Notification.
-const NOTIFICATION_TYPE_NAME: &str = "angzarr_client.proto.angzarr.Notification";
-
 /// Parsed context from a rejection notification.
 ///
 /// Provides easy access to rejection details extracted from the Notification
 /// payload and the rejected command's deferred sequence header.
+#[derive(Debug, Clone, PartialEq)]
 pub struct CompensationContext {
     /// Sequence of the event that triggered the saga/PM command.
     pub source_event_sequence: u32,
 
-    /// Why the command was rejected (e.g. "insufficient_funds").
+    /// Machine rejection code (the rejecting handler's `ErrorInfo.reason`,
+    /// e.g. "INSUFFICIENT_FUNDS"); empty when the rejection carried none.
+    /// Compensation logic branches on this, never on `rejection_reason`.
+    pub rejection_code: String,
+
+    /// Human-readable rejection message, for logs and display.
     pub rejection_reason: String,
 
     /// The command that was rejected (full context).
@@ -52,36 +56,66 @@ impl CompensationContext {
     ///
     /// Decodes the RejectionNotification from the notification payload, then
     /// pulls source info from `rejected_command.pages[0].header.angzarr_deferred`.
-    pub fn from_notification(notification: &Notification) -> Self {
-        let mut ctx = CompensationContext {
-            source_event_sequence: 0,
-            rejection_reason: String::new(),
-            rejected_command: None,
-            source_aggregate: None,
-        };
+    ///
+    /// Returns an error — instead of a default-zero context — when:
+    /// - the Notification has no payload (`MISSING_NOTIFICATION_PAYLOAD`),
+    /// - the payload bytes don't decode as a RejectionNotification
+    ///   (`REJECTION_NOTIFICATION_DECODE_FAILED`),
+    /// - the rejected command is absent (`MISSING_REJECTED_COMMAND`),
+    /// - the rejected command's first page is missing the
+    ///   AngzarrDeferred sequence header (`MISSING_DEFERRED_HEADER`).
+    ///
+    /// Audit: previously this constructor silently swallowed every
+    /// failure path and returned a default `source_event_sequence = 0`,
+    /// which would compensate against a real, valid sequence 0.
+    pub fn from_notification(notification: &Notification) -> Result<Self, ClientError> {
+        let payload = notification.payload.as_ref().ok_or_else(|| {
+            ClientError::invalid_argument(
+                codes::MISSING_NOTIFICATION_PAYLOAD,
+                messages::MISSING_NOTIFICATION_PAYLOAD,
+                std::iter::empty::<(String, String)>(),
+            )
+        })?;
 
-        if let Some(payload) = &notification.payload {
-            if let Ok(rejection) = RejectionNotification::decode(payload.value.as_slice()) {
-                ctx.rejection_reason = rejection.rejection_reason;
-                ctx.rejected_command = rejection.rejected_command.clone();
+        let rejection = RejectionNotification::decode(payload.value.as_slice()).map_err(|e| {
+            ClientError::invalid_argument(
+                codes::REJECTION_NOTIFICATION_DECODE_FAILED,
+                messages::REJECTION_NOTIFICATION_DECODE_FAILED,
+                [(keys::CAUSE, e.to_string())],
+            )
+        })?;
 
-                // Extract source info from rejected_command.pages[0].header.angzarr_deferred
-                if let Some(ref cmd) = rejection.rejected_command {
-                    if let Some(page) = cmd.pages.first() {
-                        if let Some(ref header) = page.header {
-                            if let Some(page_header::SequenceType::AngzarrDeferred(ref deferred)) =
-                                header.sequence_type
-                            {
-                                ctx.source_aggregate = deferred.source.clone();
-                                ctx.source_event_sequence = deferred.source_seq;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let cmd = rejection.rejected_command.ok_or_else(|| {
+            ClientError::invalid_argument(
+                codes::MISSING_REJECTED_COMMAND,
+                messages::MISSING_REJECTED_COMMAND,
+                std::iter::empty::<(String, String)>(),
+            )
+        })?;
 
-        ctx
+        let deferred = cmd
+            .pages
+            .first()
+            .and_then(|p| p.header.as_ref())
+            .and_then(|h| match &h.sequence_type {
+                Some(page_header::SequenceType::AngzarrDeferred(d)) => Some(d.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                ClientError::invalid_argument(
+                    codes::MISSING_DEFERRED_HEADER,
+                    messages::MISSING_DEFERRED_HEADER,
+                    std::iter::empty::<(String, String)>(),
+                )
+            })?;
+
+        Ok(CompensationContext {
+            source_event_sequence: deferred.source_seq,
+            rejection_code: rejection.code,
+            rejection_reason: rejection.rejection_reason,
+            rejected_command: Some(cmd),
+            source_aggregate: deferred.source,
+        })
     }
 
     /// Returns the type URL of the rejected command, if available.
@@ -98,30 +132,28 @@ impl CompensationContext {
             .unwrap_or("")
     }
 
-    /// Returns the domain and command type suffix as a "domain/CommandType" key.
+    /// Returns the domain and command type suffix as a `"domain/CommandType"`
+    /// key, or `None` when the rejected command, its cover, the domain, or
+    /// the command type URL is missing.
     ///
     /// Mirrors Python's `CompensationContext.dispatch_key`
-    /// (`f"{domain}/{type_name_from_url(cmd_type)}"`). Returns an empty
-    /// string when the rejected command, its cover, the domain, or the
-    /// command type URL is missing.
-    pub fn dispatch_key(&self) -> String {
-        let Some(domain) = self
+    /// (`f"{domain}/{type_name_from_url(cmd_type)}"`). Returning `Option`
+    /// rather than an empty `String` prevents silently bucketing every
+    /// malformed notification under the same `""` key in caller HashMaps.
+    pub fn dispatch_key(&self) -> Option<String> {
+        let domain = self
             .rejected_command
             .as_ref()
             .and_then(|cmd| cmd.cover.as_ref())
             .map(|c| c.domain.as_str())
-            .filter(|d| !d.is_empty())
-        else {
-            return String::new();
-        };
+            .filter(|d| !d.is_empty())?;
 
         let cmd_type = self.rejected_command_type();
         if cmd_type.is_empty() {
-            return String::new();
+            return None;
         }
         let suffix = crate::convert::type_name_from_url(cmd_type);
-
-        format!("{}/{}", domain, suffix)
+        Some(format!("{}/{}", domain, suffix))
     }
 }
 
@@ -188,7 +220,7 @@ impl Default for DelegationOptions {
 /// Audit #65: replaces the previous two-function split
 /// (`delegate_to_framework(reason)` + `delegate_to_framework_with_options(reason, ...)`)
 /// with a single function taking the shared options struct, matching
-/// Python's [`compensation::delegate_to_framework`].
+/// Python's `compensation.delegate_to_framework`.
 pub fn delegate_to_framework(
     reason: impl Into<String>,
     options: DelegationOptions,
@@ -273,13 +305,9 @@ pub fn pm_emit_compensation_events(
 // Helper functions
 // =============================================================================
 
-/// Check if a type URL refers to a rejection Notification.
-///
-/// Audit finding #58: matches against the fully qualified type name per
-/// `google.protobuf.Any` spec. The previous short-form expectation
-/// diverged from Python-emitted URLs.
+/// True when `type_url` names `io.angzarr.v1.Notification` (any prefix).
 pub fn is_notification(type_url: &str) -> bool {
-    type_url == format!("{}{}", TYPE_URL_PREFIX, NOTIFICATION_TYPE_NAME)
+    crate::convert::type_url_is::<Notification>(type_url)
 }
 
 #[cfg(test)]
@@ -299,6 +327,7 @@ mod tests {
                 ..Default::default()
             }),
             source_seq: 42,
+            ..Default::default()
         };
 
         let rejected_command = CommandBook {
@@ -322,6 +351,7 @@ mod tests {
         let rejection = RejectionNotification {
             rejected_command: Some(rejected_command),
             rejection_reason: reason.to_string(),
+            ..Default::default()
         };
 
         let mut buf = Vec::new();
@@ -329,7 +359,7 @@ mod tests {
 
         Notification {
             payload: Some(Any {
-                type_url: format!("{}angzarr.RejectionNotification", TYPE_URL_PREFIX),
+                type_url: crate::full_type_url::<RejectionNotification>(),
                 value: buf,
             }),
             ..Default::default()
@@ -343,8 +373,36 @@ mod tests {
             "payments",
             "type.googleapis.com/examples.ChargeCard",
         );
-        let ctx = CompensationContext::from_notification(&notification);
+        let ctx = CompensationContext::from_notification(&notification).unwrap();
         assert_eq!(ctx.rejection_reason, "insufficient_funds");
+    }
+
+    #[test]
+    fn from_notification_keeps_code_and_message_apart() {
+        let mut notification = make_rejection_notification(
+            "card was declined by the issuer",
+            "payments",
+            "type.googleapis.com/examples.ChargeCard",
+        );
+        let payload = notification.payload.as_mut().unwrap();
+        let mut rejection = RejectionNotification::decode(payload.value.as_slice()).unwrap();
+        rejection.code = "CARD_DECLINED".into();
+        payload.value = rejection.encode_to_vec();
+
+        let ctx = CompensationContext::from_notification(&notification).unwrap();
+        assert_eq!(ctx.rejection_code, "CARD_DECLINED");
+        assert_eq!(ctx.rejection_reason, "card was declined by the issuer");
+    }
+
+    #[test]
+    fn a_rejection_without_a_code_has_an_empty_code() {
+        let notification = make_rejection_notification(
+            "declined",
+            "payments",
+            "type.googleapis.com/examples.ChargeCard",
+        );
+        let ctx = CompensationContext::from_notification(&notification).unwrap();
+        assert_eq!(ctx.rejection_code, "");
     }
 
     #[test]
@@ -354,7 +412,7 @@ mod tests {
             "inventory",
             "type.googleapis.com/examples.ReserveStock",
         );
-        let ctx = CompensationContext::from_notification(&notification);
+        let ctx = CompensationContext::from_notification(&notification).unwrap();
         assert_eq!(ctx.source_event_sequence, 42);
         assert_eq!(
             ctx.source_aggregate.as_ref().unwrap().domain,
@@ -363,13 +421,74 @@ mod tests {
     }
 
     #[test]
-    fn from_notification_handles_missing_payload() {
+    fn from_notification_errors_on_missing_payload() {
         let notification = Notification::default();
-        let ctx = CompensationContext::from_notification(&notification);
-        assert_eq!(ctx.rejection_reason, "");
-        assert_eq!(ctx.source_event_sequence, 0);
-        assert!(ctx.rejected_command.is_none());
-        assert!(ctx.source_aggregate.is_none());
+        let err = CompensationContext::from_notification(&notification).unwrap_err();
+        assert_eq!(err.code(), codes::MISSING_NOTIFICATION_PAYLOAD);
+    }
+
+    #[test]
+    fn from_notification_errors_on_garbage_payload() {
+        let notification = Notification {
+            payload: Some(Any {
+                type_url: crate::full_type_url::<RejectionNotification>(),
+                value: vec![0xff, 0xff, 0xff, 0xff, 0xff],
+            }),
+            ..Default::default()
+        };
+        let err = CompensationContext::from_notification(&notification).unwrap_err();
+        assert_eq!(err.code(), codes::REJECTION_NOTIFICATION_DECODE_FAILED);
+    }
+
+    #[test]
+    fn from_notification_errors_when_rejected_command_missing() {
+        let rejection = RejectionNotification {
+            rejected_command: None,
+            rejection_reason: "no command".into(),
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        rejection.encode(&mut buf).unwrap();
+        let notification = Notification {
+            payload: Some(Any {
+                type_url: crate::full_type_url::<RejectionNotification>(),
+                value: buf,
+            }),
+            ..Default::default()
+        };
+        let err = CompensationContext::from_notification(&notification).unwrap_err();
+        assert_eq!(err.code(), codes::MISSING_REJECTED_COMMAND);
+    }
+
+    #[test]
+    fn from_notification_errors_when_deferred_header_missing() {
+        // Rejected command is present but its first page has no
+        // AngzarrDeferred sequence header — previously silently produced
+        // source_event_sequence=0.
+        let rejected_command = CommandBook {
+            cover: Some(Cover::default()),
+            pages: vec![CommandPage {
+                header: None,
+                merge_strategy: 0,
+                payload: None,
+            }],
+        };
+        let rejection = RejectionNotification {
+            rejected_command: Some(rejected_command),
+            rejection_reason: "x".into(),
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        rejection.encode(&mut buf).unwrap();
+        let notification = Notification {
+            payload: Some(Any {
+                type_url: crate::full_type_url::<RejectionNotification>(),
+                value: buf,
+            }),
+            ..Default::default()
+        };
+        let err = CompensationContext::from_notification(&notification).unwrap_err();
+        assert_eq!(err.code(), codes::MISSING_DEFERRED_HEADER);
     }
 
     #[test]
@@ -379,17 +498,11 @@ mod tests {
             "orders",
             "type.googleapis.com/examples.CreateShipment",
         );
-        let ctx = CompensationContext::from_notification(&notification);
+        let ctx = CompensationContext::from_notification(&notification).unwrap();
         assert_eq!(
             ctx.rejected_command_type(),
             "type.googleapis.com/examples.CreateShipment"
         );
-    }
-
-    #[test]
-    fn rejected_command_type_returns_empty_when_missing() {
-        let ctx = CompensationContext::from_notification(&Notification::default());
-        assert_eq!(ctx.rejected_command_type(), "");
     }
 
     #[test]
@@ -399,23 +512,26 @@ mod tests {
             "fulfillment",
             "type.googleapis.com/examples.CreateShipment",
         );
-        let ctx = CompensationContext::from_notification(&notification);
-        assert_eq!(ctx.dispatch_key(), "fulfillment/examples.CreateShipment");
+        let ctx = CompensationContext::from_notification(&notification).unwrap();
+        assert_eq!(
+            ctx.dispatch_key().as_deref(),
+            Some("fulfillment/examples.CreateShipment"),
+        );
     }
 
     #[test]
-    fn dispatch_key_empty_when_domain_missing() {
+    fn dispatch_key_none_when_domain_missing() {
         let notification =
             make_rejection_notification("fail", "", "type.googleapis.com/examples.CreateShipment");
-        let ctx = CompensationContext::from_notification(&notification);
-        assert_eq!(ctx.dispatch_key(), "");
+        let ctx = CompensationContext::from_notification(&notification).unwrap();
+        assert_eq!(ctx.dispatch_key(), None);
     }
 
     #[test]
-    fn dispatch_key_empty_when_cmd_type_missing() {
+    fn dispatch_key_none_when_cmd_type_missing() {
         let notification = make_rejection_notification("fail", "fulfillment", "");
-        let ctx = CompensationContext::from_notification(&notification);
-        assert_eq!(ctx.dispatch_key(), "");
+        let ctx = CompensationContext::from_notification(&notification).unwrap();
+        assert_eq!(ctx.dispatch_key(), None);
     }
 
     #[test]
@@ -496,23 +612,27 @@ mod tests {
     }
 
     #[test]
-    fn is_notification_matches_correct_type_url() {
-        // Audit finding #58: spec-compliant fully qualified name.
-        assert!(is_notification(
-            "type.googleapis.com/angzarr_client.proto.angzarr.Notification"
-        ));
+    fn is_notification_matches_v1_notification_type_url() {
+        for url in [
+            "/io.angzarr.v1.Notification",
+            "type.googleapis.com/io.angzarr.v1.Notification",
+            "io.angzarr.v1.Notification",
+        ] {
+            assert!(is_notification(url), "{url}");
+        }
+        assert!(is_notification(&crate::full_type_url::<Notification>()));
     }
 
     #[test]
     fn is_notification_rejects_wrong_type_url() {
         assert!(!is_notification(
-            "type.googleapis.com/angzarr_client.proto.angzarr.RejectionNotification"
+            "type.googleapis.com/io.angzarr.v1.RejectionNotification"
         ));
-        // Pre-#58 short form is no longer accepted.
         assert!(!is_notification("type.googleapis.com/angzarr.Notification"));
         assert!(!is_notification(
-            "angzarr_client.proto.angzarr.Notification"
+            "type.googleapis.com/angzarr_client.proto.angzarr.Notification"
         ));
+        assert!(!is_notification("/my.app.FooNotification"));
         assert!(!is_notification(""));
     }
 }

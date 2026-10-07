@@ -49,3 +49,10 @@ fn process_manager_sync_target_not_in_targets_fails_to_compile() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/router/ui/process_manager_sync_target_not_in_targets.rs");
 }
+
+#[test]
+fn saga_with_rejected_handler_fails_to_compile() {
+    // C-0484: a saga never receives rejections.
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/router/ui/saga_with_rejected.rs");
+}

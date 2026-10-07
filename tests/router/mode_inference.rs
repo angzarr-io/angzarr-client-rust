@@ -8,95 +8,60 @@
 //! * single-kind register → returns the matching `Built::*` variant
 //! * `handler_count()` reports the registered factory count
 //!
-//! Uses minimal hand-rolled `Handler` impls so we can probe the builder
-//! without dragging in proc-macro scaffolding.
+//! Uses minimal macro-declared handlers, one per kind.
 
-use angzarr_client::router::{
-    BuildError, Built, Handler, HandlerConfig, HandlerKind, HandlerRequest, HandlerResponse, Kind,
-    Router,
-};
-use angzarr_client::ClientError;
+use angzarr_client::proto::{EventBook, ProcessManagerHandleResponse, SagaResponse};
+#[allow(unused_imports)]
+use angzarr_client::router::{command_handler, handles, process_manager, projector, saga};
+use angzarr_client::router::{BuildError, Built, Router};
+#[allow(unused_imports)]
+use angzarr_client::CommandResult;
 
-// --- Minimal hand-rolled handlers, one per kind. -------------------------
+// --- Minimal handlers, one per kind. -------------------------------------
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct Ping {}
+impl ::prost::Name for Ping {
+    const NAME: &'static str = "Ping";
+    const PACKAGE: &'static str = "mode";
+}
+
+#[derive(Default)]
+struct NoState;
 
 struct StubCh;
-impl HandlerKind for StubCh {
-    const KIND: Kind = Kind::CommandHandler;
-}
-impl Handler for StubCh {
-    fn config(&self) -> HandlerConfig {
-        HandlerConfig::CommandHandler {
-            domain: "stub".into(),
-            handled: vec![],
-            rejected: vec![],
-            applies: vec![],
-            state_factory: None,
-            handles_fact: vec![],
-            supports_replay: false,
-        }
-    }
-    fn dispatch(&self, _request: HandlerRequest) -> Result<HandlerResponse, ClientError> {
-        unreachable!("stub: build-time only")
+#[command_handler(domain = "stub", state = NoState)]
+impl StubCh {
+    #[handles(Ping)]
+    fn on_ping(&self, _cmd: Ping, _state: &NoState, _seq: u32) -> CommandResult<EventBook> {
+        Ok(EventBook::default())
     }
 }
 
 struct StubSaga;
-impl HandlerKind for StubSaga {
-    const KIND: Kind = Kind::Saga;
-}
-impl Handler for StubSaga {
-    fn config(&self) -> HandlerConfig {
-        HandlerConfig::Saga {
-            name: "stub-saga".into(),
-            source: "src".into(),
-            target: "tgt".into(),
-            sync: false,
-            handled: vec![],
-            rejected: vec![],
-        }
-    }
-    fn dispatch(&self, _request: HandlerRequest) -> Result<HandlerResponse, ClientError> {
-        unreachable!("stub: build-time only")
+#[saga(name = "stub-saga", source = "src", target = "tgt")]
+impl StubSaga {
+    #[handles(Ping)]
+    fn on_ping(&self, _evt: Ping) -> CommandResult<SagaResponse> {
+        Ok(SagaResponse::default())
     }
 }
 
 struct StubPm;
-impl HandlerKind for StubPm {
-    const KIND: Kind = Kind::ProcessManager;
-}
-impl Handler for StubPm {
-    fn config(&self) -> HandlerConfig {
-        HandlerConfig::ProcessManager {
-            name: "stub-pm".into(),
-            pm_domain: "pm".into(),
-            sources: vec!["a".into()],
-            targets: vec!["b".into()],
-            sync_targets: vec![],
-            handled: vec![],
-            rejected: vec![],
-            applies: vec![],
-            state_factory: None,
-        }
-    }
-    fn dispatch(&self, _request: HandlerRequest) -> Result<HandlerResponse, ClientError> {
-        unreachable!("stub: build-time only")
+#[process_manager(name = "stub-pm", pm_domain = "pm", state = NoState, sources = ["a"], targets = ["b"])]
+impl StubPm {
+    #[handles(Ping)]
+    fn on_ping(&self, _evt: Ping, _state: &NoState) -> CommandResult<ProcessManagerHandleResponse> {
+        Ok(ProcessManagerHandleResponse::default())
     }
 }
 
 struct StubProjector;
-impl HandlerKind for StubProjector {
-    const KIND: Kind = Kind::Projector;
-}
-impl Handler for StubProjector {
-    fn config(&self) -> HandlerConfig {
-        HandlerConfig::Projector {
-            name: "stub-proj".into(),
-            domains: vec!["d".into()],
-            handled: vec![],
-        }
-    }
-    fn dispatch(&self, _request: HandlerRequest) -> Result<HandlerResponse, ClientError> {
-        unreachable!("stub: build-time only")
+#[projector(name = "stub-proj", domains = ["d"])]
+impl StubProjector {
+    #[handles(Ping)]
+    fn on_ping(&self, _evt: Ping) -> CommandResult<()> {
+        Ok(())
     }
 }
 

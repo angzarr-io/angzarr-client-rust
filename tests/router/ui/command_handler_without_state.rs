@@ -1,6 +1,6 @@
 //! `#[command_handler]` without the `state` attribute must fail at macro parse time.
 
-use angzarr_client::command_handler;
+use angzarr_client::router::command_handler;
 
 struct T;
 

@@ -1,4 +1,4 @@
-use angzarr_client::{command_handler, saga};
+use angzarr_client::router::{command_handler, saga};
 
 struct T;
 #[derive(Default)]

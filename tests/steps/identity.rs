@@ -1,9 +1,11 @@
 //! Step definitions for features/client/identity.feature.
+//!
+//! The crate exposes `compute_root` and `to_proto_bytes`; per-domain root
+//! helpers (`customer_root`, `inventory_product_root`, …) and
+//! `INVENTORY_PRODUCT_NAMESPACE` belong to the applications that own those
+//! domains, so their steps are not defined here.
 
-use angzarr_client::{
-    cart_root, compute_root, customer_root, fulfillment_root, inventory_product_root,
-    inventory_root, order_root, product_root, to_proto_bytes, INVENTORY_PRODUCT_NAMESPACE,
-};
+use angzarr_client::{compute_root, to_proto_bytes};
 use cucumber::{then, when, World};
 use uuid::Uuid;
 
@@ -23,33 +25,6 @@ async fn when_compute_root(world: &mut IdentityWorld, domain: String, key: Strin
 #[when(expr = "I call compute_root with domain {string} and key {string} a second time")]
 async fn when_compute_root_second(world: &mut IdentityWorld, domain: String, key: String) {
     world.calls.push(compute_root(&domain, &key));
-}
-
-// --- per-domain helper dispatch -------------------------------------------
-
-#[when(expr = "I call {string} with {string}")]
-async fn when_call_helper(world: &mut IdentityWorld, helper: String, input: String) {
-    let id = match helper.as_str() {
-        "customer_root" => customer_root(&input),
-        "product_root" => product_root(&input),
-        "order_root" => order_root(&input),
-        "inventory_root" => inventory_root(&input),
-        "cart_root" => cart_root(&input),
-        "fulfillment_root" => fulfillment_root(&input),
-        "inventory_product_root" => inventory_product_root(&input),
-        other => panic!("unknown helper: {}", other),
-    };
-    world.calls.push(id);
-}
-
-#[when(expr = "I call inventory_product_root with {string}")]
-async fn when_inventory_product_root(world: &mut IdentityWorld, input: String) {
-    world.calls.push(inventory_product_root(&input));
-}
-
-#[when(expr = "I call customer_root with {string}")]
-async fn when_customer_root(world: &mut IdentityWorld, input: String) {
-    world.calls.push(customer_root(&input));
 }
 
 #[when("I pass the resulting UUID through to_proto_bytes")]
@@ -76,15 +51,22 @@ async fn then_uuids_differ(world: &mut IdentityWorld) {
     assert_ne!(first, second);
 }
 
-#[then(expr = "the resulting UUID equals {string}")]
-async fn then_uuid_equals(world: &mut IdentityWorld, expected: String) {
+#[then(expr = "the first UUID equals {string}")]
+async fn then_first_uuid_equals(world: &mut IdentityWorld, expected: String) {
+    assert!(world.calls.len() >= 2);
+    assert_eq!(world.calls[world.calls.len() - 2].to_string(), expected);
+}
+
+#[then(expr = "the second UUID equals {string}")]
+async fn then_second_uuid_equals(world: &mut IdentityWorld, expected: String) {
     let last = world.calls.last().expect("no UUID computed");
     assert_eq!(last.to_string(), expected);
 }
 
-#[then(expr = "INVENTORY_PRODUCT_NAMESPACE equals the UUID {string}")]
-async fn then_namespace_equals(_world: &mut IdentityWorld, expected: String) {
-    assert_eq!(INVENTORY_PRODUCT_NAMESPACE.to_string(), expected);
+#[then(expr = "the resulting UUID equals {string}")]
+async fn then_uuid_equals(world: &mut IdentityWorld, expected: String) {
+    let last = world.calls.last().expect("no UUID computed");
+    assert_eq!(last.to_string(), expected);
 }
 
 #[then(expr = "the byte length is {int}")]

@@ -1,0 +1,198 @@
+# Architecture rules for angzarr-client, checked by `just archlint`
+# (tools/archlint; pattern syntax and rule semantics in
+# tools/archlint/src/rules.rs). `cargo run -p archlint -- --edges` prints the
+# module graph these rules are checked against.
+#
+# Layers of the angzarr_client crate, bottom to top:
+#   proto, error_codes       generated message types (re-exported from the
+#                            angzarr-router crate) and the error vocabulary
+#   foundation               error/convert, identity, retry, transport,
+#                            proto_ext, traits, validation, compensation
+#   consumer clients         client, builder: typed gRPC clients and fluent
+#                            command/query builders over the foundation
+#   hosting                  router (the bridge onto the angzarr-router
+#                            engine), handler, host, server, readiness
+#   testing                  `testing` feature: builders, fakes, contexts for
+#                            consumers' tests; never reached by library code
+# angzarr_macros is a standalone proc-macro crate; archlint is tooling.
+#
+# angzarr-router is an external crate here, so rules about it use `deny`
+# (`allow` constrains only workspace targets); `self::**` is the module's
+# own subtree.
+
+# ---- crates -----------------------------------------------------------------
+
+[[rule]]
+name = "macros-are-standalone"
+why = "the proc-macro crate expands to paths in the client; it never depends on the client crate or tooling"
+from = ["angzarr_macros::**"]
+allow = ["angzarr_macros::**"]
+
+[[rule]]
+name = "tooling-is-a-leaf"
+why = "no product crate depends on the architecture linter"
+from = ["angzarr_client::**", "angzarr_macros::**"]
+deny = ["archlint::**"]
+
+[[rule]]
+name = "no-example-domains"
+why = "the client is domain-neutral: no example or business domain (examples, blackjack, poker) is referenced from its code or tests"
+from = ["angzarr_client::**", "angzarr_macros::**"]
+deny = [
+    "**::*examples*::**",
+    "**::*blackjack*::**",
+    "**::*poker*::**",
+    "path:**/*examples*/**",
+]
+
+# ---- leaves -------------------------------------------------------------------
+
+[[rule]]
+name = "proto-is-generated-leaf"
+why = "the proto module only includes generated code and re-exports the router crate's message types"
+from = ["angzarr_client::proto::**"]
+scope = "lib"
+allow = ["angzarr_client::proto::**", "path:src/proto/**"]
+
+[[rule]]
+name = "error-codes-is-a-leaf"
+why = "the coded-error vocabulary references nothing else in the client"
+from = ["angzarr_client::error_codes::**"]
+scope = "lib"
+allow = ["self::**", "angzarr_client::error_codes::**"]
+
+# ---- foundation -------------------------------------------------------------
+
+[[rule]]
+name = "foundation-below-clients-and-hosting"
+why = "shared conversions, errors, identity, retry and transport sit below both the consumer clients and the hosting layer, and never touch the router engine"
+from = [
+    "angzarr_client::convert::**",
+    "angzarr_client::error::**",
+    "angzarr_client::identity::**",
+    "angzarr_client::retry::**",
+    "angzarr_client::transport::**",
+    "angzarr_client::proto_ext::**",
+    "angzarr_client::traits::**",
+    "angzarr_client::validation::**",
+    "angzarr_client::compensation::**",
+]
+scope = "lib"
+allow = [
+    "self::**",
+    "angzarr_client::proto::**",
+    "angzarr_client::error_codes::**",
+    "angzarr_client::convert",
+    "angzarr_client::error",
+    "angzarr_client::proto_ext::**",
+    "angzarr_client::traits",
+    "angzarr_client::transport",
+]
+deny = ["angzarr_router::**", "angzarr_macros::**"]
+
+# ---- consumer clients ---------------------------------------------------------
+
+[[rule]]
+name = "consumer-clients-never-host"
+why = "the typed clients and builders talk to coordinators over gRPC; they never reach the hosting layer or the router engine"
+from = ["angzarr_client::client::**", "angzarr_client::builder::**"]
+scope = "lib"
+allow = [
+    "self::**",
+    "angzarr_client::client",
+    "angzarr_client::builder",
+    "angzarr_client::proto::**",
+    "angzarr_client::error_codes::**",
+    "angzarr_client::convert",
+    "angzarr_client::error",
+    "angzarr_client::proto_ext::**",
+    "angzarr_client::traits",
+    "angzarr_client::transport",
+    "angzarr_client::retry",
+]
+deny = ["angzarr_router::**", "angzarr_macros::**"]
+
+# ---- hosting ------------------------------------------------------------------
+
+[[rule]]
+name = "hosting-never-uses-consumer-clients"
+why = "the component host serves handlers (declared with the re-exported angzarr_macros attributes) over the router; it does not dial coordinators through the consumer clients"
+from = [
+    "angzarr_client::router::**",
+    "angzarr_client::handler::**",
+    "angzarr_client::host::**",
+    "angzarr_client::server::**",
+    "angzarr_client::readiness::**",
+]
+scope = "lib"
+allow = [
+    "self::**",
+    "angzarr_client::router::**",
+    "angzarr_client::handler",
+    "angzarr_client::host",
+    "angzarr_client::server",
+    "angzarr_client::readiness",
+    "angzarr_macros",
+    "angzarr_client::proto::**",
+    "angzarr_client::error_codes::**",
+    "angzarr_client::convert",
+    "angzarr_client::error",
+    "angzarr_client::proto_ext::**",
+    "angzarr_client::transport",
+]
+
+[[rule]]
+name = "engine-reached-through-router-module"
+why = "the router module is the one bridge onto the angzarr-router engine; the rest of the hosting layer goes through it"
+from = [
+    "angzarr_client::handler::**",
+    "angzarr_client::host::**",
+    "angzarr_client::server::**",
+    "angzarr_client::readiness::**",
+]
+scope = "lib"
+deny = ["angzarr_router::**"]
+
+# ---- testing feature ------------------------------------------------------------
+
+[[rule]]
+name = "testing-is-for-tests"
+why = "the `testing` feature module serves consumers' tests; no library module depends on it"
+from = [
+    "angzarr_client",
+    "angzarr_client::builder::**",
+    "angzarr_client::client::**",
+    "angzarr_client::compensation::**",
+    "angzarr_client::convert::**",
+    "angzarr_client::error::**",
+    "angzarr_client::error_codes::**",
+    "angzarr_client::handler::**",
+    "angzarr_client::host::**",
+    "angzarr_client::identity::**",
+    "angzarr_client::proto::**",
+    "angzarr_client::proto_ext::**",
+    "angzarr_client::readiness::**",
+    "angzarr_client::retry::**",
+    "angzarr_client::router::**",
+    "angzarr_client::server::**",
+    "angzarr_client::traits::**",
+    "angzarr_client::transport::**",
+    "angzarr_client::validation::**",
+]
+scope = "lib"
+deny = ["angzarr_client::testing::**"]
+
+[[rule]]
+name = "testing-fakes-the-client-surface"
+why = "test builders and recording fakes stand in for the client traits; they never reach the hosting layer or the router engine"
+from = ["angzarr_client::testing::**"]
+scope = "lib"
+allow = [
+    "angzarr_client::testing::**",
+    "angzarr_client::proto::**",
+    "angzarr_client::error_codes::**",
+    "angzarr_client::convert",
+    "angzarr_client::error",
+    "angzarr_client::traits",
+]
+deny = ["angzarr_router::**"]

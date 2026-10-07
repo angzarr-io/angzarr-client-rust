@@ -1,16 +1,9 @@
-//! Core `Handler` trait and supporting types for the unified router.
+//! Handler metadata and the traits the kind macros implement.
 //!
-//! Handlers are produced by proc-macro expansion in `angzarr-macros`. End users
-//! do not implement `Handler` by hand; they apply `#[command_handler]` / `#[saga]` /
-//! `#[process_manager]` / `#[projector]` on an inherent impl, and the macro
-//! emits `impl Handler for T`.
-
-use crate::proto::{
-    BusinessResponse, ContextualCommand, EventBook, FactRequest, ProcessManagerHandleRequest,
-    ProcessManagerHandleResponse, Projection, ReplayRequest, ReplayResponse, SagaHandleRequest,
-    SagaResponse, UpcastRequest, UpcastResponse,
-};
-use crate::ClientError;
+//! Users apply `#[command_handler]` / `#[saga]` / `#[process_manager]` /
+//! `#[projector]` / `#[upcaster]` to an inherent impl. The macro emits
+//! [`HandlerKind`] (static metadata plus the component's angzarr-router
+//! dispatch table) and [`Handler`] (the instance view of the metadata).
 
 /// The five handler kinds the unified router understands.
 ///
@@ -24,6 +17,28 @@ pub enum Kind {
     Upcaster,
 }
 
+impl Kind {
+    /// Stable string representation suitable for wire-visible metadata
+    /// (cucumber assertions, error details). Pinned via tests so a
+    /// future rename of an enum variant cannot silently change the
+    /// string the dispatch layer emits.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Kind::CommandHandler => "CommandHandler",
+            Kind::Saga => "Saga",
+            Kind::ProcessManager => "ProcessManager",
+            Kind::Projector => "Projector",
+            Kind::Upcaster => "Upcaster",
+        }
+    }
+}
+
+impl std::fmt::Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Metadata describing a handler produced by a kind macro.
 ///
 /// Populated by proc-macro expansion. The builder inspects this to infer the
@@ -34,8 +49,9 @@ pub enum HandlerConfig {
         domain: String,
         /// Proto type URLs accepted by this handler's `#[handles]` methods.
         handled: Vec<String>,
-        /// `(domain, command_name)` keys covered by `#[rejected]` methods.
-        rejected: Vec<(String, String)>,
+        /// `compensates` entries of the `#[rejected]` methods: the rejected
+        /// command's fully-qualified type, optionally `"domain:"`-qualified.
+        compensates: Vec<String>,
         /// Proto type URLs for events declared in `#[applies]` methods.
         applies: Vec<String>,
         /// Method name of the `#[state_factory]` if one was declared.
@@ -62,7 +78,6 @@ pub enum HandlerConfig {
         /// reachable for traffic to be safe.
         sync: bool,
         handled: Vec<String>,
-        rejected: Vec<(String, String)>,
     },
     ProcessManager {
         name: String,
@@ -73,7 +88,8 @@ pub enum HandlerConfig {
         /// mode. Drives readiness probing.
         sync_targets: Vec<String>,
         handled: Vec<String>,
-        rejected: Vec<(String, String)>,
+        /// `compensates` entries of the `#[rejected]` methods.
+        compensates: Vec<String>,
         applies: Vec<String>,
         state_factory: Option<String>,
     },
@@ -101,43 +117,6 @@ impl HandlerConfig {
             Self::Upcaster { .. } => Kind::Upcaster,
         }
     }
-}
-
-/// Per-dispatch input for a handler.
-///
-/// One variant per kind; carries the transport-level request.
-#[derive(Debug, Clone)]
-pub enum HandlerRequest {
-    CommandHandler(ContextualCommand),
-    /// Audit #45: fact-event dispatch from the coordinator's
-    /// `HandleFact` RPC. The aggregate opts in via `#[handles_fact]`.
-    HandleFact(FactRequest),
-    /// Audit #45: state replay for `MERGE_COMMUTATIVE` conflict
-    /// detection. The aggregate opts in via
-    /// `#[command_handler(supports_replay = true)]`.
-    Replay(ReplayRequest),
-    Saga(SagaHandleRequest),
-    ProcessManager(ProcessManagerHandleRequest),
-    Projector(EventBook),
-    Upcaster(UpcastRequest),
-}
-
-/// Per-dispatch output from a handler.
-///
-/// One variant per kind, wrapping the proto response type that the
-/// corresponding gRPC service expects.
-#[derive(Debug, Clone)]
-pub enum HandlerResponse {
-    CommandHandler(BusinessResponse),
-    /// Audit #45: events emitted by `#[handles_fact]` methods, to be
-    /// persisted on the aggregate.
-    HandleFact(EventBook),
-    /// Audit #45: resulting state after replay, packed into `Any`.
-    Replay(ReplayResponse),
-    Saga(SagaResponse),
-    ProcessManager(ProcessManagerHandleResponse),
-    Projector(Projection),
-    Upcaster(UpcastResponse),
 }
 
 /// Errors raised by `Router::build()` or runtime router construction.
@@ -174,6 +153,12 @@ pub enum BuildError {
     /// `details["domain"]`, `details["type_url"]`, `details["router_name"]`.
     #[error("{}", .0.message)]
     DuplicateCommandHandler(crate::error::ErrorDetail),
+
+    /// A component's own table is invalid, as reported by angzarr-router
+    /// (e.g. `AMBIGUOUS_COMPENSATION`: one command type compensated both
+    /// unqualified and domain-qualified). `code` is the router's code.
+    #[error("{}", .0.message)]
+    InvalidComponent(crate::error::ErrorDetail),
 }
 
 impl BuildError {
@@ -184,6 +169,7 @@ impl BuildError {
             BuildError::Empty(d) => d.code,
             BuildError::MixedKinds(d) => d.code,
             BuildError::DuplicateCommandHandler(d) => d.code,
+            BuildError::InvalidComponent(d) => d.code,
         }
     }
 
@@ -193,6 +179,7 @@ impl BuildError {
             BuildError::Empty(d) => d.message,
             BuildError::MixedKinds(d) => d.message,
             BuildError::DuplicateCommandHandler(d) => d.message,
+            BuildError::InvalidComponent(d) => d.message,
         }
     }
 
@@ -202,6 +189,7 @@ impl BuildError {
             BuildError::Empty(d) => &d.details,
             BuildError::MixedKinds(d) => &d.details,
             BuildError::DuplicateCommandHandler(d) => &d.details,
+            BuildError::InvalidComponent(d) => &d.details,
         }
     }
 }
@@ -236,39 +224,72 @@ impl From<DispatchError> for crate::error::ClientError {
 
 /// Typed output of [`Router::build`][crate::router::Router::build].
 ///
-/// One variant per handler kind. Obtain the concrete runtime router via the
-/// matching `into_*()` accessor or a `match` on the returned value.
+/// One variant per handler kind; `match` on it to obtain the concrete
+/// runtime router, or hand it to [`crate::ComponentHost::with_router`].
 #[derive(Debug)]
 pub enum Built {
-    CommandHandler(crate::router::runtime::CommandHandlerRouter),
-    Saga(crate::router::runtime::SagaRouter),
-    ProcessManager(crate::router::runtime::ProcessManagerRouter),
-    Projector(crate::router::runtime::ProjectorRouter),
-    Upcaster(crate::router::upcaster::UpcasterRouter),
+    CommandHandler(crate::router::routers::CommandHandlerRouter),
+    Saga(crate::router::routers::SagaRouter),
+    ProcessManager(crate::router::routers::ProcessManagerRouter),
+    Projector(crate::router::routers::ProjectorRouter),
+    Upcaster(crate::router::routers::UpcasterRouter),
 }
 
-/// Minimal contract every handler implements.
+/// The instance view of a handler's metadata.
 ///
-/// User code never implements `Handler` directly; macros emit the impl.
+/// User code never implements `Handler` directly; the kind macros emit it.
 pub trait Handler: Send + Sync {
     /// Describe this handler's kind and registered behaviors.
     fn config(&self) -> HandlerConfig;
-
-    /// Execute a dispatch request against this handler.
-    ///
-    /// R1 stub — real implementations land in R6 (command), R11 (saga),
-    /// R12 (pm), R13 (projector).
-    fn dispatch(&self, request: HandlerRequest) -> Result<HandlerResponse, ClientError>;
 }
 
-/// Compile-time kind marker.
+/// Compile-time kind marker and dispatch-table constructor.
 ///
-/// Lives on a separate trait from [`Handler`] so that `Handler` stays
-/// object-safe (`Box<dyn Handler>`) — associated constants on the main
-/// trait would bar it from trait-object use.
-///
-/// The `with_handler::<H, F>` method captures `H::KIND` at registration
-/// without invoking the factory, enabling mode inference at build time.
-pub trait HandlerKind {
+/// `Router::with_handler::<H, F>` reads `H::KIND` and `H::handler_config()`
+/// without invoking the factory, and `Router::build` turns the factory into
+/// the component's angzarr-router dispatch table through
+/// [`HandlerKind::component`].
+pub trait HandlerKind: Sized + Send + Sync + 'static {
     const KIND: Kind;
+
+    /// Static handler config — no instance required.
+    fn handler_config() -> HandlerConfig;
+
+    /// The component's angzarr-router dispatch table. Handler methods run
+    /// on a fresh instance from `factory` per dispatch.
+    #[doc(hidden)]
+    fn component(
+        factory: crate::router::component::Factory<Self>,
+    ) -> crate::router::component::Component;
+}
+
+#[cfg(test)]
+mod kind_str_tests {
+    use super::Kind;
+
+    /// Pin the wire-visible string for each Kind so a future rename of
+    /// an enum variant (CommandHandler → Aggregate, say) cannot
+    /// silently change the string the dispatch layer emits in error
+    /// details / cucumber assertions / metadata trailers.
+    #[test]
+    fn kind_as_str_pins_wire_strings() {
+        assert_eq!(Kind::CommandHandler.as_str(), "CommandHandler");
+        assert_eq!(Kind::Saga.as_str(), "Saga");
+        assert_eq!(Kind::ProcessManager.as_str(), "ProcessManager");
+        assert_eq!(Kind::Projector.as_str(), "Projector");
+        assert_eq!(Kind::Upcaster.as_str(), "Upcaster");
+    }
+
+    #[test]
+    fn kind_display_matches_as_str() {
+        for kind in [
+            Kind::CommandHandler,
+            Kind::Saga,
+            Kind::ProcessManager,
+            Kind::Projector,
+            Kind::Upcaster,
+        ] {
+            assert_eq!(kind.to_string(), kind.as_str());
+        }
+    }
 }

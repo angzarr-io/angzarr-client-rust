@@ -1,12 +1,17 @@
-//! gRPC service adapters wrapping Tier 5 unified runtime routers.
+//! gRPC service adapters wrapping the unified runtime routers.
 //!
-//! Each wrapper takes the matching `router::runtime::*Router` produced by
-//! `Router::build().into_*()?` and exposes it as a `tonic` service.
+//! Each wrapper takes the matching `router::routers::*Router` produced by
+//! `Router::build()` (one `Built` variant per kind) and exposes it as a
+//! `tonic` service. Handler dispatch is synchronous user code, so every
+//! adapter runs it on tokio's blocking pool: a handler doing blocking I/O
+//! occupies a blocking thread, never an async worker.
 
 use std::sync::Arc;
 
-use tonic::{Request, Response, Status};
+use tonic::{Code, Request, Response, Status};
 
+use crate::error::build_status_details;
+use crate::error_codes::{codes, messages};
 use crate::proto::{
     command_handler_service_server::CommandHandlerService,
     process_manager_service_server::ProcessManagerService,
@@ -15,7 +20,7 @@ use crate::proto::{
     ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, SagaHandleRequest,
     SagaResponse, UpcastRequest, UpcastResponse,
 };
-use crate::router::runtime::{
+use crate::router::routers::{
     CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter,
 };
 use crate::ClientError;
@@ -48,7 +53,7 @@ impl CommandHandlerService for CommandHandlerGrpc {
         request: Request<ContextualCommand>,
     ) -> Result<Response<BusinessResponse>, Status> {
         let cmd = request.into_inner();
-        let response = self.router.dispatch(cmd).map_err(client_error_to_status)?;
+        let response = on_blocking_pool(&self.router, move |r| r.dispatch(cmd)).await?;
         Ok(Response::new(response))
     }
 
@@ -56,20 +61,11 @@ impl CommandHandlerService for CommandHandlerGrpc {
         &self,
         request: Request<crate::proto::FactRequest>,
     ) -> Result<Response<EventBook>, Status> {
-        // Audit #45: gate on metadata as high in the stack as
-        // possible. No `#[handles_fact]` declared on any registered
-        // handler → return UNIMPLEMENTED without invoking dispatch.
-        // The coordinator's pass-through-persist fallback handles
-        // facts for non-opted-in aggregates.
-        if !self.router.supports_handle_fact() {
-            return Err(Status::unimplemented(
-                "no #[handles_fact] methods declared on registered command_handler",
-            ));
-        }
-        let book = self
-            .router
-            .dispatch_fact(request.into_inner())
-            .map_err(client_error_to_status)?;
+        // A fact type no `#[handles_fact]` declares (including every type,
+        // for an aggregate that declares none) is refused by the router
+        // with INVALID_ARGUMENT / NO_FACT_HANDLER.
+        let req = request.into_inner();
+        let book = on_blocking_pool(&self.router, move |r| r.dispatch_fact(req)).await?;
         Ok(Response::new(book))
     }
 
@@ -82,14 +78,13 @@ impl CommandHandlerService for CommandHandlerGrpc {
         // UNIMPLEMENTED. Coordinator degrades MERGE_COMMUTATIVE to
         // MERGE_STRICT.
         if !self.router.supports_replay() {
-            return Err(Status::unimplemented(
-                "command_handler did not opt in via #[command_handler(supports_replay = true)]",
+            return Err(unimplemented_with_code(
+                codes::HANDLER_DOES_NOT_SUPPORT_REPLAY,
+                messages::HANDLER_DOES_NOT_SUPPORT_REPLAY,
             ));
         }
-        let resp = self
-            .router
-            .dispatch_replay(request.into_inner())
-            .map_err(client_error_to_status)?;
+        let req = request.into_inner();
+        let resp = on_blocking_pool(&self.router, move |r| r.dispatch_replay(req)).await?;
         Ok(Response::new(resp))
     }
 }
@@ -122,7 +117,7 @@ impl SagaService for SagaGrpc {
         request: Request<SagaHandleRequest>,
     ) -> Result<Response<SagaResponse>, Status> {
         let req = request.into_inner();
-        let response = self.router.dispatch(req).map_err(client_error_to_status)?;
+        let response = on_blocking_pool(&self.router, move |r| r.dispatch(req)).await?;
         Ok(Response::new(response))
     }
 }
@@ -140,6 +135,14 @@ impl ProcessManagerGrpc {
     }
 }
 
+impl Clone for ProcessManagerGrpc {
+    fn clone(&self) -> Self {
+        Self {
+            router: Arc::clone(&self.router),
+        }
+    }
+}
+
 #[tonic::async_trait]
 impl ProcessManagerService for ProcessManagerGrpc {
     async fn handle(
@@ -147,7 +150,7 @@ impl ProcessManagerService for ProcessManagerGrpc {
         request: Request<ProcessManagerHandleRequest>,
     ) -> Result<Response<ProcessManagerHandleResponse>, Status> {
         let req = request.into_inner();
-        let response = self.router.dispatch(req).map_err(client_error_to_status)?;
+        let response = on_blocking_pool(&self.router, move |r| r.dispatch(req)).await?;
         Ok(Response::new(response))
     }
 }
@@ -165,11 +168,19 @@ impl ProjectorGrpc {
     }
 }
 
+impl Clone for ProjectorGrpc {
+    fn clone(&self) -> Self {
+        Self {
+            router: Arc::clone(&self.router),
+        }
+    }
+}
+
 #[tonic::async_trait]
 impl ProjectorService for ProjectorGrpc {
     async fn handle(&self, request: Request<EventBook>) -> Result<Response<Projection>, Status> {
         let book = request.into_inner();
-        let projection = self.router.dispatch(book).map_err(client_error_to_status)?;
+        let projection = on_blocking_pool(&self.router, move |r| r.dispatch(book)).await?;
         Ok(Response::new(projection))
     }
 
@@ -181,17 +192,82 @@ impl ProjectorService for ProjectorGrpc {
     }
 }
 
+/// Run synchronous router dispatch on tokio's blocking pool and map its
+/// outcome to a gRPC status. A panicking handler becomes `INTERNAL`
+/// (`HANDLER_PANICKED`) instead of tearing down the connection task.
+async fn on_blocking_pool<R, T, F>(router: &Arc<R>, dispatch: F) -> Result<T, Status>
+where
+    R: Send + Sync + 'static,
+    T: Send + 'static,
+    F: FnOnce(&R) -> Result<T, ClientError> + Send + 'static,
+{
+    let router = Arc::clone(router);
+    tokio::task::spawn_blocking(move || dispatch(&router))
+        .await
+        .map_err(|_| {
+            with_canonical_details(
+                Code::Internal,
+                messages::HANDLER_PANICKED,
+                codes::HANDLER_PANICKED,
+                None,
+            )
+        })?
+        .map_err(client_error_to_status)
+}
+
 fn client_error_to_status(err: ClientError) -> Status {
     // Audit #59: only the static `message` rides in `Status::message`.
-    // Structured details remain client-language-internal for now.
+    // Structured `code` + `details` (+ optional cover for rejections)
+    // ride in `grpc-status-details-bin` as a canonical
+    // `google.rpc.Status` carrying `google.rpc.ErrorInfo`. Polyglot
+    // siblings read the trailer via their google.rpc bindings.
+    //
+    // The Rejected branch delegates to `From<CommandRejectedError>
+    // for Status` so the direct Into-conversion path produces
+    // identical wire output.
+    let code = err.code();
     match err {
-        ClientError::InvalidArgument(d) => Status::invalid_argument(d.message),
-        ClientError::Connection(d) => Status::unavailable(d.message),
-        ClientError::Transport(e) => Status::unavailable(e.to_string()),
+        ClientError::InvalidArgument(d) => with_canonical_details(
+            crate::router::component::grpc_code_for(d.code),
+            d.message,
+            code,
+            Some(&d.details),
+        ),
+        ClientError::Connection(d) => {
+            with_canonical_details(Code::Unavailable, d.message, code, Some(&d.details))
+        }
+        ClientError::Transport(e) => {
+            // The dynamic transport-level message rides in
+            // Status::message verbatim — Box<tonic::transport::Error>
+            // already produces a single-line summary.
+            let m = e.to_string();
+            let payload = build_status_details(Code::Unavailable, &m, code, None, None);
+            Status::with_details(Code::Unavailable, m, bytes::Bytes::from(payload))
+        }
         ClientError::Grpc(s) => *s,
-        ClientError::InvalidTimestamp(d) => Status::invalid_argument(d.message),
+        ClientError::InvalidTimestamp(d) => {
+            with_canonical_details(Code::InvalidArgument, d.message, code, Some(&d.details))
+        }
         ClientError::Rejected(r) => r.into(),
     }
+}
+
+/// Build a `Status` whose `grpc-status-details-bin` trailer carries the
+/// canonical `google.rpc.Status`/`ErrorInfo` payload.
+fn with_canonical_details(
+    grpc_code: Code,
+    message: &'static str,
+    error_code: &'static str,
+    details: Option<&std::collections::BTreeMap<String, String>>,
+) -> Status {
+    let payload = build_status_details(grpc_code, message, error_code, details, None);
+    Status::with_details(grpc_code, message, bytes::Bytes::from(payload))
+}
+
+/// Build a `Status::unimplemented` whose trailing metadata carries the
+/// SCREAMING_SNAKE inventory code via the canonical packing.
+fn unimplemented_with_code(code: &'static str, message: &'static str) -> Status {
+    with_canonical_details(Code::Unimplemented, message, code, None)
 }
 
 // ---------------------------------------------------------------------------
@@ -200,11 +276,11 @@ fn client_error_to_status(err: ClientError) -> Status {
 
 /// gRPC upcaster service wrapping an [`crate::router::UpcasterRouter`].
 pub struct UpcasterGrpc {
-    router: Arc<crate::router::upcaster::UpcasterRouter>,
+    router: Arc<crate::router::routers::UpcasterRouter>,
 }
 
 impl UpcasterGrpc {
-    pub fn new(router: crate::router::upcaster::UpcasterRouter) -> Self {
+    pub fn new(router: crate::router::routers::UpcasterRouter) -> Self {
         Self {
             router: Arc::new(router),
         }
@@ -218,7 +294,7 @@ impl UpcasterService for UpcasterGrpc {
         request: Request<UpcastRequest>,
     ) -> Result<Response<UpcastResponse>, Status> {
         let req = request.into_inner();
-        let response = self.router.dispatch(req).map_err(client_error_to_status)?;
+        let response = on_blocking_pool(&self.router, move |r| r.dispatch(req)).await?;
         Ok(Response::new(response))
     }
 }
@@ -231,6 +307,8 @@ mod tests {
     use super::*;
     use crate::CommandRejectedError;
 
+    use crate::error::unpack_status_details;
+
     #[test]
     fn invalid_argument_maps_to_invalid_argument() {
         let err = ClientError::invalid_argument(
@@ -241,6 +319,49 @@ mod tests {
         let status = client_error_to_status(err);
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
         assert_eq!(status.message(), "value must be positive");
+        let (code, _meta, _cover) = unpack_status_details(status.details()).expect("decode");
+        assert_eq!(code, "BAD_INPUT");
+    }
+
+    #[test]
+    fn invalid_argument_packs_canonical_details() {
+        let err = ClientError::invalid_argument(
+            "BAD_INPUT",
+            "bad",
+            [("field", "amount"), ("expected", "positive")],
+        );
+        let status = client_error_to_status(err);
+        let (_code, metadata, _cover) = unpack_status_details(status.details()).expect("decode");
+        assert_eq!(metadata.get("field").map(String::as_str), Some("amount"));
+        assert_eq!(
+            metadata.get("expected").map(String::as_str),
+            Some("positive"),
+        );
+    }
+
+    #[test]
+    fn rejected_status_packs_code_and_details() {
+        let rej = CommandRejectedError::invalid_argument(
+            "VALUE_NOT_POSITIVE",
+            "value must be positive",
+            [("field", "amount")],
+        );
+        let status = client_error_to_status(ClientError::Rejected(rej));
+        let (code, metadata, _cover) = unpack_status_details(status.details()).expect("decode");
+        assert_eq!(code, "VALUE_NOT_POSITIVE");
+        assert_eq!(metadata.get("field").map(String::as_str), Some("amount"));
+    }
+
+    #[test]
+    fn unimplemented_with_code_packs_canonical_details() {
+        let status = unimplemented_with_code(
+            codes::HANDLER_DOES_NOT_SUPPORT_REPLAY,
+            messages::HANDLER_DOES_NOT_SUPPORT_REPLAY,
+        );
+        assert_eq!(status.code(), tonic::Code::Unimplemented);
+        assert_eq!(status.message(), messages::HANDLER_DOES_NOT_SUPPORT_REPLAY);
+        let (code, _meta, _cover) = unpack_status_details(status.details()).expect("decode");
+        assert_eq!(code, codes::HANDLER_DOES_NOT_SUPPORT_REPLAY);
     }
 
     #[test]

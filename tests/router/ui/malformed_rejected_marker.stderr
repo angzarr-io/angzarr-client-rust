@@ -1,0 +1,19 @@
+error: #[rejected]: command is required
+  --> tests/router/ui/malformed_rejected_marker.rs:15:5
+   |
+15 |     #[rejected(domain = "inventory")]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `BusinessResponse` and `Notification`
+ --> tests/router/ui/malformed_rejected_marker.rs:5:29
+  |
+5 | use angzarr_client::proto::{BusinessResponse, Notification};
+  |                             ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `angzarr_client::CommandResult`
+ --> tests/router/ui/malformed_rejected_marker.rs:6:5
+  |
+6 | use angzarr_client::CommandResult;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

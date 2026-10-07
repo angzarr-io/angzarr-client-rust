@@ -13,9 +13,135 @@
 //! Callers MUST NOT interpolate runtime values into `message`. Put them
 //! in `details`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
+use prost::Message;
+use prost_types::Any;
 use tonic::{Code, Status};
+
+/// Logical domain for `google.rpc.ErrorInfo.domain` — identifies the
+/// inventory the `reason` (= `code`) is defined in. Any sibling client
+/// that reads `grpc-status-details-bin` keys off this value to know
+/// it's looking at an angzarr-emitted error.
+pub const ERROR_INFO_DOMAIN: &str = "angzarr.io";
+
+/// Subset of `google/rpc/status.proto` matching `google.rpc.Status`
+/// wire format. Hand-rolled to avoid a new build-time dep on the
+/// `googleapis` proto bundle — the struct is tiny and the wire layout
+/// is stable.
+#[derive(Clone, PartialEq, Message)]
+struct GoogleRpcStatus {
+    /// `google.rpc.Code` numeric value — the same int that rides on
+    /// `grpc-status`.
+    #[prost(int32, tag = "1")]
+    code: i32,
+    /// Human-readable message. We duplicate `Status::message()` here
+    /// per the spec ("should be the same as `Status.message`").
+    #[prost(string, tag = "2")]
+    message: String,
+    /// Heterogeneous structured details. Each entry is a packed proto
+    /// (typically `google.rpc.ErrorInfo`, `google.rpc.BadRequest`, …;
+    /// we additionally pack our own `Cover` here when present).
+    #[prost(message, repeated, tag = "3")]
+    details: Vec<Any>,
+}
+
+/// Subset of `google/rpc/error_details.proto` matching
+/// `google.rpc.ErrorInfo`. Carries our SCREAMING_SNAKE `code` (as
+/// `reason`), an inventory `domain` ([`ERROR_INFO_DOMAIN`]), and the
+/// detail map verbatim.
+#[derive(Clone, PartialEq, Message)]
+struct GoogleRpcErrorInfo {
+    /// SCREAMING_SNAKE identifier — the `code` from
+    /// [`crate::error_codes::codes`].
+    #[prost(string, tag = "1")]
+    reason: String,
+    /// Logical inventory the `reason` belongs to —
+    /// [`ERROR_INFO_DOMAIN`].
+    #[prost(string, tag = "2")]
+    domain: String,
+    /// Per-call structured context; matches the
+    /// [`ErrorDetail::details`] map verbatim.
+    #[prost(map = "string, string", tag = "3")]
+    metadata: HashMap<String, String>,
+}
+
+/// Type URL for `google.rpc.ErrorInfo` per the canonical `Any` packing.
+const ERROR_INFO_TYPE_URL: &str = "/google.rpc.ErrorInfo";
+
+/// Build the canonical `grpc-status-details-bin` payload (a serialized
+/// `google.rpc.Status` whose `details` is `repeated Any`) for an
+/// angzarr error. Returns the raw bytes ready to feed to
+/// [`Status::with_details`].
+///
+/// The payload always carries a `google.rpc.ErrorInfo`; when `cover`
+/// is `Some`, the `Cover` proto is appended as a second `Any`. Polyglot
+/// siblings read this trailer with whatever google.rpc bindings their
+/// language exposes; tonic stamps the binary trailer + base64 wrapping
+/// per gRPC spec.
+pub fn build_status_details(
+    grpc_code: Code,
+    message: &str,
+    error_code: &str,
+    error_details: Option<&BTreeMap<String, String>>,
+    cover: Option<&crate::proto::Cover>,
+) -> Vec<u8> {
+    let info = GoogleRpcErrorInfo {
+        reason: error_code.to_string(),
+        domain: ERROR_INFO_DOMAIN.to_string(),
+        metadata: error_details
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default(),
+    };
+    let info_bytes = info.encode_to_vec();
+    let mut details = vec![Any {
+        type_url: ERROR_INFO_TYPE_URL.to_string(),
+        value: info_bytes,
+    }];
+    if let Some(cover) = cover {
+        details.push(Any {
+            type_url: crate::full_type_url::<crate::proto::Cover>(),
+            value: cover.encode_to_vec(),
+        });
+    }
+    let status_proto = GoogleRpcStatus {
+        code: i32::from(grpc_code),
+        message: message.to_string(),
+        details,
+    };
+    status_proto.encode_to_vec()
+}
+
+/// Decode the inverse of [`build_status_details`] for tests and
+/// inspection. Returns `(error_code, metadata, optional_cover)`.
+///
+/// Robust to siblings that pack extra `Any` entries we don't recognize
+/// — those are silently skipped. Compiled for this crate's unit tests and
+/// with the `testing` feature.
+#[cfg(any(test, feature = "testing"))]
+pub fn unpack_status_details(
+    bytes: &[u8],
+) -> Option<(
+    String,
+    BTreeMap<String, String>,
+    Option<crate::proto::Cover>,
+)> {
+    let status = GoogleRpcStatus::decode(bytes).ok()?;
+    let mut error_code = String::new();
+    let mut metadata = BTreeMap::new();
+    let mut cover = None;
+    for any in &status.details {
+        if crate::convert::type_name_from_url(&any.type_url) == "google.rpc.ErrorInfo" {
+            if let Ok(info) = GoogleRpcErrorInfo::decode(any.value.as_slice()) {
+                error_code = info.reason;
+                metadata = info.metadata.into_iter().collect();
+            }
+        } else if crate::convert::type_url_is::<crate::proto::Cover>(&any.type_url) {
+            cover = crate::proto::Cover::decode(any.value.as_slice()).ok();
+        }
+    }
+    Some((error_code, metadata, cover))
+}
 
 /// Result type for client operations.
 pub type Result<T> = std::result::Result<T, ClientError>;
@@ -226,12 +352,20 @@ impl ClientError {
 ///   - `code: &'static str` — SCREAMING_SNAKE stable identifier.
 ///   - `status_code: &'static str` — `FAILED_PRECONDITION` / `INVALID_ARGUMENT` / `NOT_FOUND`.
 ///   - `details: BTreeMap<String, String>` — runtime context.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `cover` is the addressing envelope (`domain`, `root`, `correlation_id`,
+/// `edition`) of the command that produced this rejection. Handlers do
+/// not populate it; the router stamps it from the incoming
+/// `ContextualCommand` at the dispatch boundary so every rejection is
+/// traceable to its originating workflow without each call site having
+/// to thread the context.
+#[derive(Debug, Clone, PartialEq)]
 pub struct CommandRejectedError {
     pub code: &'static str,
     pub message: &'static str,
     pub status_code: &'static str,
     pub details: BTreeMap<String, String>,
+    pub cover: Option<Box<crate::proto::Cover>>,
 }
 
 impl CommandRejectedError {
@@ -254,6 +388,7 @@ impl CommandRejectedError {
                 .into_iter()
                 .map(|(k, v)| (k.into(), v.into()))
                 .collect(),
+            cover: None,
         }
     }
 
@@ -272,6 +407,7 @@ impl CommandRejectedError {
                 .into_iter()
                 .map(|(k, v)| (k.into(), v.into()))
                 .collect(),
+            cover: None,
         }
     }
 
@@ -292,7 +428,15 @@ impl CommandRejectedError {
                 .into_iter()
                 .map(|(k, v)| (k.into(), v.into()))
                 .collect(),
+            cover: None,
         }
+    }
+
+    /// Stamp the addressing envelope. Builder-style for the dispatch
+    /// boundary to attach the request's cover to a propagating rejection.
+    pub fn with_cover(mut self, cover: crate::proto::Cover) -> Self {
+        self.cover = Some(Box::new(cover));
+        self
     }
 
     pub fn is_precondition_failed(&self) -> bool {
@@ -320,11 +464,26 @@ impl std::error::Error for CommandRejectedError {}
 
 impl From<CommandRejectedError> for Status {
     fn from(err: CommandRejectedError) -> Self {
-        match err.status_code {
-            "INVALID_ARGUMENT" => Status::invalid_argument(err.message),
-            "NOT_FOUND" => Status::not_found(err.message),
-            _ => Status::failed_precondition(err.message),
-        }
+        // Static message rides in `Status::message()` (greppable across
+        // languages); the structured `code`, `details` map, and `cover`
+        // ride in `grpc-status-details-bin` as a `google.rpc.Status`
+        // whose `details: repeated Any` carries
+        // `google.rpc.ErrorInfo` + (when present) the angzarr `Cover`
+        // proto. Any sibling client with google.rpc bindings can
+        // unpack this directly — no custom trailer scheme.
+        let grpc_code = match err.status_code {
+            "INVALID_ARGUMENT" => Code::InvalidArgument,
+            "NOT_FOUND" => Code::NotFound,
+            _ => Code::FailedPrecondition,
+        };
+        let payload = build_status_details(
+            grpc_code,
+            err.message,
+            err.code,
+            Some(&err.details),
+            err.cover.as_deref(),
+        );
+        Status::with_details(grpc_code, err.message, bytes::Bytes::from(payload))
     }
 }
 
@@ -333,7 +492,52 @@ pub type CommandResult<T> = std::result::Result<T, CommandRejectedError>;
 
 #[cfg(test)]
 mod tests {
+    /// The Cover detail is packed under its io.angzarr.v1 type URL so
+    /// readers can resolve it against the generated descriptors.
+    #[test]
+    fn status_details_pack_cover_under_v1_type_url() {
+        let cover = crate::proto::Cover {
+            domain: "player".into(),
+            ..Default::default()
+        };
+        let bytes = super::build_status_details(
+            tonic::Code::FailedPrecondition,
+            "m",
+            "CODE",
+            None,
+            Some(&cover),
+        );
+        let status = super::GoogleRpcStatus::decode(bytes.as_slice()).expect("status");
+        let urls: Vec<&str> = status.details.iter().map(|a| a.type_url.as_str()).collect();
+        assert_eq!(urls, vec!["/google.rpc.ErrorInfo", "/io.angzarr.v1.Cover"]);
+    }
+
     use super::*;
+
+    #[test]
+    fn with_cover_stamps_addressing_envelope() {
+        use crate::proto::{Cover, Uuid};
+        let rej = CommandRejectedError::precondition_failed(
+            "TEST_CODE",
+            "test message",
+            std::iter::empty::<(&str, &str)>(),
+        );
+        assert!(rej.cover.is_none(), "default cover is None");
+
+        let stamped = rej.with_cover(Cover {
+            domain: "player".into(),
+            root: Some(Uuid {
+                value: vec![0xab, 0xcd],
+            }),
+            correlation_id: "corr-123".into(),
+            edition: None,
+            ..Default::default()
+        });
+        let cover = stamped.cover.expect("cover stamped");
+        assert_eq!(cover.domain, "player");
+        assert_eq!(cover.correlation_id, "corr-123");
+        assert_eq!(cover.root.unwrap().value, vec![0xab, 0xcd]);
+    }
 
     #[test]
     fn rejected_static_message_and_code() {
@@ -409,6 +613,79 @@ mod tests {
             std::iter::empty::<(String, String)>(),
         );
         assert_eq!(err.to_string(), "registration already open");
+    }
+
+    #[test]
+    fn rejected_into_status_packs_canonical_error_info() {
+        // From<CommandRejectedError> for Status packs the structured
+        // payload into `grpc-status-details-bin` as a google.rpc.Status
+        // carrying a google.rpc.ErrorInfo. Polyglot siblings read the
+        // canonical trailer via their google.rpc bindings — no custom
+        // trailer scheme.
+        let rej = CommandRejectedError::precondition_failed(
+            "ALREADY_OPEN",
+            "registration already open",
+            [("field", "status")],
+        );
+        let status: Status = rej.into();
+        assert_eq!(status.code(), Code::FailedPrecondition);
+        assert_eq!(status.message(), "registration already open");
+
+        let details = status.details();
+        assert!(!details.is_empty(), "binary details trailer must be set");
+        let (code, metadata, cover) = unpack_status_details(details).expect("decode");
+        assert_eq!(code, "ALREADY_OPEN");
+        assert_eq!(metadata.get("field").map(String::as_str), Some("status"));
+        assert!(cover.is_none());
+    }
+
+    #[test]
+    fn rejected_into_status_packs_cover_when_present() {
+        use crate::proto::{Cover, Uuid as ProtoUuid};
+        let rej = CommandRejectedError::not_found(
+            "ENTITY_NOT_FOUND",
+            "entity not found",
+            std::iter::empty::<(String, String)>(),
+        )
+        .with_cover(Cover {
+            domain: "player".into(),
+            root: Some(ProtoUuid {
+                value: vec![0xab, 0xcd, 0xef],
+            }),
+            correlation_id: "corr-42".into(),
+            edition: None,
+            ..Default::default()
+        });
+        let status: Status = rej.into();
+        let (code, _metadata, unpacked) = unpack_status_details(status.details()).expect("decode");
+        assert_eq!(code, "ENTITY_NOT_FOUND");
+        let cover = unpacked.expect("cover roundtripped");
+        assert_eq!(cover.domain, "player");
+        assert_eq!(cover.correlation_id, "corr-42");
+        assert_eq!(cover.root.unwrap().value, vec![0xab, 0xcd, 0xef]);
+    }
+
+    #[test]
+    fn rejected_into_status_skips_cover_when_absent() {
+        // No cover stamped on the rejection → no Cover Any in
+        // `details`. ErrorInfo is always packed.
+        let rej = CommandRejectedError::precondition_failed(
+            "X",
+            "x",
+            std::iter::empty::<(String, String)>(),
+        );
+        let status: Status = rej.into();
+        let (code, _metadata, cover) = unpack_status_details(status.details()).expect("decode");
+        assert_eq!(code, "X");
+        assert!(cover.is_none());
+    }
+
+    #[test]
+    fn error_info_domain_is_stable() {
+        // Pin the inventory domain. Any sibling that keys on this
+        // value to recognize an angzarr-emitted error fails fast if
+        // we ever rename it.
+        assert_eq!(ERROR_INFO_DOMAIN, "angzarr.io");
     }
 
     // Audit #76 + #78: Transport / Grpc variants emit static inventory

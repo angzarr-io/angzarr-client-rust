@@ -1,6 +1,6 @@
 //! `#[saga]` without the `target` attribute must fail at macro parse time.
 
-use angzarr_client::saga;
+use angzarr_client::router::saga;
 
 struct T;
 

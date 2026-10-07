@@ -1,6 +1,6 @@
 //! `#[process_manager]` without `sources` must fail at macro parse time.
 
-use angzarr_client::process_manager;
+use angzarr_client::router::process_manager;
 
 struct T;
 #[derive(Default)]
