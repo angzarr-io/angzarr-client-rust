@@ -85,6 +85,9 @@ jobs:
       - name: Format check
         run: just -f justfile.container fmt
 
+      - name: Architecture lint
+        run: just -f justfile.container archlint
+
   notify-downstream:
     name: Notify Downstream Repos
     runs-on: ubuntu-latest

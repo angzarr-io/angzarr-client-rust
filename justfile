@@ -232,6 +232,10 @@ test-verbose: generate-proto
 lint: generate-proto
     just _container lint
 
+# Architecture lint: module-level layer rules (archlint.toml)
+archlint:
+    just _container archlint
+
 # Run angzarr-router's conformance suite against the pinned engine
 router-conformance:
     just _container router-conformance
