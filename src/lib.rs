@@ -61,7 +61,6 @@ pub const VERSION: &str = env!("ANGZARR_CLIENT_VERSION");
 
 pub mod builder;
 pub mod client;
-pub mod compensation;
 pub mod convert;
 pub mod error;
 pub mod error_codes;

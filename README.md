@@ -208,7 +208,6 @@ Everything maps. The shape differs; the names and semantics don't.
 | Rejection factories | `CommandRejectedError.precondition_failed(msg)` | `CommandRejectedError::precondition_failed(msg)` |
 | Retry | `ExponentialBackoffRetry(max_attempts=5)` | `ExponentialBackoffRetry::default().with_max_attempts(5)` |
 | Retry callback | `on_retry=lambda i, e: ...` | `.with_on_retry(\|i, e\| ...)` |
-| Compensation options | `delegate_to_framework(reason, send_to_dead_letter=True)` (kwargs) | `delegate_to_framework(reason)` **or** `delegate_to_framework_with_options(reason, emit, send_to_dead_letter, escalate, abort)` (two-function idiom) |
 | Type-URL match | `type_url_matches(url, name)` (primary) | `type_url_matches(url, name)` (primary) — `type_url_matches_exact` is a Python-compat alias |
 
 ## Saga / PM design philosophy

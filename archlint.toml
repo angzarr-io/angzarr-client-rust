@@ -7,7 +7,7 @@
 #   proto, error_codes       generated message types (re-exported from the
 #                            angzarr-router crate) and the error vocabulary
 #   foundation               error/convert, identity, retry, transport,
-#                            proto_ext, traits, validation, compensation
+#                            proto_ext, traits, validation
 #   consumer clients         client, builder: typed gRPC clients and fluent
 #                            command/query builders over the foundation
 #   hosting                  router (the bridge onto the angzarr-router
@@ -75,7 +75,6 @@ from = [
     "angzarr_client::proto_ext::**",
     "angzarr_client::traits::**",
     "angzarr_client::validation::**",
-    "angzarr_client::compensation::**",
 ]
 scope = "lib"
 allow = [
@@ -162,7 +161,6 @@ from = [
     "angzarr_client",
     "angzarr_client::builder::**",
     "angzarr_client::client::**",
-    "angzarr_client::compensation::**",
     "angzarr_client::convert::**",
     "angzarr_client::error::**",
     "angzarr_client::error_codes::**",
