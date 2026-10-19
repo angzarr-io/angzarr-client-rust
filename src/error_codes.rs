@@ -39,6 +39,9 @@ pub mod codes {
     pub const PROTO_UUID_INVALID: &str = "PROTO_UUID_INVALID";
     pub const TIMESTAMP_PARSE_FAILED: &str = "TIMESTAMP_PARSE_FAILED";
 
+    // Identity
+    pub const DOMAIN_CONTAINS_COLON: &str = "DOMAIN_CONTAINS_COLON";
+
     // Transport / connection
     pub const ENDPOINT_PARSE_FAILED: &str = "ENDPOINT_PARSE_FAILED";
     pub const ENDPOINT_INVALID_URI: &str = "ENDPOINT_INVALID_URI";
@@ -137,6 +140,9 @@ pub mod messages {
     pub const ANY_DECODE_FAILED: &str = "failed to decode Any payload into expected message type";
     pub const PROTO_UUID_INVALID: &str = "proto UUID bytes are not a valid 16-byte UUID";
     pub const TIMESTAMP_PARSE_FAILED: &str = "failed to parse RFC3339 timestamp";
+
+    // Identity
+    pub const DOMAIN_CONTAINS_COLON: &str = "domain must not contain ':'";
 
     // Transport / connection
     pub const ENDPOINT_PARSE_FAILED: &str = "failed to parse fallback endpoint";

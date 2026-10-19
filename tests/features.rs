@@ -46,6 +46,12 @@ const PARITY_DIR: &str = "angzarr-project/parity/client";
 const PENDING: &[(&str, &str)] = &[
     ("C-0336", "no configurable connect timeout"),
     ("C-0337", "no configurable HTTP/2 keep-alive"),
+    // compute_root follows decision 9.2 (ANGZARR_ROOT_NAMESPACE); these
+    // scenarios still pin NAMESPACE_OID vectors until the shared
+    // identity.feature is updated (backlog UU-2).
+    ("C-0110", "pins pre-9.2 NAMESPACE_OID vectors (UU-2)"),
+    ("C-0485", "pins pre-9.2 NAMESPACE_OID vectors (UU-2)"),
+    ("C-0114", "pins pre-9.2 NAMESPACE_OID vectors (UU-2)"),
 ];
 
 /// Outcome of one feature run.

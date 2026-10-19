@@ -84,7 +84,7 @@ pub mod validation;
 // Re-export main types at crate root
 pub use client::{CommandHandlerClient, DomainClient, QueryClient, SpeculativeClient};
 pub use error::{ClientError, CommandRejectedError, CommandResult, Result};
-pub use identity::{compute_root, to_proto_bytes};
+pub use identity::{compute_root, to_proto_bytes, ANGZARR_ROOT_NAMESPACE};
 pub use retry::{default_retry_policy, ExponentialBackoffRetry, RetryPolicy};
 pub use transport::{resolve_ch_endpoint, TransportMode};
 

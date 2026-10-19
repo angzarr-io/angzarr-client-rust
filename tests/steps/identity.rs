@@ -19,12 +19,16 @@ pub struct IdentityWorld {
 
 #[when(expr = "I call compute_root with domain {string} and key {string}")]
 async fn when_compute_root(world: &mut IdentityWorld, domain: String, key: String) {
-    world.calls.push(compute_root(&domain, &key));
+    world
+        .calls
+        .push(compute_root(&domain, &key).expect("compute_root refused the domain"));
 }
 
 #[when(expr = "I call compute_root with domain {string} and key {string} a second time")]
 async fn when_compute_root_second(world: &mut IdentityWorld, domain: String, key: String) {
-    world.calls.push(compute_root(&domain, &key));
+    world
+        .calls
+        .push(compute_root(&domain, &key).expect("compute_root refused the domain"));
 }
 
 #[when("I pass the resulting UUID through to_proto_bytes")]
