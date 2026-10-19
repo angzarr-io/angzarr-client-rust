@@ -2,14 +2,14 @@
 //!
 //! Each wraps one validated [`angzarr_router::router::Router`] holding the
 //! registered components' dispatch tables, plus the static handler
-//! metadata the gRPC adapters and readiness probes read.
+//! metadata the gRPC adapters read.
 //!
 //! [`Router::build`]: crate::router::Router::build
 
 use crate::proto::{
     BusinessResponse, ContextualCommand, Cover, EventBook, FactRequest,
-    ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, ReplayRequest,
-    ReplayResponse, SagaHandleRequest, SagaResponse, UpcastRequest, UpcastResponse,
+    ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, SagaHandleRequest,
+    SagaResponse, UpcastRequest, UpcastResponse,
 };
 use crate::router::component::{begin_dispatch, from_coded};
 use crate::router::HandlerConfig;
@@ -47,8 +47,7 @@ pub struct CommandHandlerRouter {
 }
 
 impl CommandHandlerRouter {
-    /// Route a contextual command (or a Notification delivery) to its
-    /// aggregate.
+    /// Route a contextual command to its aggregate.
     pub fn dispatch(&self, cmd: ContextualCommand) -> Result<BusinessResponse, ClientError> {
         begin_dispatch();
         let cover = cmd.command.as_ref().and_then(|c| c.cover.clone());
@@ -63,39 +62,10 @@ impl CommandHandlerRouter {
         self.inner.handle_fact(&request).map_err(from_coded)
     }
 
-    /// Compute the state a `Replay` request describes, through the
-    /// aggregate that opted in with `supports_replay = true` (an empty
-    /// response when none did; the gRPC adapter gates on
-    /// [`Self::supports_replay`]).
-    pub fn dispatch_replay(&self, request: ReplayRequest) -> Result<ReplayResponse, ClientError> {
-        begin_dispatch();
-        match self.replay_domain() {
-            Some(domain) => self.inner.replay(domain, &request).map_err(from_coded),
-            None => Ok(ReplayResponse::default()),
-        }
-    }
-
     /// True if any registered aggregate declares a `#[handles_fact]` method.
     pub fn supports_handle_fact(&self) -> bool {
         self.configs.iter().any(|c| {
             matches!(c, HandlerConfig::CommandHandler { handles_fact, .. } if !handles_fact.is_empty())
-        })
-    }
-
-    /// True if a registered aggregate opted into `Replay`.
-    pub fn supports_replay(&self) -> bool {
-        self.replay_domain().is_some()
-    }
-
-    /// The domain of the first aggregate that opted into `Replay`.
-    fn replay_domain(&self) -> Option<&str> {
-        self.configs.iter().find_map(|c| match c {
-            HandlerConfig::CommandHandler {
-                domain,
-                supports_replay: true,
-                ..
-            } => Some(domain.as_str()),
-            _ => None,
         })
     }
 
@@ -156,28 +126,6 @@ impl SagaRouter {
         union(targets.iter().map(Vec::as_slice))
     }
 
-    /// Targets some saga addresses synchronously (`sync = true`).
-    pub fn sync_output_domains(&self) -> Vec<String> {
-        let targets: Vec<Vec<String>> = self
-            .configs
-            .iter()
-            .filter_map(|c| match c {
-                HandlerConfig::Saga {
-                    target, sync: true, ..
-                } => Some(vec![target.clone()]),
-                _ => None,
-            })
-            .collect();
-        union(targets.iter().map(Vec::as_slice))
-    }
-
-    /// True if some saga publishes to its target through the async bus.
-    pub fn has_async_outputs(&self) -> bool {
-        self.configs.iter().any(
-            |c| matches!(c, HandlerConfig::Saga { sync: false, target, .. } if !target.is_empty()),
-        )
-    }
-
     /// Number of registered handlers.
     pub fn handler_count(&self) -> usize {
         self.configs.len()
@@ -218,28 +166,6 @@ impl ProcessManagerRouter {
             HandlerConfig::ProcessManager { targets, .. } => Some(targets.as_slice()),
             _ => None,
         }))
-    }
-
-    /// Every registered process manager's `sync_targets`, deduplicated.
-    pub fn sync_output_domains(&self) -> Vec<String> {
-        union(self.configs.iter().filter_map(|c| match c {
-            HandlerConfig::ProcessManager { sync_targets, .. } => Some(sync_targets.as_slice()),
-            _ => None,
-        }))
-    }
-
-    /// True if some process manager has a target outside its `sync_targets`.
-    pub fn has_async_outputs(&self) -> bool {
-        self.configs.iter().any(|c| match c {
-            HandlerConfig::ProcessManager {
-                targets,
-                sync_targets,
-                ..
-            } => targets
-                .iter()
-                .any(|t| !t.is_empty() && !sync_targets.contains(t)),
-            _ => false,
-        })
     }
 
     /// Number of registered handlers.

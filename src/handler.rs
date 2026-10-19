@@ -73,19 +73,10 @@ impl CommandHandlerService for CommandHandlerGrpc {
         &self,
         request: Request<crate::proto::ReplayRequest>,
     ) -> Result<Response<crate::proto::ReplayResponse>, Status> {
-        // Audit #45: gate on metadata. Aggregate did not opt in via
-        // `#[command_handler(supports_replay = true)]` → return
-        // UNIMPLEMENTED. Coordinator degrades MERGE_COMMUTATIVE to
-        // MERGE_STRICT.
-        if !self.router.supports_replay() {
-            return Err(unimplemented_with_code(
-                codes::HANDLER_DOES_NOT_SUPPORT_REPLAY,
-                messages::HANDLER_DOES_NOT_SUPPORT_REPLAY,
-            ));
-        }
-        let req = request.into_inner();
-        let resp = on_blocking_pool(&self.router, move |r| r.dispatch_replay(req)).await?;
-        Ok(Response::new(resp))
+        // The protocol has no Replay RPC; the generated service of the
+        // pinned spec still declares it, so answer UNIMPLEMENTED.
+        let _ = request;
+        Err(Status::unimplemented("replay is not supported"))
     }
 }
 
@@ -264,12 +255,6 @@ fn with_canonical_details(
     Status::with_details(grpc_code, message, bytes::Bytes::from(payload))
 }
 
-/// Build a `Status::unimplemented` whose trailing metadata carries the
-/// SCREAMING_SNAKE inventory code via the canonical packing.
-fn unimplemented_with_code(code: &'static str, message: &'static str) -> Status {
-    with_canonical_details(Code::Unimplemented, message, code, None)
-}
-
 // ---------------------------------------------------------------------------
 // Upcaster wrappers — unified-Router factory-based dispatch (R8b).
 // ---------------------------------------------------------------------------
@@ -350,18 +335,6 @@ mod tests {
         let (code, metadata, _cover) = unpack_status_details(status.details()).expect("decode");
         assert_eq!(code, "VALUE_NOT_POSITIVE");
         assert_eq!(metadata.get("field").map(String::as_str), Some("amount"));
-    }
-
-    #[test]
-    fn unimplemented_with_code_packs_canonical_details() {
-        let status = unimplemented_with_code(
-            codes::HANDLER_DOES_NOT_SUPPORT_REPLAY,
-            messages::HANDLER_DOES_NOT_SUPPORT_REPLAY,
-        );
-        assert_eq!(status.code(), tonic::Code::Unimplemented);
-        assert_eq!(status.message(), messages::HANDLER_DOES_NOT_SUPPORT_REPLAY);
-        let (code, _meta, _cover) = unpack_status_details(status.details()).expect("decode");
-        assert_eq!(code, codes::HANDLER_DOES_NOT_SUPPORT_REPLAY);
     }
 
     #[test]

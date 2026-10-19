@@ -3,10 +3,7 @@
 //! Provides convenient accessors for sequence, type URL, and payload decoding.
 
 use crate::proto::page_header::SequenceType;
-use crate::proto::{
-    AngzarrDeferredSequence, CommandPage, EventPage, ExternalDeferredSequence, MergeStrategy,
-    PageHeader,
-};
+use crate::proto::{CommandPage, EventPage, MergeStrategy, PageHeader};
 use prost::Name;
 
 /// True when a wire `type_url` names message type `M` (any prefix).
@@ -14,49 +11,11 @@ fn type_url_matches<M: Name>(type_url: &str) -> bool {
     crate::convert::type_url_is::<M>(type_url)
 }
 
-/// Extension trait for PageHeader.
-pub trait PageHeaderExt {
-    /// Get the explicit sequence number, if set.
-    /// Returns None for deferred sequences (external or angzarr).
-    fn explicit_sequence(&self) -> Option<u32>;
-
-    /// Check if this is a deferred sequence (not yet stamped).
-    fn is_deferred(&self) -> bool;
-
-    /// Get external deferred info, if present.
-    fn external_deferred(&self) -> Option<&ExternalDeferredSequence>;
-
-    /// Get angzarr deferred info (saga-produced), if present.
-    fn angzarr_deferred(&self) -> Option<&AngzarrDeferredSequence>;
-}
-
-impl PageHeaderExt for PageHeader {
-    fn explicit_sequence(&self) -> Option<u32> {
-        match &self.sequence_type {
-            Some(SequenceType::Sequence(seq)) => Some(*seq),
-            _ => None,
-        }
-    }
-
-    fn is_deferred(&self) -> bool {
-        matches!(
-            &self.sequence_type,
-            Some(SequenceType::ExternalDeferred(_)) | Some(SequenceType::AngzarrDeferred(_))
-        )
-    }
-
-    fn external_deferred(&self) -> Option<&ExternalDeferredSequence> {
-        match &self.sequence_type {
-            Some(SequenceType::ExternalDeferred(ext)) => Some(ext),
-            _ => None,
-        }
-    }
-
-    fn angzarr_deferred(&self) -> Option<&AngzarrDeferredSequence> {
-        match &self.sequence_type {
-            Some(SequenceType::AngzarrDeferred(ang)) => Some(ang),
-            _ => None,
-        }
+/// The explicit sequence a page header carries, if any.
+fn explicit_sequence(header: &PageHeader) -> Option<u32> {
+    match &header.sequence_type {
+        Some(SequenceType::Sequence(seq)) => Some(*seq),
+        _ => None,
     }
 }
 
@@ -64,15 +23,8 @@ impl PageHeaderExt for PageHeader {
 ///
 /// Provides convenient accessors for sequence, type URL, and payload decoding.
 pub trait EventPageExt {
-    /// Get the sequence number from this page.
-    /// Returns 0 for deferred sequences (not yet stamped).
+    /// Get the sequence number from this page (0 when it carries none).
     fn sequence_num(&self) -> u32;
-
-    /// Get the page header, if present.
-    fn header(&self) -> Option<&PageHeader>;
-
-    /// Check if this page has a deferred sequence.
-    fn is_deferred(&self) -> bool;
 
     /// Get the type URL of the event, if present.
     fn type_url(&self) -> Option<&str>;
@@ -91,19 +43,8 @@ impl EventPageExt for EventPage {
     fn sequence_num(&self) -> u32 {
         self.header
             .as_ref()
-            .and_then(|h| h.explicit_sequence())
+            .and_then(explicit_sequence)
             .unwrap_or(0)
-    }
-
-    fn header(&self) -> Option<&PageHeader> {
-        self.header.as_ref()
-    }
-
-    fn is_deferred(&self) -> bool {
-        self.header
-            .as_ref()
-            .map(|h| h.is_deferred())
-            .unwrap_or(false)
     }
 
     fn type_url(&self) -> Option<&str> {
@@ -136,15 +77,8 @@ impl EventPageExt for EventPage {
 ///
 /// Provides convenient accessors for sequence, type URL, and payload decoding.
 pub trait CommandPageExt {
-    /// Get the sequence number from this page.
-    /// Returns 0 for deferred sequences (not yet stamped).
+    /// Get the sequence number from this page (0 when it carries none).
     fn sequence_num(&self) -> u32;
-
-    /// Get the page header, if present.
-    fn header(&self) -> Option<&PageHeader>;
-
-    /// Check if this page has a deferred sequence.
-    fn is_deferred(&self) -> bool;
 
     /// Get the type URL of the command, if present.
     fn type_url(&self) -> Option<&str>;
@@ -169,19 +103,8 @@ impl CommandPageExt for CommandPage {
     fn sequence_num(&self) -> u32 {
         self.header
             .as_ref()
-            .and_then(|h| h.explicit_sequence())
+            .and_then(explicit_sequence)
             .unwrap_or(0)
-    }
-
-    fn header(&self) -> Option<&PageHeader> {
-        self.header.as_ref()
-    }
-
-    fn is_deferred(&self) -> bool {
-        self.header
-            .as_ref()
-            .map(|h| h.is_deferred())
-            .unwrap_or(false)
     }
 
     fn type_url(&self) -> Option<&str> {
@@ -214,36 +137,6 @@ impl CommandPageExt for CommandPage {
             Ok(MergeStrategy::MergeUnspecified) | Err(_) => MergeStrategy::MergeCommutative,
             Ok(s) => s,
         }
-    }
-}
-
-/// Extension trait for AngzarrDeferredSequence.
-///
-/// Provides idempotency key generation for saga-produced commands/facts.
-pub trait AngzarrDeferredSequenceExt {
-    /// Generate the composite idempotency key for logging and display.
-    ///
-    /// Format: `{source.edition}:{source.domain}:{source.root_hex}:{source_seq}`
-    ///
-    /// Example: `angzarr:order:550e8400e29b41d4a716446655440000:7`
-    ///
-    /// Returns `Err("source required")` when the deferred sequence has no
-    /// source cover — a malformed wire input is a recoverable error, not a
-    /// process abort. Audit finding #55.
-    fn idempotency_key(&self) -> Result<String, &'static str>;
-}
-
-impl AngzarrDeferredSequenceExt for AngzarrDeferredSequence {
-    fn idempotency_key(&self) -> Result<String, &'static str> {
-        use super::cover::CoverExt;
-        let source = self.source.as_ref().ok_or("source required")?;
-        Ok(format!(
-            "{}:{}:{}:{}",
-            source.edition(),
-            source.domain,
-            source.root_id_hex().unwrap_or_default(),
-            self.source_seq
-        ))
     }
 }
 

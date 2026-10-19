@@ -49,9 +49,6 @@ pub enum HandlerConfig {
         domain: String,
         /// Proto type URLs accepted by this handler's `#[handles]` methods.
         handled: Vec<String>,
-        /// `compensates` entries of the `#[rejected]` methods: the rejected
-        /// command's fully-qualified type, optionally `"domain:"`-qualified.
-        compensates: Vec<String>,
         /// Proto type URLs for events declared in `#[applies]` methods.
         applies: Vec<String>,
         /// Method name of the `#[state_factory]` if one was declared.
@@ -62,21 +59,11 @@ pub enum HandlerConfig {
         /// into the `HandleFact` RPC; the gRPC adapter returns
         /// UNIMPLEMENTED based on this metadata.
         handles_fact: Vec<String>,
-        /// Audit #45: aggregate opted into the `Replay` RPC via
-        /// `#[command_handler(supports_replay = true)]`. False → gRPC
-        /// adapter returns UNIMPLEMENTED for `Replay`; the coordinator
-        /// degrades MERGE_COMMUTATIVE to MERGE_STRICT.
-        supports_replay: bool,
     },
     Saga {
         name: String,
         source: String,
         target: String,
-        /// Audit #74: whether commands emitted to ``target`` ever use
-        /// sync mode (SIMPLE / CASCADE / DECISION / ISOLATED). Drives
-        /// readiness probing — only sync targets need their coordinator
-        /// reachable for traffic to be safe.
-        sync: bool,
         handled: Vec<String>,
     },
     ProcessManager {
@@ -84,12 +71,7 @@ pub enum HandlerConfig {
         pm_domain: String,
         sources: Vec<String>,
         targets: Vec<String>,
-        /// Audit #74: subset of ``targets`` whose commands ever use sync
-        /// mode. Drives readiness probing.
-        sync_targets: Vec<String>,
         handled: Vec<String>,
-        /// `compensates` entries of the `#[rejected]` methods.
-        compensates: Vec<String>,
         applies: Vec<String>,
         state_factory: Option<String>,
     },
@@ -154,9 +136,8 @@ pub enum BuildError {
     #[error("{}", .0.message)]
     DuplicateCommandHandler(crate::error::ErrorDetail),
 
-    /// A component's own table is invalid, as reported by angzarr-router
-    /// (e.g. `AMBIGUOUS_COMPENSATION`: one command type compensated both
-    /// unqualified and domain-qualified). `code` is the router's code.
+    /// A component's own table is invalid, as reported by angzarr-router.
+    /// `code` is the router's code.
     #[error("{}", .0.message)]
     InvalidComponent(crate::error::ErrorDetail),
 }

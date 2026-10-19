@@ -11,7 +11,7 @@
 #   consumer clients         client, builder: typed gRPC clients and fluent
 #                            command/query builders over the foundation
 #   hosting                  router (the bridge onto the angzarr-router
-#                            engine), handler, host, server, readiness
+#                            engine), handler, host, server
 #   testing                  `testing` feature: builders, fakes, contexts for
 #                            consumers' tests; never reached by library code
 # angzarr_macros is a standalone proc-macro crate; archlint is tooling.
@@ -121,7 +121,6 @@ from = [
     "angzarr_client::handler::**",
     "angzarr_client::host::**",
     "angzarr_client::server::**",
-    "angzarr_client::readiness::**",
 ]
 scope = "lib"
 allow = [
@@ -130,7 +129,6 @@ allow = [
     "angzarr_client::handler",
     "angzarr_client::host",
     "angzarr_client::server",
-    "angzarr_client::readiness",
     "angzarr_macros",
     "angzarr_client::proto::**",
     "angzarr_client::error_codes::**",
@@ -147,7 +145,6 @@ from = [
     "angzarr_client::handler::**",
     "angzarr_client::host::**",
     "angzarr_client::server::**",
-    "angzarr_client::readiness::**",
 ]
 scope = "lib"
 deny = ["angzarr_router::**"]
@@ -169,7 +166,6 @@ from = [
     "angzarr_client::identity::**",
     "angzarr_client::proto::**",
     "angzarr_client::proto_ext::**",
-    "angzarr_client::readiness::**",
     "angzarr_client::retry::**",
     "angzarr_client::router::**",
     "angzarr_client::server::**",

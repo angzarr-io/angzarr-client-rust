@@ -1,7 +1,6 @@
 //! Edition extension trait and constructors.
 //!
-//! Provides convenience methods for checking timeline status and accessing
-//! divergence information.
+//! Provides convenience methods for checking timeline status.
 
 use crate::proto::Edition;
 
@@ -9,8 +8,7 @@ use super::constants::DEFAULT_EDITION;
 
 /// Extension trait for Edition proto type.
 ///
-/// Provides convenience methods for checking timeline status and accessing
-/// divergence information. Constructors remain as associated functions on Edition.
+/// Provides convenience methods for checking timeline status.
 pub trait EditionExt {
     /// Get reference to the edition.
     fn edition_inner(&self) -> &Edition;
@@ -50,15 +48,6 @@ pub trait EditionExt {
     fn name_or_default(&self) -> &str {
         self.canonical_name()
     }
-
-    /// Get explicit divergence for a specific domain, if any.
-    fn divergence_for(&self, domain: &str) -> Option<u32> {
-        self.edition_inner()
-            .divergences
-            .iter()
-            .find(|d| d.domain == domain)
-            .map(|d| d.sequence)
-    }
 }
 
 impl EditionExt for Edition {
@@ -71,10 +60,6 @@ impl EditionExt for Edition {
 pub trait EditionNew: Sized {
     /// The main timeline (empty name).
     fn main_timeline() -> Self;
-    /// An edition with implicit divergence (name only).
-    fn implicit(name: impl Into<String>) -> Self;
-    /// An edition with explicit divergence points.
-    fn explicit(name: impl Into<String>, divergences: Vec<crate::proto::DomainDivergence>) -> Self;
 }
 
 impl EditionNew for Edition {
@@ -82,20 +67,6 @@ impl EditionNew for Edition {
         Self {
             name: String::new(),
             divergences: vec![],
-        }
-    }
-
-    fn implicit(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            divergences: vec![],
-        }
-    }
-
-    fn explicit(name: impl Into<String>, divergences: Vec<crate::proto::DomainDivergence>) -> Self {
-        Self {
-            name: name.into(),
-            divergences,
         }
     }
 }

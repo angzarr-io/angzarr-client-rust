@@ -1,7 +1,7 @@
 //! R1 + R2 — proc macro metadata tests.
 //!
 //! R1 covers kind + domain detection.
-//! R2 covers method-level metadata — `#[handles]`, `#[rejected]`, `#[applies]`,
+//! R2 covers method-level metadata — `#[handles]`, `#[applies]`,
 //! `#[state_factory]` — recoverable through `Handler::config()`.
 
 use angzarr_client::proto::EventBook;
@@ -26,7 +26,6 @@ macro_rules! test_proto {
 
 test_proto!(RegisterPlayer);
 test_proto!(DepositFunds);
-test_proto!(ProcessPayment);
 test_proto!(PlayerRegistered);
 test_proto!(FundsDeposited);
 
@@ -79,16 +78,6 @@ impl Player {
         seq: u32,
     ) -> CommandResult<EventBook> {
         Ok(EventBook::default())
-    }
-
-    #[rejected(domain = "payment", command = ProcessPayment)]
-    #[allow(unused_variables, dead_code)]
-    fn on_payment_rejected(
-        &self,
-        notif: &angzarr_client::proto::Notification,
-        state: &PlayerState,
-    ) -> CommandResult<angzarr_client::proto::BusinessResponse> {
-        Ok(angzarr_client::proto::BusinessResponse::default())
     }
 }
 
@@ -149,22 +138,6 @@ fn applies_stashes_event_type_urls_in_declaration_order() {
 }
 
 #[test]
-fn rejected_stashes_domain_and_command_pairs() {
-    match Player.config() {
-        HandlerConfig::CommandHandler { compensates, .. } => {
-            assert_eq!(
-                compensates,
-                vec![format!(
-                    "payment:{}",
-                    <ProcessPayment as prost::Name>::full_name()
-                )]
-            );
-        }
-        other => panic!("expected CommandHandler, got {:?}", other),
-    }
-}
-
-#[test]
 fn state_factory_records_method_name() {
     match Player.config() {
         HandlerConfig::CommandHandler { state_factory, .. } => {
@@ -203,14 +176,13 @@ fn state_factory_is_none_when_absent() {
 }
 
 // ----------------------------------------------------------------------------
-// Audit #74: readiness sync-target metadata.
+// Saga output metadata.
 // ----------------------------------------------------------------------------
 
-use angzarr_client::router::{process_manager, saga};
+use angzarr_client::router::saga;
 use angzarr_client::router::{Built, Router};
 
 test_proto!(InventoryReserved);
-test_proto!(SecondEvt);
 
 struct AsyncSaga;
 
@@ -223,43 +195,12 @@ impl AsyncSaga {
     }
 }
 
-struct SyncSaga;
-
-#[saga(
-    name = "saga-sync",
-    source = "order",
-    target = "inventory",
-    sync = true
-)]
-impl SyncSaga {
-    #[handles(InventoryReserved)]
-    #[allow(unused_variables, dead_code)]
-    fn on(&self, evt: InventoryReserved) -> CommandResult<angzarr_client::proto::SagaResponse> {
-        Ok(angzarr_client::proto::SagaResponse::default())
-    }
-}
-
 #[test]
-fn saga_sync_defaults_to_false() {
+fn saga_router_output_domains_is_its_target() {
     match AsyncSaga.config() {
-        HandlerConfig::Saga { sync, target, .. } => {
-            assert_eq!(target, "inventory");
-            assert!(!sync, "sync must default to false");
-        }
+        HandlerConfig::Saga { target, .. } => assert_eq!(target, "inventory"),
         other => panic!("expected Saga, got {:?}", other),
     }
-}
-
-#[test]
-fn saga_sync_true_carries_through_config() {
-    match SyncSaga.config() {
-        HandlerConfig::Saga { sync, .. } => assert!(sync),
-        other => panic!("expected Saga, got {:?}", other),
-    }
-}
-
-#[test]
-fn saga_router_sync_output_domains_empty_for_async() {
     let built = Router::new("saga-async")
         .with_handler(|| AsyncSaga)
         .build()
@@ -268,163 +209,6 @@ fn saga_router_sync_output_domains_empty_for_async() {
         panic!("expected SagaRouter")
     };
     assert_eq!(r.output_domains(), vec!["inventory".to_string()]);
-    assert!(r.sync_output_domains().is_empty());
-    assert!(r.has_async_outputs());
-}
-
-#[test]
-fn saga_router_sync_output_domains_includes_sync_target() {
-    let built = Router::new("saga-sync")
-        .with_handler(|| SyncSaga)
-        .build()
-        .expect("build");
-    let Built::Saga(r) = built else {
-        panic!("expected SagaRouter")
-    };
-    assert_eq!(r.sync_output_domains(), vec!["inventory".to_string()]);
-    assert!(!r.has_async_outputs());
-}
-
-struct SyncToInv;
-
-#[saga(
-    name = "saga-sync-inv",
-    source = "order",
-    target = "inventory",
-    sync = true
-)]
-impl SyncToInv {
-    #[handles(InventoryReserved)]
-    #[allow(unused_variables, dead_code)]
-    fn on(&self, evt: InventoryReserved) -> CommandResult<angzarr_client::proto::SagaResponse> {
-        Ok(angzarr_client::proto::SagaResponse::default())
-    }
-}
-
-struct AsyncToInv;
-
-#[saga(name = "saga-async-inv", source = "order", target = "inventory")]
-impl AsyncToInv {
-    #[handles(SecondEvt)]
-    #[allow(unused_variables, dead_code)]
-    fn on(&self, evt: SecondEvt) -> CommandResult<angzarr_client::proto::SagaResponse> {
-        Ok(angzarr_client::proto::SagaResponse::default())
-    }
-}
-
-#[test]
-fn saga_router_has_async_outputs_per_handler_check() {
-    // Two sagas share `target = "inventory"`, one sync and one async.
-    // Naive set-difference over output_domains would call this all-sync;
-    // the per-handler check correctly reports has_async = true.
-    let built = Router::new("saga-mixed")
-        .with_handler(|| SyncToInv)
-        .with_handler(|| AsyncToInv)
-        .build()
-        .expect("build");
-    let Built::Saga(r) = built else {
-        panic!("expected SagaRouter")
-    };
-    assert_eq!(r.sync_output_domains(), vec!["inventory".to_string()]);
-    assert_eq!(r.output_domains(), vec!["inventory".to_string()]);
-    assert!(r.has_async_outputs());
-}
-
-#[derive(Default)]
-struct PmState {}
-
-struct PmAllAsync;
-
-#[process_manager(
-    name = "pm-async",
-    pm_domain = "fulfillment",
-    sources = ["order"],
-    targets = ["inventory", "shipping"],
-    state = PmState
-)]
-impl PmAllAsync {
-    #[handles(InventoryReserved)]
-    #[allow(unused_variables, dead_code)]
-    fn on(
-        &self,
-        evt: InventoryReserved,
-        state: &PmState,
-    ) -> CommandResult<angzarr_client::proto::ProcessManagerHandleResponse> {
-        Ok(angzarr_client::proto::ProcessManagerHandleResponse::default())
-    }
-}
-
-struct PmMixed;
-
-#[process_manager(
-    name = "pm-mixed",
-    pm_domain = "fulfillment",
-    sources = ["order"],
-    targets = ["inventory", "shipping"],
-    sync_targets = ["inventory"],
-    state = PmState
-)]
-impl PmMixed {
-    #[handles(InventoryReserved)]
-    #[allow(unused_variables, dead_code)]
-    fn on(
-        &self,
-        evt: InventoryReserved,
-        state: &PmState,
-    ) -> CommandResult<angzarr_client::proto::ProcessManagerHandleResponse> {
-        Ok(angzarr_client::proto::ProcessManagerHandleResponse::default())
-    }
-}
-
-#[test]
-fn pm_sync_targets_default_empty() {
-    match PmAllAsync.config() {
-        HandlerConfig::ProcessManager { sync_targets, .. } => {
-            assert!(sync_targets.is_empty());
-        }
-        other => panic!("expected ProcessManager, got {:?}", other),
-    }
-}
-
-#[test]
-fn pm_sync_targets_subset_carries_through_config() {
-    match PmMixed.config() {
-        HandlerConfig::ProcessManager {
-            targets,
-            sync_targets,
-            ..
-        } => {
-            assert_eq!(targets, vec!["inventory", "shipping"]);
-            assert_eq!(sync_targets, vec!["inventory".to_string()]);
-        }
-        other => panic!("expected ProcessManager, got {:?}", other),
-    }
-}
-
-#[test]
-fn pm_router_sync_outputs_empty_when_no_sync_targets() {
-    let built = Router::new("pm-async")
-        .with_handler(|| PmAllAsync)
-        .build()
-        .expect("build");
-    let Built::ProcessManager(r) = built else {
-        panic!("expected ProcessManagerRouter")
-    };
-    assert!(r.sync_output_domains().is_empty());
-    assert!(r.has_async_outputs());
-}
-
-#[test]
-fn pm_router_sync_outputs_returns_sync_subset() {
-    let built = Router::new("pm-mixed")
-        .with_handler(|| PmMixed)
-        .build()
-        .expect("build");
-    let Built::ProcessManager(r) = built else {
-        panic!("expected ProcessManagerRouter")
-    };
-    assert_eq!(r.sync_output_domains(), vec!["inventory".to_string()]);
-    assert!(r.has_async_outputs());
 }
 
 // ----------------------------------------------------------------------------

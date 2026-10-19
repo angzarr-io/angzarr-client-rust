@@ -35,18 +35,14 @@ pub use angzarr_router as binding;
 
 // Component declarations: kind attributes and method markers.
 pub use angzarr_macros::{
-    applies, command_handler, handles, handles_fact, process_manager, projector, rejected, saga,
+    applies, command_handler, handles, handles_fact, process_manager, projector, saga,
     state_factory, upcaster, upcasts,
 };
 
 // Public types
-pub use angzarr_router::destinations::Destinations;
 pub use builder::Router;
 pub use handler::{BuildError, Built, DispatchError, Handler, HandlerConfig, HandlerKind, Kind};
-pub use responses::{
-    FactRecord, IntoFactRecord, ProcessManagerResponse, RejectionHandlerResponse,
-    SagaHandlerResponse,
-};
+pub use responses::{FactRecord, IntoFactRecord, ProcessManagerResponse, SagaHandlerResponse};
 pub use routers::{
     CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter, UpcasterRouter,
 };

@@ -6,7 +6,6 @@ fn malformed_and_conflicting_markers_fail_to_compile() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/router/ui/method_stack_handles_applies.rs");
     t.compile_fail("tests/router/ui/malformed_handles_marker.rs");
-    t.compile_fail("tests/router/ui/malformed_rejected_marker.rs");
     t.compile_fail("tests/router/ui/unknown_upcasts_argument.rs");
 }
 
