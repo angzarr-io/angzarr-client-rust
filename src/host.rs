@@ -12,8 +12,8 @@
 //!    the listener (TCP, or a Unix socket, from [`get_transport_config`]
 //!    unless [`ComponentHost::with_transport`] says otherwise) and serves.
 //! 2. Every served service name, and the overall `""` name, reports
-//!    `NOT_SERVING` until the readiness supervisor sees the listener bound
-//!    and every sync output domain reachable; then `SERVING`.
+//!    `NOT_SERVING` until the listener is bound and the server task is
+//!    serving; then `SERVING`.
 //! 3. [`RunningHost::shutdown`] flips every name to `NOT_SERVING`, waits
 //!    the drain period so load balancers stop routing to the host, then
 //!    stops accepting and lets in-flight calls finish. A Unix socket file is
@@ -46,10 +46,6 @@ use crate::proto::process_manager_service_server::ProcessManagerServiceServer;
 use crate::proto::projector_service_server::ProjectorServiceServer;
 use crate::proto::saga_service_server::SagaServiceServer;
 use crate::proto::upcaster_service_server::UpcasterServiceServer;
-use crate::readiness::{
-    probe_config_from_env, run_supervisor_with_wake, BusProbe, OutputDomainProbe, Probe,
-    TransportProbe,
-};
 use crate::router::{Built, Handler, HandlerKind, Kind, Router};
 use crate::server::{
     bind_tcp_listener, bind_uds_listener, cleanup_socket, ensure_uds_parent_dir,
@@ -257,22 +253,6 @@ impl ComponentHost {
                 .await;
         }
 
-        let (transport_probe, transport_signal) = TransportProbe::new();
-        let wake = transport_probe.wake();
-        let mut probes: Vec<Box<dyn Probe>> = vec![Box::new(transport_probe)];
-        let mut any_async = false;
-        for h in &hosted {
-            for domain in &h.sync_outputs {
-                probes.push(Box::new(OutputDomainProbe::for_domain(domain.clone())?));
-            }
-            any_async |= h.has_async_outputs;
-        }
-        if any_async {
-            if let Some(bus) = BusProbe::from_env() {
-                probes.push(Box::new(bus));
-            }
-        }
-
         let mut routes = RoutesBuilder::default();
         routes.add_service(health_service);
         for h in hosted {
@@ -283,16 +263,6 @@ impl ComponentHost {
         }
         let mut served = vec![HEALTH_SERVICE_NAME.to_string()];
         served.extend(names);
-
-        let (interval, timeout) = probe_config_from_env();
-        let supervisor = tokio::spawn(run_supervisor_with_wake(
-            probes,
-            reporter.clone(),
-            health_names.clone(),
-            interval,
-            timeout,
-            wake,
-        ));
 
         let (stop, stopped) = oneshot::channel::<()>();
         let router = Server::builder().add_routes(routes.routes());
@@ -309,7 +279,11 @@ impl ComponentHost {
                 signal,
             )),
         };
-        transport_signal.mark_bound();
+        for name in &health_names {
+            reporter
+                .set_service_status(name, ServingStatus::Serving)
+                .await;
+        }
 
         Ok(RunningHost {
             address,
@@ -317,7 +291,6 @@ impl ComponentHost {
             served,
             health_names,
             reporter,
-            supervisor: Some(supervisor),
             server: Some(server),
             stop: Some(stop),
             drain_period,
@@ -361,20 +334,9 @@ pub struct RunningHost {
     served: Vec<String>,
     health_names: Vec<String>,
     reporter: HealthReporter,
-    supervisor: Option<JoinHandle<()>>,
     server: Option<ServerTask>,
     stop: Option<oneshot::Sender<()>>,
     drain_period: Duration,
-}
-
-/// Stops the readiness supervisor. Dropping the stop sender ends the
-/// server's shutdown signal, so the server stops accepting too.
-impl Drop for RunningHost {
-    fn drop(&mut self) {
-        if let Some(supervisor) = self.supervisor.take() {
-            supervisor.abort();
-        }
-    }
 }
 
 impl RunningHost {
@@ -393,10 +355,6 @@ impl RunningHost {
     /// Report `NOT_SERVING`, wait the drain period, stop accepting, let
     /// in-flight calls finish, and remove a Unix socket file.
     pub async fn shutdown(mut self) -> Result<()> {
-        if let Some(supervisor) = self.supervisor.take() {
-            supervisor.abort();
-            let _ = supervisor.await;
-        }
         publish_shutdown_status(&self.reporter, &self.health_names).await;
         tokio::time::sleep(self.drain_period).await;
         if let Some(stop) = self.stop.take() {
@@ -421,9 +379,6 @@ impl RunningHost {
                 self.shutdown().await
             }
             ended = &mut server => {
-                if let Some(supervisor) = self.supervisor.take() {
-                    supervisor.abort();
-                }
                 publish_shutdown_status(&self.reporter, &self.health_names).await;
                 self.finish(ended)
             }
@@ -482,8 +437,6 @@ fn built_kind(built: &Built) -> Kind {
 struct Hosted {
     name: &'static str,
     instance: String,
-    sync_outputs: Vec<String>,
-    has_async_outputs: bool,
     add: AddService,
 }
 
@@ -493,8 +446,6 @@ impl From<Built> for Hosted {
             Built::CommandHandler(r) => Hosted {
                 name: <CommandHandlerServiceServer<CommandHandlerGrpc> as NamedService>::NAME,
                 instance: r.name(),
-                sync_outputs: Vec::new(),
-                has_async_outputs: false,
                 add: Box::new(move |routes| {
                     routes
                         .add_service(CommandHandlerServiceServer::new(CommandHandlerGrpc::new(r)));
@@ -503,8 +454,6 @@ impl From<Built> for Hosted {
             Built::Saga(r) => Hosted {
                 name: <SagaServiceServer<SagaGrpc> as NamedService>::NAME,
                 instance: r.name(),
-                sync_outputs: r.sync_output_domains(),
-                has_async_outputs: r.has_async_outputs(),
                 add: Box::new(move |routes| {
                     routes.add_service(SagaServiceServer::new(SagaGrpc::new(r)));
                 }),
@@ -512,8 +461,6 @@ impl From<Built> for Hosted {
             Built::ProcessManager(r) => Hosted {
                 name: <ProcessManagerServiceServer<ProcessManagerGrpc> as NamedService>::NAME,
                 instance: r.name(),
-                sync_outputs: r.sync_output_domains(),
-                has_async_outputs: r.has_async_outputs(),
                 add: Box::new(move |routes| {
                     routes
                         .add_service(ProcessManagerServiceServer::new(ProcessManagerGrpc::new(r)));
@@ -522,8 +469,6 @@ impl From<Built> for Hosted {
             Built::Projector(r) => Hosted {
                 name: <ProjectorServiceServer<ProjectorGrpc> as NamedService>::NAME,
                 instance: r.name(),
-                sync_outputs: Vec::new(),
-                has_async_outputs: false,
                 add: Box::new(move |routes| {
                     routes.add_service(ProjectorServiceServer::new(ProjectorGrpc::new(r)));
                 }),
@@ -531,8 +476,6 @@ impl From<Built> for Hosted {
             Built::Upcaster(r) => Hosted {
                 name: <UpcasterServiceServer<UpcasterGrpc> as NamedService>::NAME,
                 instance: r.name(),
-                sync_outputs: Vec::new(),
-                has_async_outputs: false,
                 add: Box::new(move |routes| {
                     routes.add_service(UpcasterServiceServer::new(UpcasterGrpc::new(r)));
                 }),
@@ -602,7 +545,7 @@ mod tests {
         ];
 
         // Start every name at SERVING — this is the steady state once
-        // the readiness supervisor has flipped them green.
+        // the host has started serving.
         for name in &names {
             reporter
                 .set_service_status(name, ServingStatus::Serving)

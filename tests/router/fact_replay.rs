@@ -1,19 +1,15 @@
-//! Audit #45 — `#[handles_fact]` and `supports_replay` opt-in surface.
+//! Audit #45 — the `#[handles_fact]` opt-in surface.
 //!
 //! Covers:
-//! - `CommandHandlerRouter::supports_handle_fact()` and `supports_replay()`
-//!   correctly read metadata from the `#[command_handler]`-emitted config.
+//! - `CommandHandlerRouter::supports_handle_fact()` correctly reads
+//!   metadata from the `#[command_handler]`-emitted config.
 //! - `dispatch_fact` routes facts by their cover domain to the matching
 //!   `#[handles_fact]` method, which records (possibly annotated) facts.
-//! - `dispatch_replay` round-trips state through `Any` using the
-//!   `#[applies]` machinery.
-//! - Aggregates that don't opt in get `false` from `supports_*`. Replay
-//!   then answers `UNIMPLEMENTED`; HandleFact refuses every fact with
+//! - An aggregate that declares no fact handler gets `false` from
+//!   `supports_handle_fact()`; HandleFact refuses every fact with
 //!   `INVALID_ARGUMENT` / `NO_FACT_HANDLER`.
 
-use angzarr_client::proto::{
-    EventBook, EventPage, FactRequest, PageHeader, ReplayRequest, Snapshot,
-};
+use angzarr_client::proto::{EventBook, EventPage, FactRequest, PageHeader};
 use angzarr_client::router::Router;
 // `applies` and `handles` are macro markers consumed by
 // `#[command_handler]`; the compiler counts the imports as unused once
@@ -25,7 +21,7 @@ use angzarr_client::{full_type_url, CommandResult};
 use prost_types::Any;
 
 // Test-local proto stubs. Real prost messages so Any pack/unpack works
-// for the Replay round-trip.
+// for fact payloads.
 macro_rules! test_proto {
     ($name:ident { $($field:ident : $ty:ty = $tag:literal,)* }) => {
         #[derive(Clone, PartialEq, ::prost::Message)]
@@ -98,19 +94,6 @@ fn supports_handle_fact_false_without_opt_in() {
         _ => panic!("expected CommandHandler"),
     };
     assert!(!r.supports_handle_fact());
-}
-
-#[test]
-fn supports_replay_false_without_opt_in() {
-    let r = Router::new("orders")
-        .with_handler(|| PlainOrder)
-        .build()
-        .expect("build");
-    let r = match r {
-        angzarr_client::router::Built::CommandHandler(r) => r,
-        _ => panic!("expected CommandHandler"),
-    };
-    assert!(!r.supports_replay());
 }
 
 // --------------------------------------------------------------------------
@@ -201,88 +184,6 @@ fn dispatch_fact_routes_to_matching_handler() {
     assert_eq!(recorded.type_url, full_type_url::<StockReserved>());
     let recorded: StockReserved = ::prost::Message::decode(recorded.value.as_slice()).unwrap();
     assert_eq!(recorded.order_id, "o-1-seen");
-}
-
-// --------------------------------------------------------------------------
-// Aggregate WITH `supports_replay = true` — supports_replay() true,
-// dispatch_replay round-trips state through Any.
-
-struct ReplayOrder;
-
-#[command_handler(domain = "order", state = OrderState, supports_replay = true)]
-impl ReplayOrder {
-    #[applies(OrderCreated)]
-    #[allow(unused_variables, dead_code)]
-    fn apply_created(state: &mut OrderState, evt: OrderCreated) {
-        state.apply_count += 1;
-        state.order_id = evt.order_id;
-    }
-
-    #[handles(CreateOrder)]
-    #[allow(unused_variables, dead_code)]
-    fn create(&self, cmd: CreateOrder, state: &OrderState, seq: u32) -> CommandResult<EventBook> {
-        Ok(EventBook::default())
-    }
-}
-
-#[test]
-fn supports_replay_true_when_opted_in() {
-    let r = Router::new("orders")
-        .with_handler(|| ReplayOrder)
-        .build()
-        .expect("build");
-    let r = match r {
-        angzarr_client::router::Built::CommandHandler(r) => r,
-        _ => panic!("expected CommandHandler"),
-    };
-    assert!(r.supports_replay());
-}
-
-#[test]
-fn dispatch_replay_round_trips_state_through_any() {
-    let r = Router::new("orders")
-        .with_handler(|| ReplayOrder)
-        .build()
-        .expect("build");
-    let r = match r {
-        angzarr_client::router::Built::CommandHandler(r) => r,
-        _ => panic!("expected CommandHandler"),
-    };
-
-    // Base snapshot: order_id="initial", apply_count=5.
-    let mut req = ReplayRequest::default();
-    let snap = Snapshot {
-        state: Some(Any {
-            type_url: full_type_url::<OrderState>(),
-            value: ::prost::Message::encode_to_vec(&OrderState {
-                order_id: "initial".into(),
-                apply_count: 5,
-            }),
-        }),
-        ..Default::default()
-    };
-    req.base_snapshot = Some(snap);
-
-    // One OrderCreated event to apply.
-    let mut page = EventPage::default();
-    let any = Any {
-        type_url: full_type_url::<OrderCreated>(),
-        value: ::prost::Message::encode_to_vec(&OrderCreated {
-            order_id: "after-replay".into(),
-        }),
-    };
-    page.payload = Some(angzarr_client::proto::event_page::Payload::Event(any));
-    page.header = Some(PageHeader::default());
-    req.events.push(page);
-
-    let resp = r.dispatch_replay(req).expect("dispatch_replay");
-    let any = resp.state.expect("state present");
-    let resulting: OrderState =
-        ::prost::Message::decode(any.value.as_slice()).expect("decode state");
-
-    // apply_created bumped apply_count to 6 and overwrote order_id.
-    assert_eq!(resulting.apply_count, 6);
-    assert_eq!(resulting.order_id, "after-replay");
 }
 
 #[tokio::test]

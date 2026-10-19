@@ -88,8 +88,8 @@ impl Router {
     /// - Mixed kinds → `Err(BuildError::MixedKinds)`.
     /// - Two command handlers covering the same `(domain, command_type)` →
     ///   `Err(BuildError::DuplicateCommandHandler)`.
-    /// - A component table angzarr-router refuses (e.g. ambiguous
-    ///   `compensates` entries) → `Err(BuildError::InvalidComponent)`.
+    /// - A component table angzarr-router refuses →
+    ///   `Err(BuildError::InvalidComponent)`.
     /// - Homogeneous → `Ok(Built::<kind>(<runtime router>))`.
     pub fn build(self) -> Result<Built, BuildError> {
         use crate::error::ErrorDetail;

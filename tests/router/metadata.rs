@@ -1,5 +1,5 @@
-//! Runtime-router metadata and pass-through: names, output domains, sync
-//! targets, handler counts, and what the projector / upcaster routers
+//! Runtime-router metadata and pass-through: names, output domains,
+//! handler counts, and what the projector / upcaster routers
 //! return.
 
 use std::sync::{Arc, Mutex};
@@ -32,7 +32,7 @@ msg!(PingV2);
 struct NoState;
 
 struct SyncSaga;
-#[saga(name = "s-sync", source = "a", target = "inventory", sync = true)]
+#[saga(name = "s-sync", source = "a", target = "inventory")]
 impl SyncSaga {
     #[handles(Ping)]
     fn on(&self, _e: Ping) -> CommandResult<SagaResponse> {
@@ -61,14 +61,12 @@ fn saga_router_metadata() {
     };
     assert_eq!(r.name(), "s-sync");
     assert_eq!(r.output_domains(), vec!["inventory", "shipping"]);
-    assert_eq!(r.sync_output_domains(), vec!["inventory"]);
-    assert!(r.has_async_outputs());
     assert_eq!(r.handler_count(), 3);
 
     let Ok(Built::Saga(only_sync)) = Router::new("sagas").with_handler(|| SyncSaga).build() else {
         panic!("saga router");
     };
-    assert!(!only_sync.has_async_outputs());
+    assert_eq!(only_sync.output_domains(), vec!["inventory"]);
     assert_eq!(only_sync.handler_count(), 1);
 }
 
@@ -78,8 +76,7 @@ struct Pm;
     pm_domain = "flow",
     state = NoState,
     sources = ["a"],
-    targets = ["inventory", "shipping"],
-    sync_targets = ["inventory"]
+    targets = ["inventory", "shipping"]
 )]
 impl Pm {
     #[handles(Ping)]
@@ -94,8 +91,7 @@ struct SyncPm;
     pm_domain = "sync-flow",
     state = NoState,
     sources = ["a"],
-    targets = ["inventory"],
-    sync_targets = ["inventory"]
+    targets = ["inventory"]
 )]
 impl SyncPm {
     #[handles(Ping)]
@@ -115,15 +111,13 @@ fn process_manager_router_metadata() {
     };
     assert_eq!(r.name(), "flow");
     assert_eq!(r.output_domains(), vec!["inventory", "shipping"]);
-    assert_eq!(r.sync_output_domains(), vec!["inventory"]);
-    assert!(r.has_async_outputs());
     assert_eq!(r.handler_count(), 2);
 
     let Ok(Built::ProcessManager(sync_only)) = Router::new("pms").with_handler(|| SyncPm).build()
     else {
         panic!("PM router");
     };
-    assert!(!sync_only.has_async_outputs());
+    assert_eq!(sync_only.output_domains(), vec!["inventory"]);
 }
 
 struct Proj(Arc<Mutex<u32>>);

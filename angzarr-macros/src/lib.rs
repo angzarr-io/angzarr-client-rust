@@ -141,17 +141,12 @@ pub fn command_handler(attr: TokenStream, item: TokenStream) -> TokenStream {
 struct AggregateArgs {
     domain: String,
     state: Ident,
-    /// Audit #45: opt-in for the `Replay` RPC. When `true`, the framework
-    /// auto-implements replay using existing `#[applies]` methods. The
-    /// gRPC adapter gates on this metadata — `false` → UNIMPLEMENTED.
-    supports_replay: bool,
 }
 
 impl syn::parse::Parse for AggregateArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut domain = None;
         let mut state = None;
-        let mut supports_replay = false;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -166,10 +161,6 @@ impl syn::parse::Parse for AggregateArgs {
                     let value: Ident = input.parse()?;
                     state = Some(value);
                 }
-                "supports_replay" => {
-                    let value: syn::LitBool = input.parse()?;
-                    supports_replay = value.value;
-                }
                 _ => return Err(syn::Error::new(ident.span(), "unknown attribute")),
             }
 
@@ -183,7 +174,6 @@ impl syn::parse::Parse for AggregateArgs {
             state: state.ok_or_else(|| {
                 syn::Error::new(proc_macro2::Span::call_site(), "state is required")
             })?,
-            supports_replay,
         })
     }
 }
@@ -191,7 +181,6 @@ impl syn::parse::Parse for AggregateArgs {
 fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
     let domain = &args.domain;
     let state_ty = &args.state;
-    let supports_replay = args.supports_replay;
 
     let meta = match collect_method_metadata(&input) {
         Ok(meta) => meta,
@@ -208,10 +197,6 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
         .applies
         .iter()
         .map(|ty| quote! { ::angzarr_client::full_type_url::<#ty>() });
-    let compensates_exprs = meta
-        .rejected_with_methods
-        .iter()
-        .map(|(_, d, c)| compensates_key(d, c));
     let handles_fact_exprs = meta
         .handles_fact
         .iter()
@@ -242,16 +227,6 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
             );
         }
     });
-    let rejection_regs = meta.rejected_with_methods.iter().map(|(method, d, c)| {
-        let key = compensates_key(d, c);
-        quote! {
-            let f = ::std::sync::Arc::clone(&factory);
-            table = table.on_rejected(&#key, move |notification, _rejection, state, _ctx| {
-                let handler = f();
-                handler.#method(notification, &*state).map_err(__p::rejected)
-            });
-        }
-    });
     let fact_regs = meta
         .handles_fact_with_methods
         .iter()
@@ -266,21 +241,14 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
                 });
             }
         });
-    let replay_expr = if supports_replay {
-        quote! { let table = table.with_message_state(); }
-    } else {
-        quote! {}
-    };
 
     let config_expr: TokenStream2 = quote! {
         ::angzarr_client::router::HandlerConfig::CommandHandler {
             domain: #domain.to_string(),
             handled: ::std::vec![#(#handled_exprs),*],
-            compensates: ::std::vec![#(#compensates_exprs),*],
             applies: ::std::vec![#(#applies_exprs),*],
             state_factory: #state_factory_expr,
             handles_fact: ::std::vec![#(#handles_fact_exprs),*],
-            supports_replay: #supports_replay,
         }
     };
     let name = quote!(#self_ty).to_string();
@@ -303,10 +271,8 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
                     #name, #domain, #rebuilder,
                 );
                 #(#command_regs)*
-                #(#rejection_regs)*
                 #(#fact_regs)*
                 let _ = &factory;
-                #replay_expr
                 __p::Component::CommandHandler(::std::boxed::Box::new(table))
             }
         }
@@ -354,16 +320,16 @@ fn rebuilder_expr(self_ty: &syn::Type, state_ty: &Ident, meta: &MethodMetadata) 
 /// Which component a handler's optional context parameters come from.
 #[derive(Clone, Copy, PartialEq)]
 enum ContextKind {
-    /// `dests` and the triggering `page` context are in scope.
+    /// The triggering `page` context is in scope.
     Saga,
-    /// `dests` and `source_cover` are in scope.
+    /// `source_cover` is in scope.
     ProcessManager,
 }
 
 /// The optional context parameters a saga / process-manager handler may
-/// declare after its required ones, by name: `destinations` (the declared
-/// output domains), `source_cover` (the triggering book's cover) and, for a
-/// saga, `source_seq` (the triggering event's sequence).
+/// declare after its required ones, by name: `source_cover` (the
+/// triggering book's cover) and, for a saga, `source_seq` (the triggering
+/// event's sequence).
 fn context_args(
     method: &syn::ImplItemFn,
     required: usize,
@@ -381,7 +347,6 @@ fn context_args(
             ));
         };
         match (ident.ident.to_string().as_str(), kind) {
-            ("destinations", _) => out.push(quote! { dests }),
             ("source_cover", ContextKind::Saga) => out.push(quote! { page.cover.cloned() }),
             ("source_cover", ContextKind::ProcessManager) => {
                 out.push(quote! { source_cover.cloned() })
@@ -392,7 +357,7 @@ fn context_args(
                     &ident.ident,
                     format!(
                         "unsupported handler parameter `{other}`: optional parameters are \
-                         `destinations`, `source_cover` and `source_seq`"
+                         `source_cover` and `source_seq`"
                     ),
                 ))
             }
@@ -401,7 +366,7 @@ fn context_args(
                     &ident.ident,
                     format!(
                         "unsupported handler parameter `{other}`: optional parameters are \
-                         `destinations` and `source_cover`"
+                         `source_cover`"
                     ),
                 ))
             }
@@ -428,8 +393,6 @@ struct MethodMetadata {
     handled: Vec<syn::Path>,
     /// `(method name, command type)` pairs for dispatch-arm generation.
     handled_with_methods: Vec<(Ident, syn::Path)>,
-    /// `(method name, domain qualifier, command type)` from `#[rejected]`.
-    rejected_with_methods: Vec<(Ident, Option<String>, syn::Path)>,
     /// Types named in `#[applies(T)]` (kept for config emission).
     applies: Vec<syn::Path>,
     /// `(method name, event type)` pairs for state-rebuild-arm generation.
@@ -446,13 +409,12 @@ struct MethodMetadata {
 }
 
 /// Method-level markers a kind macro consumes. A method carries at most one
-/// of them: a handler, applier, compensator, state factory and upcast are
+/// of them: a handler, fact handler, applier, state factory and upcast are
 /// different roles with different signatures.
 const METHOD_MARKERS: &[&str] = &[
     "handles",
     "handles_fact",
     "applies",
-    "rejected",
     "state_factory",
     "upcasts",
 ];
@@ -471,7 +433,6 @@ fn collect_method_metadata(input: &ItemImpl) -> syn::Result<MethodMetadata> {
     let mut meta = MethodMetadata {
         handled: Vec::new(),
         handled_with_methods: Vec::new(),
-        rejected_with_methods: Vec::new(),
         applies: Vec::new(),
         applies_with_methods: Vec::new(),
         state_factory: None,
@@ -522,10 +483,6 @@ fn collect_method_metadata(input: &ItemImpl) -> syn::Result<MethodMetadata> {
                         meta.applies.push(ty.clone());
                         meta.applies_with_methods.push((name.clone(), ty));
                     }
-                    Err(e) => push_err(e),
-                },
-                "rejected" => match get_rejected_args(attr) {
-                    Ok((d, c)) => meta.rejected_with_methods.push((name.clone(), d, c)),
                     Err(e) => push_err(e),
                 },
                 "state_factory" => {
@@ -613,7 +570,7 @@ impl syn::parse::Parse for UpcastsArgsParse {
     }
 }
 
-/// Strip `#[handles]`, `#[applies]`, `#[rejected]`, `#[state_factory]`,
+/// Strip `#[handles]`, `#[handles_fact]`, `#[applies]`, `#[state_factory]`,
 /// `#[upcasts]` from the methods of an impl block so rustc doesn't see
 /// them as unknown attrs.
 fn strip_method_markers(input: &mut ItemImpl) {
@@ -622,7 +579,6 @@ fn strip_method_markers(input: &mut ItemImpl) {
             method.attrs.retain(|attr| {
                 !attr.path().is_ident("handles")
                     && !attr.path().is_ident("handles_fact")
-                    && !attr.path().is_ident("rejected")
                     && !attr.path().is_ident("applies")
                     && !attr.path().is_ident("state_factory")
                     && !attr.path().is_ident("upcasts")
@@ -682,33 +638,6 @@ pub fn handles_fact(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
 
-/// Marks a method as a rejection (compensation) handler on a command
-/// handler or process manager — a `compensates` entry.
-///
-/// # Attributes
-/// - `command = Type` - The rejected command's type (required); matched by
-///   its fully-qualified name
-/// - `domain = "name"` - Only when the command was sent to this domain
-///   (optional; without it any domain matches)
-///
-/// A `#[saga]` never receives rejections; `#[rejected]` there is a compile
-/// error.
-///
-/// # Example
-/// ```rust,ignore
-/// #[rejected(domain = "payment", command = ProcessPayment)]
-/// fn handle_payment_rejected(&self, notification: &Notification, state: &CounterState)
-///     -> CommandResult<BusinessResponse> {
-///     // ...
-/// }
-/// ```
-#[proc_macro_attribute]
-pub fn rejected(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Marker consumed by #[command_handler] / #[process_manager]; a #[saga]
-    // rejects it at compile time.
-    item
-}
-
 /// Marks a method as an event applier for state reconstruction.
 ///
 /// The method must be a static function with signature:
@@ -747,11 +676,10 @@ pub fn applies(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// commands. Emitted commands are deferred: the router stamps their
 /// `angzarr_deferred` provenance and the destination assigns the sequence.
 ///
-/// A handler takes the event and may also declare, by name, `destinations:
-/// &Destinations` (the declared output domains), `source_cover:
+/// A handler takes the event and may also declare, by name, `source_cover:
 /// Option<Cover>` (the triggering book's cover) and `source_seq: u32` (the
 /// triggering event's sequence). Process-manager handlers take
-/// `destinations` and `source_cover` after their state.
+/// `source_cover` after their state.
 ///
 /// # Attributes
 /// - `name = "saga-name"` - The saga's name (required)
@@ -786,10 +714,6 @@ struct SagaArgs {
     name: String,
     source: String,
     target: String,
-    /// Audit #74: whether commands emitted to ``target`` ever use sync
-    /// mode. Default ``false`` — async-only target rides the bus, no
-    /// per-domain readiness probe.
-    sync: bool,
 }
 
 impl syn::parse::Parse for SagaArgs {
@@ -797,7 +721,6 @@ impl syn::parse::Parse for SagaArgs {
         let mut name = None;
         let mut source = None;
         let mut target = None;
-        let mut sync: Option<bool> = None;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -816,10 +739,6 @@ impl syn::parse::Parse for SagaArgs {
                     let value: syn::LitStr = input.parse()?;
                     target = Some(value.value());
                 }
-                "sync" => {
-                    let value: syn::LitBool = input.parse()?;
-                    sync = Some(value.value);
-                }
                 _ => return Err(syn::Error::new(ident.span(), "unknown attribute")),
             }
 
@@ -832,45 +751,14 @@ impl syn::parse::Parse for SagaArgs {
             name: require_non_empty_str(name, "name")?,
             source: require_non_empty_str(source, "source")?,
             target: require_non_empty_str(target, "target")?,
-            sync: sync.unwrap_or(false),
         })
     }
 }
 
-/// A saga never receives a rejection: a rejected saga-emitted command is
-/// compensated by the component whose event triggered the saga (its
-/// `angzarr_deferred.source`). `#[rejected]` on a saga is a compile error.
-fn reject_saga_compensation(input: &ItemImpl) -> Option<TokenStream2> {
-    let mut errors: Option<syn::Error> = None;
-    for item in &input.items {
-        let ImplItem::Fn(method) = item else { continue };
-        for attr in method
-            .attrs
-            .iter()
-            .filter(|a| a.path().is_ident("rejected"))
-        {
-            let e = syn::Error::new_spanned(
-                attr,
-                "#[rejected] is not allowed on a #[saga]: a saga never receives rejections; \
-                 declare the compensation on the component whose event triggered the saga",
-            );
-            match errors.as_mut() {
-                Some(acc) => acc.combine(e),
-                None => errors = Some(e),
-            }
-        }
-    }
-    errors.map(|e| e.to_compile_error())
-}
-
 fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
-    if let Some(err) = reject_saga_compensation(&input) {
-        return err;
-    }
     let name = &args.name;
     let source = &args.source;
     let target = &args.target;
-    let sync = args.sync;
 
     let meta = match collect_method_metadata(&input) {
         Ok(meta) => meta,
@@ -915,7 +803,6 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
                     name: #name.to_string(),
                     source: #source.to_string(),
                     target: #target.to_string(),
-                    sync: #sync,
                     handled: ::std::vec![#(#handled_exprs),*],
                 }
             }
@@ -947,7 +834,6 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
 /// - `state = StateType` - The PM's state type (required)
 /// - `sources = ["domain1", "domain2"]` - Domains whose events trigger it (required)
 /// - `targets = ["domain"]` - Domains it issues commands to (required)
-/// - `sync_targets = ["domain"]` - Targets addressed synchronously (optional, ⊆ targets)
 ///
 /// # Example
 /// ```rust,ignore
@@ -985,10 +871,6 @@ struct ProcessManagerArgs {
     state: Ident,
     sources: Vec<String>,
     targets: Vec<String>,
-    /// Audit #74: subset of ``targets`` whose commands ever use sync
-    /// mode. Drives readiness probing — only sync targets get an
-    /// ``OutputDomainProbe``. Default ``[]``.
-    sync_targets: Vec<String>,
 }
 
 impl syn::parse::Parse for ProcessManagerArgs {
@@ -998,8 +880,6 @@ impl syn::parse::Parse for ProcessManagerArgs {
         let mut state = None;
         let mut sources = None;
         let mut targets = None;
-        let mut sync_targets: Option<Vec<String>> = None;
-        let mut sync_targets_span: Option<proc_macro2::Span> = None;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -1024,35 +904,12 @@ impl syn::parse::Parse for ProcessManagerArgs {
                 "targets" => {
                     targets = Some(parse_str_list(input)?);
                 }
-                "sync_targets" => {
-                    sync_targets_span = Some(ident.span());
-                    sync_targets = Some(parse_str_list(input)?);
-                }
                 _ => return Err(syn::Error::new(ident.span(), "unknown attribute")),
             }
 
             if input.peek(Token![,]) {
                 input.parse::<Token![,]>()?;
             }
-        }
-
-        let targets_v = require_non_empty_str_list(targets, "targets")?;
-        let sync_targets_v = sync_targets.unwrap_or_default();
-
-        // Audit #74: validate sync_targets ⊆ targets at compile time.
-        let extra: Vec<&String> = sync_targets_v
-            .iter()
-            .filter(|t| !targets_v.contains(t))
-            .collect();
-        if !extra.is_empty() {
-            let span = sync_targets_span.unwrap_or_else(proc_macro2::Span::call_site);
-            return Err(syn::Error::new(
-                span,
-                format!(
-                    "sync_targets {:?} are not in targets {:?}",
-                    extra, targets_v
-                ),
-            ));
         }
 
         Ok(ProcessManagerArgs {
@@ -1062,8 +919,7 @@ impl syn::parse::Parse for ProcessManagerArgs {
                 syn::Error::new(proc_macro2::Span::call_site(), "state is required")
             })?,
             sources: require_non_empty_str_list(sources, "sources")?,
-            targets: targets_v,
-            sync_targets: sync_targets_v,
+            targets: require_non_empty_str_list(targets, "targets")?,
         })
     }
 }
@@ -1089,7 +945,6 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
     let state_ty = &args.state;
     let sources = &args.sources;
     let targets = &args.targets;
-    let sync_targets = &args.sync_targets;
 
     let meta = match collect_method_metadata(&input) {
         Ok(meta) => meta,
@@ -1120,16 +975,6 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
             });
         }
     }
-    let rejection_regs = meta.rejected_with_methods.iter().map(|(method, d, c)| {
-        let key = compensates_key(d, c);
-        quote! {
-            let f = ::std::sync::Arc::clone(&factory);
-            table = table.on_rejected(&#key, move |notification, _rejection, state| {
-                let handler = f();
-                handler.#method(notification, &*state).map_err(__p::rejected)
-            });
-        }
-    });
     strip_method_markers(&mut input);
     let self_ty = &input.self_ty;
     let rebuilder = rebuilder_expr(self_ty, state_ty, &meta);
@@ -1142,10 +987,6 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
         .applies
         .iter()
         .map(|ty| quote! { ::angzarr_client::full_type_url::<#ty>() });
-    let compensates_exprs = meta
-        .rejected_with_methods
-        .iter()
-        .map(|(_, d, c)| compensates_key(d, c));
     let state_factory_expr = match &meta.state_factory {
         Some(name) => {
             let s = name.to_string();
@@ -1155,7 +996,6 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
     };
     let sources_vec = sources.iter().map(|s| quote! { #s.to_string() });
     let targets_vec = targets.iter().map(|s| quote! { #s.to_string() });
-    let sync_targets_vec = sync_targets.iter().map(|s| quote! { #s.to_string() });
 
     quote! {
         #input
@@ -1169,10 +1009,8 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
                     pm_domain: #pm_domain.to_string(),
                     sources: ::std::vec![#(#sources_vec),*],
                     targets: ::std::vec![#(#targets_vec),*],
-                    sync_targets: ::std::vec![#(#sync_targets_vec),*],
                     handled: ::std::vec![#(#handled_exprs),*],
-                    compensates: ::std::vec![#(#compensates_exprs),*],
-                    applies: ::std::vec![#(#applies_exprs),*],
+                            applies: ::std::vec![#(#applies_exprs),*],
                     state_factory: #state_factory_expr,
                 }
             }
@@ -1185,7 +1023,6 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
                     #name, #pm_domain, [#(#targets),*], #rebuilder,
                 );
                 #(#regs)*
-                #(#rejection_regs)*
                 let _ = &factory;
                 __p::Component::ProcessManager(::std::boxed::Box::new(table))
             }
@@ -1355,74 +1192,6 @@ fn get_attr_path(attr: &Attribute) -> syn::Result<syn::Path> {
             attr,
             "expected a message type argument, e.g. #[handles(MyMessage)]",
         )),
-    }
-}
-
-fn get_rejected_args(attr: &Attribute) -> syn::Result<(Option<String>, syn::Path)> {
-    match &attr.meta {
-        Meta::List(list) => {
-            let args: RejectedArgs = syn::parse2(list.tokens.clone())
-                .map_err(|e| syn::Error::new_spanned(attr, format!("#[rejected]: {e}")))?;
-            Ok((args.domain, args.command))
-        }
-        _ => Err(syn::Error::new_spanned(
-            attr,
-            "expected #[rejected(command = Type)] or #[rejected(domain = \"...\", command = Type)]",
-        )),
-    }
-}
-
-/// `#[rejected(command = Type)]` or `#[rejected(domain = "d", command = Type)]`:
-/// a `compensates` entry — the rejected command's type, optionally only
-/// when it was sent to `domain`.
-struct RejectedArgs {
-    domain: Option<String>,
-    command: syn::Path,
-}
-
-impl syn::parse::Parse for RejectedArgs {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let mut domain = None;
-        let mut command = None;
-
-        while !input.is_empty() {
-            let ident: Ident = input.parse()?;
-            input.parse::<Token![=]>()?;
-            match ident.to_string().as_str() {
-                "domain" => {
-                    let value: syn::LitStr = input.parse()?;
-                    domain = Some(require_non_empty_str(Some(value.value()), "domain")?);
-                }
-                "command" => {
-                    command = Some(input.parse::<syn::Path>().map_err(|_| {
-                        syn::Error::new(ident.span(), "command must be the rejected command's type")
-                    })?);
-                }
-                _ => return Err(syn::Error::new(ident.span(), "unknown attribute")),
-            }
-
-            if input.peek(Token![,]) {
-                input.parse::<Token![,]>()?;
-            }
-        }
-
-        Ok(RejectedArgs {
-            domain,
-            command: command.ok_or_else(|| {
-                syn::Error::new(proc_macro2::Span::call_site(), "command is required")
-            })?,
-        })
-    }
-}
-
-/// The `compensates` entry expression for a `#[rejected]` method:
-/// `"fq.Type"` or `"domain:fq.Type"`.
-fn compensates_key(domain: &Option<String>, command: &syn::Path) -> TokenStream2 {
-    match domain {
-        Some(d) => quote! {
-            ::std::format!("{}:{}", #d, <#command as ::prost::Name>::full_name())
-        },
-        None => quote! { <#command as ::prost::Name>::full_name() },
     }
 }
 

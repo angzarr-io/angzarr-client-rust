@@ -71,14 +71,7 @@ pub mod codes {
     pub const MISSING_COMMAND_BOOK: &str = "MISSING_COMMAND_BOOK";
     pub const MISSING_COMMAND_PAGE: &str = "MISSING_COMMAND_PAGE";
     pub const MISSING_COMMAND_PAYLOAD: &str = "MISSING_COMMAND_PAYLOAD";
-    pub const NOTIFICATION_DECODE_FAILED: &str = "NOTIFICATION_DECODE_FAILED";
-    pub const REJECTION_NOTIFICATION_DECODE_FAILED: &str = "REJECTION_NOTIFICATION_DECODE_FAILED";
-    pub const MISSING_NOTIFICATION_PAYLOAD: &str = "MISSING_NOTIFICATION_PAYLOAD";
-    pub const MISSING_REJECTED_COMMAND: &str = "MISSING_REJECTED_COMMAND";
-    pub const MISSING_DEFERRED_HEADER: &str = "MISSING_DEFERRED_HEADER";
     pub const NO_FACT_HANDLER: &str = "NO_FACT_HANDLER";
-    pub const HANDLER_DOES_NOT_SUPPORT_REPLAY: &str = "HANDLER_DOES_NOT_SUPPORT_REPLAY";
-    pub const ROUTER_SEQUENCE_OVERFLOW: &str = "ROUTER_SEQUENCE_OVERFLOW";
 
     // Dispatch — saga
     pub const MISSING_SAGA_SOURCE: &str = "MISSING_SAGA_SOURCE";
@@ -109,11 +102,6 @@ pub mod codes {
     /// Audit #72: a Router was built with handlers of different kinds
     /// (e.g., a `command_handler` and a `saga` registered together).
     pub const MIXED_HANDLER_KINDS: &str = "MIXED_HANDLER_KINDS";
-
-    // Saga / PM destinations
-    /// Audit #64: a saga/PM tried to stamp a command for a domain that
-    /// wasn't in the request's `destination_sequences` map.
-    pub const UNDECLARED_OUTPUT_DOMAIN: &str = "UNDECLARED_OUTPUT_DOMAIN";
 }
 
 /// Static human-readable messages — the value of `message` on every
@@ -176,17 +164,7 @@ pub mod messages {
     pub const MISSING_COMMAND_BOOK: &str = "missing command book";
     pub const MISSING_COMMAND_PAGE: &str = "missing command page";
     pub const MISSING_COMMAND_PAYLOAD: &str = "missing command payload";
-    pub const NOTIFICATION_DECODE_FAILED: &str = "failed to decode Notification payload";
-    pub const REJECTION_NOTIFICATION_DECODE_FAILED: &str =
-        "failed to decode RejectionNotification payload";
-    pub const MISSING_NOTIFICATION_PAYLOAD: &str = "Notification has no payload";
-    pub const MISSING_REJECTED_COMMAND: &str = "RejectionNotification has no rejected_command";
-    pub const MISSING_DEFERRED_HEADER: &str =
-        "rejected command's first page is missing the AngzarrDeferred sequence header";
     pub const NO_FACT_HANDLER: &str = "no fact handler for the fact type";
-    pub const HANDLER_DOES_NOT_SUPPORT_REPLAY: &str = "handler does not support replay";
-    pub const ROUTER_SEQUENCE_OVERFLOW: &str =
-        "router sequence counter overflowed u32 — too many merged compensation events";
 
     // Dispatch — saga
     pub const MISSING_SAGA_SOURCE: &str = "missing saga source";
@@ -216,9 +194,6 @@ pub mod messages {
         "duplicate command handler registration for (domain, type_url)";
     pub const MIXED_HANDLER_KINDS: &str =
         "cannot mix handler kinds in one Router — all handlers must share a kind";
-
-    // Saga / PM destinations
-    pub const UNDECLARED_OUTPUT_DOMAIN: &str = "domain is not a declared output domain";
 }
 
 /// Detail-map key constants — the keys used in the `details` mapping on

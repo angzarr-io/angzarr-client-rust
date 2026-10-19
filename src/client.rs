@@ -437,12 +437,8 @@ impl CommandHandlerClient {
         drop(self);
     }
 
-    /// Execute a command with specified sync mode.
-    ///
-    /// Use `SyncMode::Async` for fire-and-forget (default).
-    /// Use `SyncMode::Simple` to wait for sync projectors.
-    /// Use `SyncMode::Cascade` for full sync including saga cascade.
-    pub async fn handle_command(&self, command: CommandRequest) -> Result<CommandResponse> {
+    /// Send a `CommandRequest` over the pinned spec's coordinator RPC.
+    async fn handle_command(&self, command: CommandRequest) -> Result<CommandResponse> {
         // Audit #69 stage (b): canonical correlation_id at
         // `command.command.cover.correlation_id` (CommandRequest →
         // CommandBook → Cover). Empty / missing skips the header.
@@ -467,24 +463,6 @@ impl CommandHandlerClient {
             cascade_error_mode: CascadeErrorMode::CascadeErrorFailFast as i32,
         })
         .await
-    }
-
-    /// Speculative execution against temporal state.
-    pub async fn handle_sync_speculative(
-        &self,
-        request: SpeculateCommandHandlerRequest,
-    ) -> Result<CommandResponse> {
-        // Audit #69 stage (b): canonical correlation_id at
-        // `request.command.cover.correlation_id`.
-        let corr_id = request
-            .command
-            .as_ref()
-            .and_then(|cb| cb.cover.as_ref())
-            .map(|c| c.correlation_id.clone())
-            .unwrap_or_default();
-        let req = crate::proto_ext::correlated_request(request, &corr_id);
-        let response = self.inner.clone().handle_sync_speculative(req).await?;
-        Ok(response.into_inner())
     }
 }
 

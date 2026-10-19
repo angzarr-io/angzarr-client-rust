@@ -1,7 +1,7 @@
 //! Cross-language response carriers surfaced at the public root.
 //!
-//! These types mirror the Python client's saga/process-manager/rejection
-//! handler returns. They are intentionally small plain structs — the
+//! These types mirror the Python client's saga/process-manager handler
+//! returns. They are intentionally small plain structs — the
 //! framework wraps their contents into the underlying `SagaResponse` /
 //! `ProcessManagerHandleResponse` / `BusinessResponse` proto responses
 //! during dispatch.
@@ -9,7 +9,7 @@
 use prost::{Message, Name};
 use prost_types::Any;
 
-use crate::proto::{CommandBook, EventBook, Notification};
+use crate::proto::{CommandBook, EventBook};
 
 /// Return shape of a saga handler method.
 ///
@@ -33,17 +33,6 @@ pub struct ProcessManagerResponse {
     pub commands: Vec<CommandBook>,
     pub process_events: Vec<EventBook>,
     pub facts: Vec<EventBook>,
-}
-
-/// Return shape of a rejection (saga `#[rejected]`) handler method.
-///
-/// `events` are the compensation events the handler wants to persist;
-/// `notification` is the upstream ack/nack carried back to the caller.
-/// Mirrors Python's `RejectionHandlerResponse`.
-#[derive(Debug, Clone, Default)]
-pub struct RejectionHandlerResponse {
-    pub events: Vec<EventBook>,
-    pub notification: Option<Notification>,
 }
 
 /// Return shape of a `#[handles_fact]` method: the fact to record, then

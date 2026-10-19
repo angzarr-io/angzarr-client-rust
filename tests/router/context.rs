@@ -1,6 +1,6 @@
 //! Handler context and state rebuild through the angzarr-router engine:
-//! saga / process-manager handlers receive the optional `destinations`
-//! and `source_cover` parameters by name, and aggregate state starts from
+//! saga / process-manager handlers receive the optional `source_cover`
+//! (and, for a saga, `source_seq`) parameters by name, and aggregate state starts from
 //! the EventBook snapshot when the state type is a protobuf message.
 
 use std::sync::{Arc, Mutex};
@@ -11,9 +11,7 @@ use angzarr_client::proto::{
     ProcessManagerHandleResponse, SagaHandleRequest, SagaResponse, Snapshot,
 };
 #[allow(unused_imports)]
-use angzarr_client::router::{
-    applies, command_handler, handles, process_manager, saga, Destinations,
-};
+use angzarr_client::router::{applies, command_handler, handles, process_manager, saga};
 use angzarr_client::router::{Built, Router};
 #[allow(unused_imports)]
 use angzarr_client::{full_type_url, CommandResult};
@@ -39,12 +37,10 @@ impl ::prost::Name for Count {
     const PACKAGE: &'static str = "context";
 }
 
-type Seen = Arc<Mutex<Vec<(Vec<String>, Option<Cover>)>>>;
+type Seen = Arc<Mutex<Vec<Option<Cover>>>>;
 
-fn record(seen: &Seen, destinations: &Destinations, source_cover: Option<Cover>) {
-    seen.lock()
-        .unwrap()
-        .push((destinations.domains().to_vec(), source_cover));
+fn record(seen: &Seen, source_cover: Option<Cover>) {
+    seen.lock().unwrap().push(source_cover);
 }
 
 struct ContextSaga(Seen);
@@ -55,7 +51,6 @@ impl ContextSaga {
     fn on_tick(
         &self,
         tick: Tick,
-        destinations: &Destinations,
         source_cover: Option<Cover>,
         source_seq: u32,
     ) -> CommandResult<SagaResponse> {
@@ -63,7 +58,7 @@ impl ContextSaga {
             source_seq, tick.n,
             "source_seq is the triggering page's sequence"
         );
-        record(&self.0, destinations, source_cover);
+        record(&self.0, source_cover);
         Ok(SagaResponse::default())
     }
 }
@@ -87,9 +82,8 @@ impl ContextPm {
         _tick: Tick,
         _state: &NoState,
         source_cover: Option<Cover>,
-        destinations: &Destinations,
     ) -> CommandResult<ProcessManagerHandleResponse> {
-        record(&self.0, destinations, source_cover);
+        record(&self.0, source_cover);
         Ok(ProcessManagerHandleResponse::default())
     }
 }
@@ -117,7 +111,7 @@ fn clock_cover() -> Cover {
 }
 
 #[test]
-fn saga_handler_receives_destinations_and_source_cover() {
+fn saga_handler_receives_source_cover_and_seq() {
     let seen: Seen = Arc::default();
     let s = Arc::clone(&seen);
     let Ok(Built::Saga(router)) = Router::new("sagas")
@@ -137,14 +131,11 @@ fn saga_handler_receives_destinations_and_source_cover() {
             ..Default::default()
         })
         .expect("saga dispatch");
-    assert_eq!(
-        *seen.lock().unwrap(),
-        vec![(vec!["audit".to_string()], Some(clock_cover()))]
-    );
+    assert_eq!(*seen.lock().unwrap(), vec![Some(clock_cover())]);
 }
 
 #[test]
-fn process_manager_handler_receives_destinations_and_source_cover() {
+fn process_manager_handler_receives_source_cover() {
     let seen: Seen = Arc::default();
     let s = Arc::clone(&seen);
     let Ok(Built::ProcessManager(router)) = Router::new("pms")
@@ -164,13 +155,7 @@ fn process_manager_handler_receives_destinations_and_source_cover() {
             ..Default::default()
         })
         .expect("PM dispatch");
-    assert_eq!(
-        *seen.lock().unwrap(),
-        vec![(
-            vec!["audit".to_string(), "billing".to_string()],
-            Some(clock_cover())
-        )]
-    );
+    assert_eq!(*seen.lock().unwrap(), vec![Some(clock_cover())]);
 }
 
 struct Counter(Arc<Mutex<Option<u32>>>);

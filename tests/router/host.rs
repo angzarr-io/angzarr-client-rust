@@ -1,5 +1,5 @@
 //! `ComponentHost` and the `run_*_server` runners, beyond the hosting
-//! scenarios: prebuilt routers, the default port, bus readiness, serving
+//! scenarios: prebuilt routers, the default port, serving
 //! until a signal, and dropping a running host.
 //!
 //! These tests set transport environment variables; each holds [`ENV`] for
@@ -110,7 +110,6 @@ const TRANSPORT_VARS: &[&str] = &[
     "PORT",
     "GRPC_PORT",
     "ANGZARR_BIND_ADDRESS",
-    "ANGZARR_BUS_ENDPOINT",
 ];
 
 /// Serialises the tests that touch the transport environment.
@@ -244,42 +243,6 @@ async fn without_a_port_in_the_environment_the_default_port_is_used() {
 }
 
 #[tokio::test]
-async fn an_unreachable_bus_holds_an_async_saga_host_not_serving() {
-    let _env = ENV.lock().await;
-    clear_env();
-    let dead = free_port();
-    std::env::set_var("ANGZARR_BUS_ENDPOINT", format!("127.0.0.1:{dead}"));
-    let saga = ComponentHost::new()
-        .with_handler(|| Relay)
-        .with_handler(|| Ledger)
-        .with_transport(ephemeral())
-        .start()
-        .await
-        .expect("host starts");
-    let port = tcp_port(saga.address());
-    assert!(
-        !await_status(port, ServingStatus::Serving, Duration::from_millis(500)).await,
-        "the bus probe holds readiness"
-    );
-    assert_eq!(health_at(port, "").await, Some(ServingStatus::NotServing));
-    saga.shutdown().await.expect("clean shutdown");
-
-    let plain = ComponentHost::new()
-        .with_handler(|| Ledger)
-        .with_transport(ephemeral())
-        .start()
-        .await
-        .expect("host starts");
-    let port = tcp_port(plain.address());
-    assert!(
-        await_status(port, ServingStatus::Serving, Duration::from_secs(2)).await,
-        "no async outputs, no bus probe"
-    );
-    plain.shutdown().await.expect("clean shutdown");
-    clear_env();
-}
-
-#[tokio::test]
 async fn a_dropped_host_stops_accepting() {
     let _env = ENV.lock().await;
     clear_env();
@@ -303,35 +266,6 @@ async fn a_dropped_host_stops_accepting() {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-}
-
-#[tokio::test]
-async fn a_dropped_host_stops_probing_readiness() {
-    let _env = ENV.lock().await;
-    clear_env();
-    let bus = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    std::env::set_var(
-        "ANGZARR_BUS_ENDPOINT",
-        bus.local_addr().unwrap().to_string(),
-    );
-    std::env::set_var("ANGZARR_READINESS_PROBE_INTERVAL", "1");
-    let running = ComponentHost::new()
-        .with_handler(|| Relay)
-        .with_transport(ephemeral())
-        .start()
-        .await
-        .expect("host starts");
-    clear_env();
-    std::env::remove_var("ANGZARR_READINESS_PROBE_INTERVAL");
-    // The supervisor probes the bus once per second while the host runs.
-    tokio::time::timeout(Duration::from_secs(3), bus.accept())
-        .await
-        .expect("the running host probes the bus")
-        .unwrap();
-    drop(running);
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let probed = tokio::time::timeout(Duration::from_millis(2500), bus.accept()).await;
-    assert!(probed.is_err(), "a dropped host still probes readiness");
 }
 
 #[test]

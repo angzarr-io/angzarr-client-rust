@@ -1,4 +1,4 @@
-error: unsupported handler parameter `trigger_seq`: optional parameters are `destinations`, `source_cover` and `source_seq`
+error: unsupported handler parameter `trigger_seq`: optional parameters are `source_cover` and `source_seq`
   --> tests/router/ui/saga_unknown_context_parameter.rs:20:46
    |
 20 |     fn on_created(&self, _evt: OrderCreated, trigger_seq: u32) -> CommandResult<SagaResponse> {

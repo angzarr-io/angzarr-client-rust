@@ -7,11 +7,11 @@
 #   proto, error_codes       generated message types (re-exported from the
 #                            angzarr-router crate) and the error vocabulary
 #   foundation               error/convert, identity, retry, transport,
-#                            proto_ext, traits, validation, compensation
+#                            proto_ext, traits, validation
 #   consumer clients         client, builder: typed gRPC clients and fluent
 #                            command/query builders over the foundation
 #   hosting                  router (the bridge onto the angzarr-router
-#                            engine), handler, host, server, readiness
+#                            engine), handler, host, server
 #   testing                  `testing` feature: builders, fakes, contexts for
 #                            consumers' tests; never reached by library code
 # angzarr_macros is a standalone proc-macro crate; archlint is tooling.
@@ -75,7 +75,6 @@ from = [
     "angzarr_client::proto_ext::**",
     "angzarr_client::traits::**",
     "angzarr_client::validation::**",
-    "angzarr_client::compensation::**",
 ]
 scope = "lib"
 allow = [
@@ -122,7 +121,6 @@ from = [
     "angzarr_client::handler::**",
     "angzarr_client::host::**",
     "angzarr_client::server::**",
-    "angzarr_client::readiness::**",
 ]
 scope = "lib"
 allow = [
@@ -131,7 +129,6 @@ allow = [
     "angzarr_client::handler",
     "angzarr_client::host",
     "angzarr_client::server",
-    "angzarr_client::readiness",
     "angzarr_macros",
     "angzarr_client::proto::**",
     "angzarr_client::error_codes::**",
@@ -148,7 +145,6 @@ from = [
     "angzarr_client::handler::**",
     "angzarr_client::host::**",
     "angzarr_client::server::**",
-    "angzarr_client::readiness::**",
 ]
 scope = "lib"
 deny = ["angzarr_router::**"]
@@ -162,7 +158,6 @@ from = [
     "angzarr_client",
     "angzarr_client::builder::**",
     "angzarr_client::client::**",
-    "angzarr_client::compensation::**",
     "angzarr_client::convert::**",
     "angzarr_client::error::**",
     "angzarr_client::error_codes::**",
@@ -171,7 +166,6 @@ from = [
     "angzarr_client::identity::**",
     "angzarr_client::proto::**",
     "angzarr_client::proto_ext::**",
-    "angzarr_client::readiness::**",
     "angzarr_client::retry::**",
     "angzarr_client::router::**",
     "angzarr_client::server::**",

@@ -17,8 +17,9 @@
 //!     let cart_id = Uuid::new_v4();
 //!     let response = client.command_handler
 //!         .command("cart", cart_id)
+//!         .with_sequence(0)
 //!         .with_command("/examples.CreateCart", &create_cart)
-//!         .execute() // SyncMode::Async; execute_with_mode(mode) picks another
+//!         .execute()
 //!         .await?;
 //!
 //!     // Query events
@@ -61,7 +62,6 @@ pub const VERSION: &str = env!("ANGZARR_CLIENT_VERSION");
 
 pub mod builder;
 pub mod client;
-pub mod compensation;
 pub mod convert;
 pub mod error;
 pub mod error_codes;
@@ -71,7 +71,6 @@ pub mod identity;
 #[path = "proto.rs"]
 pub mod proto;
 pub mod proto_ext;
-pub mod readiness;
 pub mod retry;
 pub mod router;
 pub mod server;
@@ -103,8 +102,8 @@ pub use convert::{
 // Re-export extension traits
 pub use proto_ext::constants::CORRELATION_ID_HEADER;
 pub use proto_ext::{
-    correlated_request, destination_map, CommandBookExt, CommandPageExt, CoverExt, EditionExt,
-    EventBookExt, EventPageExt, ProtoUuidExt, UuidExt,
+    correlated_request, CommandBookExt, CommandPageExt, CoverExt, EditionExt, EventBookExt,
+    EventPageExt, ProtoUuidExt, UuidExt,
 };
 
 // Component host and transport configuration

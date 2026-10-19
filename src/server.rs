@@ -248,9 +248,7 @@ pub async fn run_command_handler_server(
     run_server(default_port, Built::CommandHandler(router)).await
 }
 
-/// Serve a saga router until SIGINT / SIGTERM. Sync targets get an
-/// output-domain readiness probe; async targets rely on the bus probe
-/// (`ANGZARR_BUS_ENDPOINT`).
+/// Serve a saga router until SIGINT / SIGTERM.
 pub async fn run_saga_server(router: SagaRouter, default_port: u16) -> Result<()> {
     run_server(default_port, Built::Saga(router)).await
 }
@@ -263,8 +261,7 @@ pub async fn run_projector_server(
     run_server(default_port, Built::Projector(router)).await
 }
 
-/// Serve a process-manager router until SIGINT / SIGTERM. Sync targets get
-/// an output-domain readiness probe; async targets rely on the bus probe.
+/// Serve a process-manager router until SIGINT / SIGTERM.
 pub async fn run_process_manager_server(
     router: ProcessManagerRouter,
     default_port: u16,

@@ -69,7 +69,6 @@ Method markers inside the impl block:
 | `#[handles(MessageType)]` | Any kind | Register a handler for an incoming message |
 | `#[handles_fact(EventType)]` | command_handler | Record a fact (optionally with flag events) |
 | `#[applies(EventType)]` | command_handler, process_manager | Mutate state during replay |
-| `#[rejected(command = Type)]` | command_handler, process_manager | Receive a rejection notification and emit compensation |
 | `#[state_factory]` | command_handler, process_manager | Override `Default::default()` for initial state |
 | `#[upcasts(from, to)]` | upcaster | Transform one event type into another |
 
@@ -208,7 +207,6 @@ Everything maps. The shape differs; the names and semantics don't.
 | Rejection factories | `CommandRejectedError.precondition_failed(msg)` | `CommandRejectedError::precondition_failed(msg)` |
 | Retry | `ExponentialBackoffRetry(max_attempts=5)` | `ExponentialBackoffRetry::default().with_max_attempts(5)` |
 | Retry callback | `on_retry=lambda i, e: ...` | `.with_on_retry(\|i, e\| ...)` |
-| Compensation options | `delegate_to_framework(reason, send_to_dead_letter=True)` (kwargs) | `delegate_to_framework(reason)` **or** `delegate_to_framework_with_options(reason, emit, send_to_dead_letter, escalate, abort)` (two-function idiom) |
 | Type-URL match | `type_url_matches(url, name)` (primary) | `type_url_matches(url, name)` (primary) — `type_url_matches_exact` is a Python-compat alias |
 
 ## Saga / PM design philosophy
@@ -222,7 +220,7 @@ Everything maps. The shape differs; the names and semantics don't.
 
 Key principles:
 
-1. **Don't rebuild destination state** — use `Destinations` for sequences only.
+1. **Don't rebuild destination state** — a saga gets only the triggering EventBook; the coordinator stamps sequences.
 2. **Let aggregates decide** — business logic in aggregates, not coordinators.
 3. **Prefer commands with sync mode** — use `SyncMode::Simple` for immediate feedback.
 4. **Use facts sparingly** — only for external data injection.
