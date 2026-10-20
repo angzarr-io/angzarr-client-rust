@@ -184,7 +184,7 @@ fn tcp_port(address: &HostAddress) -> u16 {
 async fn a_prebuilt_router_is_served() {
     let _env = ENV.lock().await;
     clear_env();
-    let running = ComponentHost::new()
+    let running = ComponentHost::new(angzarr_client::rules_version!())
         .with_router(built(|| Ledger))
         .with_transport(ephemeral())
         .start()
@@ -195,6 +195,7 @@ async fn a_prebuilt_router_is_served() {
         &[
             "grpc.health.v1.Health".to_string(),
             "io.angzarr.v1.CommandHandlerService".to_string(),
+            "io.angzarr.v1.ComponentService".to_string(),
         ]
     );
     let port = tcp_port(running.address());
@@ -206,7 +207,7 @@ async fn a_prebuilt_router_is_served() {
 async fn two_routers_of_one_kind_are_refused() {
     let _env = ENV.lock().await;
     clear_env();
-    let err = ComponentHost::new()
+    let err = ComponentHost::new(angzarr_client::rules_version!())
         .with_router(built(|| Ledger))
         .with_router(built(|| Ledger))
         .with_transport(ephemeral())
@@ -222,7 +223,7 @@ async fn without_a_port_in_the_environment_the_default_port_is_used() {
     clear_env();
     let port = free_port();
     std::env::set_var("ANGZARR_BIND_ADDRESS", format!("127.0.0.1:{port}"));
-    let from_env = ComponentHost::new()
+    let from_env = ComponentHost::new(angzarr_client::rules_version!())
         .with_handler(|| Ledger)
         .start()
         .await
@@ -232,7 +233,7 @@ async fn without_a_port_in_the_environment_the_default_port_is_used() {
     from_env.shutdown().await.expect("clean shutdown");
 
     let default_port = free_port();
-    let running = ComponentHost::new()
+    let running = ComponentHost::new(angzarr_client::rules_version!())
         .with_handler(|| Ledger)
         .with_default_port(default_port)
         .start()
@@ -246,7 +247,7 @@ async fn without_a_port_in_the_environment_the_default_port_is_used() {
 async fn a_dropped_host_stops_accepting() {
     let _env = ENV.lock().await;
     clear_env();
-    let running = ComponentHost::new()
+    let running = ComponentHost::new(angzarr_client::rules_version!())
         .with_handler(|| Ledger)
         .with_transport(ephemeral())
         .start()
@@ -270,7 +271,7 @@ async fn a_dropped_host_stops_accepting() {
 
 #[test]
 fn host_and_address_describe_themselves() {
-    let host = ComponentHost::new()
+    let host = ComponentHost::new(angzarr_client::rules_version!())
         .with_handler(|| Ledger)
         .with_default_port(4242)
         .with_drain_period(Duration::from_millis(5));
@@ -313,26 +314,31 @@ where
 async fn the_runners_serve_until_a_signal() {
     let _env = ENV.lock().await;
     clear_env();
-    assert_serves_until_signal(run_server(0, built(|| Ledger))).await;
+    assert_serves_until_signal(run_server("1.0.0", 0, built(|| Ledger))).await;
     let Built::CommandHandler(r) = built(|| Ledger) else {
         unreachable!()
     };
-    assert_serves_until_signal(run_command_handler_server(r, 0)).await;
+    assert_serves_until_signal(run_command_handler_server(r, "1.0.0", 0)).await;
     let Built::Saga(r) = built(|| Relay) else {
         unreachable!()
     };
-    assert_serves_until_signal(run_saga_server(r, 0)).await;
+    assert_serves_until_signal(run_saga_server(r, "1.0.0", 0)).await;
     let Built::ProcessManager(r) = built(|| Flow) else {
         unreachable!()
     };
-    assert_serves_until_signal(run_process_manager_server(r, 0)).await;
+    assert_serves_until_signal(run_process_manager_server(r, "1.0.0", 0)).await;
     let Built::Projector(r) = built(|| Feed) else {
         unreachable!()
     };
-    assert_serves_until_signal(run_projector_server(r, 0)).await;
+    assert_serves_until_signal(run_projector_server(r, "1.0.0", 0)).await;
     let Built::Upcaster(r) = built(|| Lift) else {
         unreachable!()
     };
-    assert_serves_until_signal(run_upcaster_server(r, 0)).await;
-    assert_serves_until_signal(ComponentHost::new().with_handler(|| Ledger).serve()).await;
+    assert_serves_until_signal(run_upcaster_server(r, "1.0.0", 0)).await;
+    assert_serves_until_signal(
+        ComponentHost::new(angzarr_client::rules_version!())
+            .with_handler(|| Ledger)
+            .serve(),
+    )
+    .await;
 }

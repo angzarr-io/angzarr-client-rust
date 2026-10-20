@@ -80,7 +80,7 @@ test: generate-proto
     cargo test -p archlint
     cargo test --test router -- --test-threads=1
     cargo test --test features
-    cargo test --test proposal
+    cargo test --test sender_and_registration
 
 # Run angzarr-router's conformance suite against the engine this crate
 # depends on: the router repository at the rev pinned in Cargo.toml, tested

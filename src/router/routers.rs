@@ -7,10 +7,11 @@
 //! [`Router::build`]: crate::router::Router::build
 
 use crate::proto::{
-    CommandHandlerResponse, ContextualCommand, Cover, EventBook, ProcessManagerHandleRequest,
-    ProcessManagerHandleResponse, Projection, SagaResponse, UpcastRequest, UpcastResponse,
+    CommandHandlerResponse, ComponentDescriptor, ContextualCommand, Cover, EventBook,
+    ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, SagaResponse,
+    UpcastRequest, UpcastResponse,
 };
-use crate::router::component::{begin_dispatch, from_coded};
+use crate::router::component::{begin_dispatch, from_coded, Tables};
 use crate::router::HandlerConfig;
 use crate::ClientError;
 
@@ -41,7 +42,7 @@ fn union<'a>(lists: impl IntoIterator<Item = &'a [String]>) -> Vec<String> {
 
 /// Runtime router over one or more command handlers (aggregates).
 pub struct CommandHandlerRouter {
-    pub(crate) inner: angzarr_router::router::Router,
+    pub(crate) tables: Tables,
     pub(crate) configs: Vec<HandlerConfig>,
 }
 
@@ -51,7 +52,8 @@ impl CommandHandlerRouter {
     pub fn dispatch(&self, cmd: ContextualCommand) -> Result<CommandHandlerResponse, ClientError> {
         begin_dispatch();
         let cover = cmd.command.as_ref().and_then(|c| c.cover.clone());
-        self.inner
+        self.tables
+            .inner
             .dispatch_command(&cmd)
             .map_err(|e| stamp_cover(from_coded(e), cover.as_ref()))
     }
@@ -77,7 +79,7 @@ impl CommandHandlerRouter {
 
 /// Runtime router over one or more sagas.
 pub struct SagaRouter {
-    pub(crate) inner: angzarr_router::router::Router,
+    pub(crate) tables: Tables,
     pub(crate) configs: Vec<HandlerConfig>,
 }
 
@@ -86,7 +88,8 @@ impl SagaRouter {
     /// merge in registration order.
     pub fn dispatch(&self, source: EventBook) -> Result<SagaResponse, ClientError> {
         begin_dispatch();
-        self.inner
+        self.tables
+            .inner
             .dispatch_saga(&source)
             .map_err(|e| stamp_cover(from_coded(e), source.cover.as_ref()))
     }
@@ -120,7 +123,7 @@ impl SagaRouter {
 
 /// Runtime router over one or more process managers.
 pub struct ProcessManagerRouter {
-    pub(crate) inner: angzarr_router::router::Router,
+    pub(crate) tables: Tables,
     pub(crate) configs: Vec<HandlerConfig>,
 }
 
@@ -133,7 +136,8 @@ impl ProcessManagerRouter {
     ) -> Result<ProcessManagerHandleResponse, ClientError> {
         begin_dispatch();
         let cover = request.trigger.as_ref().and_then(|t| t.cover.clone());
-        self.inner
+        self.tables
+            .inner
             .dispatch_process_manager(&request)
             .map_err(|e| stamp_cover(from_coded(e), cover.as_ref()))
     }
@@ -162,7 +166,7 @@ impl ProcessManagerRouter {
 
 /// Runtime router over one or more projectors.
 pub struct ProjectorRouter {
-    pub(crate) inner: angzarr_router::router::Router,
+    pub(crate) tables: Tables,
     pub(crate) configs: Vec<HandlerConfig>,
 }
 
@@ -175,7 +179,11 @@ impl ProjectorRouter {
     /// `next_sequence` when it has no pages.
     pub fn dispatch(&self, book: EventBook) -> Result<Projection, ClientError> {
         begin_dispatch();
-        let mut projections = self.inner.dispatch_projectors(&book).map_err(from_coded)?;
+        let mut projections = self
+            .tables
+            .inner
+            .dispatch_projectors(&book)
+            .map_err(from_coded)?;
         let next_sequence = book
             .pages
             .last()
@@ -213,7 +221,7 @@ impl ProjectorRouter {
 
 /// Runtime router over one or more upcasters.
 pub struct UpcasterRouter {
-    pub(crate) inner: angzarr_router::router::Router,
+    pub(crate) tables: Tables,
     pub(crate) configs: Vec<HandlerConfig>,
 }
 
@@ -222,7 +230,7 @@ impl UpcasterRouter {
     /// registration order, each one's output feeding the next.
     pub fn dispatch(&self, request: UpcastRequest) -> Result<UpcastResponse, ClientError> {
         begin_dispatch();
-        self.inner.upcast(&request).map_err(from_coded)
+        self.tables.inner.upcast(&request).map_err(from_coded)
     }
 
     /// The first registered upcaster's name.
@@ -243,6 +251,31 @@ impl UpcasterRouter {
         self.configs.len()
     }
 }
+
+macro_rules! impl_component_descriptors {
+    ($($ty:ident),*) => {$(
+        impl $ty {
+            /// Every component's description (types.proto,
+            /// ComponentDescriptor), in registration order, built by
+            /// angzarr-router from its table: what `ComponentService.Describe`
+            /// answers. Refused when a component has no rules version
+            /// (MISSING_RULES_VERSION) or, for an aggregate or process
+            /// manager, its state is not a protobuf message
+            /// (MISSING_STATE_TYPE).
+            pub fn component_descriptors(&self) -> Result<Vec<ComponentDescriptor>, ClientError> {
+                self.tables.inner.component_descriptors().map_err(from_coded)
+            }
+        }
+    )*};
+}
+
+impl_component_descriptors!(
+    CommandHandlerRouter,
+    SagaRouter,
+    ProcessManagerRouter,
+    ProjectorRouter,
+    UpcasterRouter
+);
 
 macro_rules! impl_debug {
     ($($ty:ident),*) => {$(

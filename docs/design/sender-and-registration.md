@@ -1,8 +1,7 @@
 # Sender delivery modes, Handling, and the component description
 
-**Status:** signed off by the owner (with changes, recorded below).
-Tests: `tests/proposal.rs`. A test still gated by the `proposal-tests`
-feature is not implemented yet.
+**Status:** signed off by the owner (with changes, recorded below) and
+implemented. Tests: `tests/sender_and_registration.rs`.
 
 **Spec:** angzarr-project `spec/20261019-draft`.
 - `command_handler.proto`: the DECISION / ASYNC / SIMPLE coordinator RPCs.
@@ -25,7 +24,8 @@ feature is not implemented yet.
 | `angzarr_client::rules_version!()` | `&'static str` baked at build time from the binary's versionator `VERSION` file | RV-2 |
 | `ComponentHost::new(rules_version)` | the binary's version, declared once and stamped onto every hosted component's tables; a host without one refuses to start (MISSING_RULES_VERSION) | RV-2, C-0533 |
 | `ComponentService` served by every host | `Describe` answers the router's `component_descriptors()`; the coordinator pulls it, the client never pushes | component.proto, C-0535, C-0565 |
-| kind macros declare the state type when the state is a `prost::Name` | `StateDescriptor.type_url` | C-0535 |
+| kind macros declare the state type, snapshot image and loader when the state is a protobuf message | `StateDescriptor.type_url`; the post-command state on every response | C-0535 |
+| aggregates are described by their domain | `ComponentDescriptor.name` | C-0565 |
 
 The router's per-table `with_rules_version` is plumbing, not author API.
 Snapshots: the client does nothing; the router returns the post-command

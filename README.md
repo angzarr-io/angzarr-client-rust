@@ -115,8 +115,12 @@ impl Counter {
 
 ## Component host
 
-`ComponentHost` serves components next to the gRPC health service, plus any
-gRPC services the application registers:
+`ComponentHost` serves components next to the gRPC health service and the
+component service (`ComponentService.Describe`, which the coordinator calls
+to learn the hosted components), plus any gRPC services the application
+registers. It takes the binary's build version once, baked in from the
+crate's versionator `VERSION` file by `rules_version!()`; every component
+reports it on every answer and in its description:
 
 ```rust,ignore
 use angzarr_client::{configure_logging, ComponentHost};
@@ -124,7 +128,7 @@ use angzarr_client::{configure_logging, ComponentHost};
 #[tokio::main]
 async fn main() -> angzarr_client::Result<()> {
     configure_logging();
-    ComponentHost::new()
+    ComponentHost::new(angzarr_client::rules_version!())
         .with_handler(|| Counter)
         .with_service(MyReportServiceServer::new(MyReports::default()))
         .serve()
@@ -141,7 +145,8 @@ async fn main() -> angzarr_client::Result<()> {
   output domain is reachable, then `SERVING`; on SIGINT / SIGTERM it reports
   `NOT_SERVING`, waits the drain period (`with_drain_period`), then stops
   accepting and lets in-flight calls finish.
-- A host with no components refuses to start.
+- A host with no components, or with an empty rules version
+  (`MISSING_RULES_VERSION`), refuses to start.
 
 ## Clients
 
@@ -153,6 +158,16 @@ async fn main() -> angzarr_client::Result<()> {
 
 All three carry a `connect(endpoint, retry)` constructor, a `from_channel` for caller-managed channels, and a `from_env(env_var, default)` helper.
 
+A command goes out by one of the coordinator's three RPCs, named on the
+client (`handle_async`, `handle`, `handle_sync`) and on the builder
+(`execute_async`, `execute`, `execute_sync`): send and return at once, wait
+for the decision, or also wait for the synchronous projectors. The builder
+sends only what the caller sets: `with_expected_sequence`,
+`with_conflict_resolution` and `with_correlation_id` have no defaults, and
+the coordinator stamps or assigns what is missing. A stale sequence or a
+conflict comes back ABORTED (`ClientError::is_aborted`).
+`QueryClient::get_correlated_events` reads one correlation across domains.
+
 ## Error handling
 
 ```rust,ignore
@@ -160,8 +175,8 @@ use angzarr_client::ClientError;
 
 match client.command_handler.handle(cmd).await {
     Ok(resp) => { /* ... */ }
-    Err(ClientError::Grpc(status)) if status.code() == tonic::Code::Aborted => {
-        // Stale expected sequence (optimistic locking)
+    Err(e) if e.is_aborted() => {
+        // Stale expected sequence (optimistic locking) or a conflict
     }
     Err(e) if e.is_not_found() => { /* aggregate missing */ }
     Err(e) if e.is_invalid_argument() => { /* bad input */ }

@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use crate::router::component::{build_error, Component};
+use crate::router::component::{Table, Tables};
 use crate::router::routers::{
     CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter, UpcasterRouter,
 };
@@ -22,7 +22,8 @@ struct Registration {
     config: HandlerConfig,
     /// Invokes the factory once (the command-handler build probe).
     probe: Box<dyn Fn() + Send + Sync>,
-    component: Box<dyn FnOnce() -> Component + Send + Sync>,
+    /// Builds the component's dispatch table for a rules version.
+    table: Table,
 }
 
 /// Builder that accumulates handler factories before dispatch.
@@ -72,7 +73,9 @@ impl Router {
             probe: Box::new(move || {
                 let _instance = probe_factory();
             }),
-            component: Box::new(move || H::component(factory)),
+            table: std::sync::Arc::new(move |rules_version: &str| {
+                H::component(Arc::clone(&factory), rules_version)
+            }),
         });
         self
     }
@@ -146,24 +149,18 @@ impl Router {
             .iter()
             .map(|r| r.config.clone())
             .collect();
-        let mut builder = angzarr_router::router::RouterBuilder::new();
-        for r in self.registrations {
-            builder = match (r.component)() {
-                Component::CommandHandler(table) => builder.aggregate(table),
-                Component::Saga(saga) => builder.saga(saga),
-                Component::ProcessManager(pm) => builder.process_manager(pm),
-                Component::Projector(p) => builder.projector(p),
-                Component::Upcaster(u) => builder.upcaster(u),
-            };
-        }
-        let inner = builder.build().map_err(build_error)?;
+        // Tables report no rules version until a host stamps its own.
+        let tables = Tables::assemble(
+            self.registrations.into_iter().map(|r| r.table).collect(),
+            "",
+        )?;
 
         Ok(match first_kind {
-            Kind::CommandHandler => Built::CommandHandler(CommandHandlerRouter { inner, configs }),
-            Kind::Saga => Built::Saga(SagaRouter { inner, configs }),
-            Kind::ProcessManager => Built::ProcessManager(ProcessManagerRouter { inner, configs }),
-            Kind::Projector => Built::Projector(ProjectorRouter { inner, configs }),
-            Kind::Upcaster => Built::Upcaster(UpcasterRouter { inner, configs }),
+            Kind::CommandHandler => Built::CommandHandler(CommandHandlerRouter { tables, configs }),
+            Kind::Saga => Built::Saga(SagaRouter { tables, configs }),
+            Kind::ProcessManager => Built::ProcessManager(ProcessManagerRouter { tables, configs }),
+            Kind::Projector => Built::Projector(ProjectorRouter { tables, configs }),
+            Kind::Upcaster => Built::Upcaster(UpcasterRouter { tables, configs }),
         })
     }
 }

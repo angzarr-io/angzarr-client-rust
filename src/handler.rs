@@ -14,9 +14,11 @@ use crate::error::build_status_details;
 use crate::error_codes::{codes, messages};
 use crate::proto::{
     command_handler_service_server::CommandHandlerService,
+    component_service_server::ComponentService,
     process_manager_service_server::ProcessManagerService,
     projector_service_server::ProjectorService, saga_service_server::SagaService,
-    upcaster_service_server::UpcasterService, CommandHandlerResponse, ContextualCommand, EventBook,
+    upcaster_service_server::UpcasterService, CommandHandlerResponse, ComponentDescriptor,
+    ComponentDescriptors, ContextualCommand, DescribeRequest, EventBook,
     ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, SagaResponse,
     UpcastRequest, UpcastResponse,
 };
@@ -150,6 +152,40 @@ impl ProjectorService for ProjectorGrpc {
         let book = request.into_inner();
         let projection = on_blocking_pool(&self.router, move |r| r.dispatch(book)).await?;
         Ok(Response::new(projection))
+    }
+}
+
+/// gRPC component service (component.proto): answers the coordinator's
+/// `Describe` with the hosted components' descriptions, built once when the
+/// host starts. A description the router refused is answered as its error
+/// status on every call.
+#[derive(Clone)]
+pub struct ComponentGrpc {
+    described: Arc<std::result::Result<ComponentDescriptors, Status>>,
+}
+
+impl ComponentGrpc {
+    pub fn new(described: Result<Vec<ComponentDescriptor>, ClientError>) -> Self {
+        Self {
+            described: Arc::new(
+                described
+                    .map(|components| ComponentDescriptors { components })
+                    .map_err(client_error_to_status),
+            ),
+        }
+    }
+}
+
+#[tonic::async_trait]
+impl ComponentService for ComponentGrpc {
+    async fn describe(
+        &self,
+        _request: Request<DescribeRequest>,
+    ) -> Result<Response<ComponentDescriptors>, Status> {
+        match self.described.as_ref() {
+            Ok(described) => Ok(Response::new(described.clone())),
+            Err(status) => Err(status.clone()),
+        }
     }
 }
 

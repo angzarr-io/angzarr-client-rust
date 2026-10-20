@@ -312,7 +312,7 @@ async fn then_no_business_names(_world: &mut ParityWorld) {
 async fn then_host_serves_only(_world: &mut ParityWorld) {
     let ch = <CommandHandlerServiceServer<angzarr_client::handler::CommandHandlerGrpc> as NamedService>::NAME;
     let gate = Arc::new(Gate::default());
-    let running = ComponentHost::new()
+    let running = ComponentHost::new(angzarr_client::rules_version!())
         .with_handler(move || OrderComponent(Arc::clone(&gate)))
         .with_service(OrderReportService)
         .with_transport(ServerConfig {
@@ -327,6 +327,7 @@ async fn then_host_serves_only(_world: &mut ParityWorld) {
         &[
             angzarr_client::host::HEALTH_SERVICE_NAME.to_string(),
             ch.to_string(),
+            "io.angzarr.v1.ComponentService".to_string(),
             ORDER_REPORT_SERVICE.to_string(),
         ]
     );

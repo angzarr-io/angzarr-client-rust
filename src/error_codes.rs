@@ -61,6 +61,7 @@ pub mod codes {
     pub const HOST_HAS_NO_COMPONENTS: &str = "HOST_HAS_NO_COMPONENTS";
     pub const HOST_DUPLICATE_KIND: &str = "HOST_DUPLICATE_KIND";
     pub const HOST_SERVER_TASK_FAILED: &str = "HOST_SERVER_TASK_FAILED";
+    pub const MISSING_RULES_VERSION: &str = "MISSING_RULES_VERSION";
 
     // Dispatch — common
     pub const HANDLER_WRONG_RESPONSE_KIND: &str = "HANDLER_WRONG_RESPONSE_KIND";
@@ -153,6 +154,8 @@ pub mod messages {
     pub const HOST_DUPLICATE_KIND: &str =
         "component host has two routers of one kind; register their handlers on one router";
     pub const HOST_SERVER_TASK_FAILED: &str = "component host server task failed";
+    pub const MISSING_RULES_VERSION: &str =
+        "component host has no rules version; build it with the binary's version";
 
     // Dispatch — common
     pub const HANDLER_WRONG_RESPONSE_KIND: &str = "handler returned wrong response kind";

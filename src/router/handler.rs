@@ -215,6 +215,33 @@ pub enum Built {
     Upcaster(crate::router::routers::UpcasterRouter),
 }
 
+impl Built {
+    /// Rebuild every table to report `rules_version` (the host's).
+    pub(crate) fn stamp(&mut self, rules_version: &str) -> Result<(), BuildError> {
+        match self {
+            Built::CommandHandler(r) => r.tables.stamp(rules_version),
+            Built::Saga(r) => r.tables.stamp(rules_version),
+            Built::ProcessManager(r) => r.tables.stamp(rules_version),
+            Built::Projector(r) => r.tables.stamp(rules_version),
+            Built::Upcaster(r) => r.tables.stamp(rules_version),
+        }
+    }
+
+    /// Every component's description (types.proto, ComponentDescriptor),
+    /// in registration order; an upcaster router has none.
+    pub fn component_descriptors(
+        &self,
+    ) -> Result<Vec<crate::proto::ComponentDescriptor>, crate::ClientError> {
+        match self {
+            Built::CommandHandler(r) => r.component_descriptors(),
+            Built::Saga(r) => r.component_descriptors(),
+            Built::ProcessManager(r) => r.component_descriptors(),
+            Built::Projector(r) => r.component_descriptors(),
+            Built::Upcaster(r) => r.component_descriptors(),
+        }
+    }
+}
+
 /// The instance view of a handler's metadata.
 ///
 /// User code never implements `Handler` directly; the kind macros emit it.
@@ -235,11 +262,13 @@ pub trait HandlerKind: Sized + Send + Sync + 'static {
     /// Static handler config — no instance required.
     fn handler_config() -> HandlerConfig;
 
-    /// The component's angzarr-router dispatch table. Handler methods run
-    /// on a fresh instance from `factory` per dispatch.
+    /// The component's angzarr-router dispatch table, reporting
+    /// `rules_version` (the hosting binary's). Handler methods run on a
+    /// fresh instance from `factory` per dispatch.
     #[doc(hidden)]
     fn component(
         factory: crate::router::component::Factory<Self>,
+        rules_version: &str,
     ) -> crate::router::component::Component;
 }
 

@@ -251,7 +251,9 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
             handles_fact: ::std::vec![#(#handles_fact_exprs),*],
         }
     };
-    let name = quote!(#self_ty).to_string();
+    // An aggregate is described, and coordinated, by its domain
+    // (handler-contract C-0565: the "order" aggregate).
+    let name = domain;
 
     quote! {
         #input
@@ -264,12 +266,14 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
             }
             fn component(
                 factory: ::angzarr_client::router::component::Factory<Self>,
+                rules_version: &str,
             ) -> ::angzarr_client::router::component::Component {
                 use ::angzarr_client::router::component as __p;
                 #[allow(unused_mut)]
                 let mut table = ::angzarr_client::router::binding::aggregate::AggregateDispatch::new(
                     #name, #domain, #rebuilder,
-                );
+                )
+                .with_rules_version(rules_version);
                 #(#command_regs)*
                 #(#fact_regs)*
                 let _ = &factory;
@@ -286,8 +290,9 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
 }
 
 /// An angzarr-router `Rebuilder<S>` for the impl's state: the
-/// `#[state_factory]` (or `Default`), every `#[applies]` method, and the
-/// snapshot loader when `S` is a protobuf message.
+/// `#[state_factory]` (or `Default`), every `#[applies]` method, and, when
+/// `S` is a protobuf message, its state type, snapshot image and snapshot
+/// loader.
 fn rebuilder_expr(self_ty: &syn::Type, state_ty: &Ident, meta: &MethodMetadata) -> TokenStream2 {
     let initial = match &meta.state_factory {
         Some(method) => quote! { <#self_ty>::#method() },
@@ -306,14 +311,10 @@ fn rebuilder_expr(self_ty: &syn::Type, state_ty: &Ident, meta: &MethodMetadata) 
         }
     });
     quote! {{
-        use ::angzarr_client::router::component::{IgnoresSnapshot as _, LoadsSnapshot as _};
+        use ::angzarr_client::router::component::{DeclaresMessageState as _, OpaqueState as _};
         let rebuilder = ::angzarr_client::router::binding::rebuild::Rebuilder::<#state_ty>::new(|| #initial);
         #(#appliers)*
-        ::angzarr_client::router::component::with_snapshot(
-            rebuilder,
-            (&::angzarr_client::router::component::SnapshotState::<#state_ty>::new())
-                .snapshot_loader(),
-        )
+        (&::angzarr_client::router::component::StateMessage::<#state_ty>::new()).declare(rebuilder)
     }}
 }
 
@@ -809,10 +810,12 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
             }
             fn component(
                 factory: ::angzarr_client::router::component::Factory<Self>,
+                rules_version: &str,
             ) -> ::angzarr_client::router::component::Component {
                 use ::angzarr_client::router::component as __p;
                 let mut table =
-                    ::angzarr_client::router::binding::saga::SagaDispatch::new(#name, #source, [#target]);
+                    ::angzarr_client::router::binding::saga::SagaDispatch::new(#name, #source, [#target])
+                        .with_rules_version(rules_version);
                 #(#regs)*
                 let _ = &factory;
                 __p::Component::Saga(table)
@@ -1017,12 +1020,14 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
             }
             fn component(
                 factory: ::angzarr_client::router::component::Factory<Self>,
+                rules_version: &str,
             ) -> ::angzarr_client::router::component::Component {
                 use ::angzarr_client::router::component as __p;
                 #[allow(unused_mut)]
                 let mut table = ::angzarr_client::router::binding::process_manager::ProcessManagerDispatch::new(
                     #name, #pm_domain, [#(#targets),*], #rebuilder,
-                );
+                )
+                .with_rules_version(rules_version);
                 #(#regs)*
                 let _ = &factory;
                 __p::Component::ProcessManager(::std::boxed::Box::new(table))
@@ -1152,13 +1157,15 @@ fn expand_projector(args: ProjectorArgs, mut input: ItemImpl) -> TokenStream2 {
             }
             fn component(
                 factory: ::angzarr_client::router::component::Factory<Self>,
+                rules_version: &str,
             ) -> ::angzarr_client::router::component::Component {
                 use ::angzarr_client::router::component as __p;
                 // One instance per delivered book, reused across its pages.
                 let table = ::angzarr_client::router::binding::projector::ProjectorDispatch::new(
                     #name,
                     move || factory(),
-                );
+                )
+                .with_rules_version(rules_version);
                 #domain_filter
                 #(#regs)*
                 __p::Component::Projector(::std::boxed::Box::new(table))
@@ -1366,10 +1373,12 @@ fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
             }
             fn component(
                 factory: ::angzarr_client::router::component::Factory<Self>,
+                rules_version: &str,
             ) -> ::angzarr_client::router::component::Component {
                 use ::angzarr_client::router::component as __p;
-                // Upcasts are associated functions; no instance is needed.
-                let _ = factory;
+                // Upcasts are associated functions; no instance is needed,
+                // and an upcaster has no description to version.
+                let _ = (factory, rules_version);
                 let table = ::angzarr_client::router::binding::upcaster::UpcasterDispatch::new(#name, #domain);
                 #(#regs)*
                 __p::Component::Upcaster(table)

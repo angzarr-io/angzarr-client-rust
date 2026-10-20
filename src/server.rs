@@ -123,9 +123,10 @@ pub fn resolve_bind_address(default_port: u16) -> String {
     env::var(ENV_BIND_ADDRESS).unwrap_or_else(|_| format!("{}:{}", DEFAULT_BIND_HOST, default_port))
 }
 
-/// Serve one built router of any kind until SIGINT / SIGTERM.
-pub async fn run_server(default_port: u16, built: Built) -> Result<()> {
-    ComponentHost::new()
+/// Serve one built router of any kind until SIGINT / SIGTERM, for a
+/// binary built as `rules_version` (see [`ComponentHost::new`]).
+pub async fn run_server(rules_version: &str, default_port: u16, built: Built) -> Result<()> {
+    ComponentHost::new(rules_version)
         .with_router(built)
         .with_default_port(default_port)
         .serve()
@@ -243,38 +244,46 @@ pub(crate) async fn shutdown_signal() {
 /// Serve a command-handler router until SIGINT / SIGTERM.
 pub async fn run_command_handler_server(
     router: CommandHandlerRouter,
+    rules_version: &str,
     default_port: u16,
 ) -> Result<()> {
-    run_server(default_port, Built::CommandHandler(router)).await
+    run_server(rules_version, default_port, Built::CommandHandler(router)).await
 }
 
 /// Serve a saga router until SIGINT / SIGTERM.
-pub async fn run_saga_server(router: SagaRouter, default_port: u16) -> Result<()> {
-    run_server(default_port, Built::Saga(router)).await
+pub async fn run_saga_server(
+    router: SagaRouter,
+    rules_version: &str,
+    default_port: u16,
+) -> Result<()> {
+    run_server(rules_version, default_port, Built::Saga(router)).await
 }
 
 /// Serve a projector router until SIGINT / SIGTERM.
 pub async fn run_projector_server(
     router: crate::router::ProjectorRouter,
+    rules_version: &str,
     default_port: u16,
 ) -> Result<()> {
-    run_server(default_port, Built::Projector(router)).await
+    run_server(rules_version, default_port, Built::Projector(router)).await
 }
 
 /// Serve a process-manager router until SIGINT / SIGTERM.
 pub async fn run_process_manager_server(
     router: ProcessManagerRouter,
+    rules_version: &str,
     default_port: u16,
 ) -> Result<()> {
-    run_server(default_port, Built::ProcessManager(router)).await
+    run_server(rules_version, default_port, Built::ProcessManager(router)).await
 }
 
 /// Serve an upcaster router until SIGINT / SIGTERM.
 pub async fn run_upcaster_server(
     router: crate::router::routers::UpcasterRouter,
+    rules_version: &str,
     default_port: u16,
 ) -> Result<()> {
-    run_server(default_port, Built::Upcaster(router)).await
+    run_server(rules_version, default_port, Built::Upcaster(router)).await
 }
 
 #[cfg(test)]

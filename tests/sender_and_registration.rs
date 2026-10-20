@@ -1,9 +1,6 @@
 //! Sender delivery modes, Handling and the component description, as
 //! signed off in `docs/design/sender-and-registration.md`.
 //!
-//! A test still gated by the `proposal-tests` feature is RED: its surface is
-//! not implemented yet. The gate comes off each test as it turns green.
-//!
 //! Spec: angzarr-project — features/client/aggregate_client.feature
 //! (C-0194..C-0198), features/client/query_client.feature (C-0241),
 //! features/handler-contract/handling.feature (C-0533, C-0535, C-0565),
@@ -187,8 +184,23 @@ async fn correlated_events_cross_domains() {
     let client = angzarr_client::QueryClient::connect(backend.endpoint())
         .await
         .unwrap();
+    backend.seed_correlated(
+        &common::backend::cover("orders", "r", Some("trial")),
+        "Done",
+        1,
+        Some(&proto),
+    );
     let books = client.get_correlated_events(corr, None).await.unwrap();
-    assert_eq!(books.len(), 2);
+    assert_eq!(books.len(), 2, "main timeline only");
+    let trial = client
+        .get_correlated_events(corr, Some("trial".into()))
+        .await
+        .unwrap();
+    assert_eq!(trial.len(), 1);
+    assert_eq!(
+        trial[0].cover.as_ref().and_then(|c| c.edition.as_deref()),
+        Some("trial")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +208,6 @@ async fn correlated_events_cross_domains() {
 // component.proto; RV-2).
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "proposal-tests")]
 mod describe {
     use angzarr_client::proto::component_service_client::ComponentServiceClient;
     use angzarr_client::proto::{ComponentKind, DescribeRequest, EventBook, SagaResponse};
@@ -282,8 +293,7 @@ mod describe {
             .with_transport(ephemeral())
             .start()
             .await
-            .err()
-            .expect("refused");
+            .expect_err("refused");
         assert!(err.is_invalid_argument(), "got {err:?}");
         assert_eq!(err.code(), "MISSING_RULES_VERSION");
     }

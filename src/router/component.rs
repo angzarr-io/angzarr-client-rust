@@ -30,6 +30,51 @@ pub enum Component {
     Upcaster(angzarr_router::upcaster::UpcasterDispatch),
 }
 
+/// Builds one component's dispatch table for a rules version.
+pub(crate) type Table = Arc<dyn Fn(&str) -> Component + Send + Sync>;
+
+/// A runtime router's components: how to build each one's table, and the
+/// angzarr-router engine holding the tables built for one rules version.
+pub(crate) struct Tables {
+    tables: Vec<Table>,
+    pub(crate) inner: angzarr_router::router::Router,
+}
+
+impl Tables {
+    /// The engine over `tables`, each reporting `rules_version`.
+    pub(crate) fn assemble(
+        tables: Vec<Table>,
+        rules_version: &str,
+    ) -> Result<Self, crate::router::BuildError> {
+        let inner = engine(&tables, rules_version)?;
+        Ok(Tables { tables, inner })
+    }
+
+    /// Rebuild the engine so every table reports `rules_version`. Factories
+    /// are not invoked.
+    pub(crate) fn stamp(&mut self, rules_version: &str) -> Result<(), crate::router::BuildError> {
+        self.inner = engine(&self.tables, rules_version)?;
+        Ok(())
+    }
+}
+
+fn engine(
+    tables: &[Table],
+    rules_version: &str,
+) -> Result<angzarr_router::router::Router, crate::router::BuildError> {
+    let mut builder = angzarr_router::router::RouterBuilder::new();
+    for table in tables {
+        builder = match table(rules_version) {
+            Component::CommandHandler(t) => builder.aggregate(t),
+            Component::Saga(s) => builder.saga(s),
+            Component::ProcessManager(pm) => builder.process_manager(pm),
+            Component::Projector(p) => builder.projector(p),
+            Component::Upcaster(u) => builder.upcaster(u),
+        };
+    }
+    builder.build().map_err(build_error)
+}
+
 // ---------------------------------------------------------------------------
 // Errors crossing the router boundary.
 // ---------------------------------------------------------------------------
@@ -143,50 +188,51 @@ pub(crate) fn build_error(err: CodedError) -> crate::router::BuildError {
 }
 
 // ---------------------------------------------------------------------------
-// Snapshots.
+// The state message: its type, snapshot image and snapshot loader.
 // ---------------------------------------------------------------------------
 
-/// Snapshot loading for a state type, chosen at macro expansion:
-/// `(&SnapshotState::<S>::new()).snapshot_loader()` yields a loader when
-/// `S` is a protobuf message (the snapshot's state decodes into it) and
-/// `None` otherwise (the aggregate never snapshots).
-pub struct SnapshotState<S>(PhantomData<S>);
+/// The state declaration for a state type, chosen at macro expansion:
+/// `(&StateMessage::<S>::new()).declare(rebuilder)` declares, when `S` is
+/// a protobuf message, its type (the description's `StateDescriptor`), its
+/// snapshot image (the post-command state every response carries) and its
+/// snapshot loader; otherwise it leaves the rebuilder as it is.
+pub struct StateMessage<S>(PhantomData<S>);
 
-impl<S> SnapshotState<S> {
+impl<S> StateMessage<S> {
     pub fn new() -> Self {
-        SnapshotState(PhantomData)
+        StateMessage(PhantomData)
     }
 }
 
-impl<S> Default for SnapshotState<S> {
+impl<S> Default for StateMessage<S> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// A snapshot loader: replaces the fresh state with the snapshot's state.
-pub type SnapshotLoader<S> =
-    Box<dyn Fn(&mut S, &Any) -> Result<(), Box<dyn std::error::Error + Send + Sync>> + Send + Sync>;
-
 /// Selected when `S` is a protobuf message.
-pub trait LoadsSnapshot<S> {
-    fn snapshot_loader(&self) -> Option<SnapshotLoader<S>>;
+pub trait DeclaresMessageState<S> {
+    fn declare(&self, rebuilder: Rebuilder<S>) -> Rebuilder<S>;
 }
 
-impl<S: Message + Default + Name + 'static> LoadsSnapshot<S> for SnapshotState<S> {
-    fn snapshot_loader(&self) -> Option<SnapshotLoader<S>> {
-        Some(Box::new(snapshot_into::<S>))
+impl<S: Message + Default + Name + 'static> DeclaresMessageState<S> for StateMessage<S> {
+    fn declare(&self, rebuilder: Rebuilder<S>) -> Rebuilder<S> {
+        rebuilder
+            .with_state_type(&S::full_name())
+            .with_state_image(|state: &S| pack(state))
+            .with_snapshot(snapshot_into::<S>)
     }
 }
 
-/// Selected (by autoref) when `S` is not a protobuf message.
-pub trait IgnoresSnapshot<S> {
-    fn snapshot_loader(&self) -> Option<SnapshotLoader<S>>;
+/// Selected (by autoref) when `S` is not a protobuf message: no state type,
+/// no snapshot image, no snapshot.
+pub trait OpaqueState<S> {
+    fn declare(&self, rebuilder: Rebuilder<S>) -> Rebuilder<S>;
 }
 
-impl<S> IgnoresSnapshot<S> for &SnapshotState<S> {
-    fn snapshot_loader(&self) -> Option<SnapshotLoader<S>> {
-        None
+impl<S> OpaqueState<S> for &StateMessage<S> {
+    fn declare(&self, rebuilder: Rebuilder<S>) -> Rebuilder<S> {
+        rebuilder
     }
 }
 
@@ -204,17 +250,6 @@ fn snapshot_into<S: Message + Default + Name>(
     }
     *state = S::decode(any.value.as_slice())?;
     Ok(())
-}
-
-/// Attach the snapshot loader (if `S` has one) to a rebuilder.
-pub fn with_snapshot<S: 'static>(
-    rebuilder: Rebuilder<S>,
-    loader: Option<SnapshotLoader<S>>,
-) -> Rebuilder<S> {
-    match loader {
-        Some(loader) => rebuilder.with_snapshot(loader),
-        None => rebuilder,
-    }
 }
 
 #[cfg(test)]
@@ -306,6 +341,35 @@ mod tests {
         let _ = rejected(rejection("ORDER_GONE"));
         let err = from_coded(CodedError::invalid_argument("OTHER", "framework", []));
         assert!(matches!(err, ClientError::Grpc(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn a_message_state_declares_its_type_image_and_snapshot() {
+        use super::{DeclaresMessageState as _, OpaqueState as _};
+        use crate::proto::Cover;
+        let rebuilder = StateMessage::<Cover>::new().declare(Rebuilder::new(Cover::default));
+        assert_eq!(rebuilder.state_type_url(), "/io.angzarr.v1.Cover");
+        let state = Cover {
+            domain: "d".into(),
+            ..Default::default()
+        };
+        assert_eq!(rebuilder.state_image(&state), Some(pack(&state)));
+        let book = crate::proto::EventBook {
+            snapshot: Some(crate::proto::Snapshot {
+                sequence: 2,
+                state: Some(pack(&state)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (rebuilt, _) = rebuilder.rebuild(Some(&book)).expect("rebuilds");
+        assert_eq!(rebuilt, state);
+
+        #[derive(Default)]
+        struct Plain;
+        let opaque = (&StateMessage::<Plain>::new()).declare(Rebuilder::new(Plain::default));
+        assert_eq!(opaque.state_type_url(), "");
+        assert!(opaque.state_image(&Plain).is_none());
     }
 
     #[test]

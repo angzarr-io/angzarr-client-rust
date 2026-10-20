@@ -123,7 +123,7 @@ async fn given_host_one(world: &mut HostingWorld, domain: String) {
     assert_eq!(domain, "order");
     let gate = Arc::clone(&world.gate);
     world.host = Some(
-        ComponentHost::new()
+        ComponentHost::new(angzarr_client::rules_version!())
             .with_handler(move || OrderComponent(Arc::clone(&gate)))
             .with_drain_period(DRAIN),
     );
@@ -138,7 +138,7 @@ async fn given_host_two(world: &mut HostingWorld, first: String, second: String)
     let order_gate = Arc::clone(&world.gate);
     let payment_gate = Arc::clone(&world.gate);
     world.host = Some(
-        ComponentHost::new()
+        ComponentHost::new(angzarr_client::rules_version!())
             .with_handler(move || OrderComponent(Arc::clone(&order_gate)))
             .with_handler(move || PaymentComponent(Arc::clone(&payment_gate))),
     );
@@ -147,7 +147,7 @@ async fn given_host_two(world: &mut HostingWorld, first: String, second: String)
 #[given("a component host with no components registered")]
 async fn given_host_empty(world: &mut HostingWorld) {
     world.lock_env().await;
-    world.host = Some(ComponentHost::new());
+    world.host = Some(ComponentHost::new(angzarr_client::rules_version!()));
 }
 
 #[given(

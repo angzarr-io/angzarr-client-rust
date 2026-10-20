@@ -39,9 +39,10 @@ use tracing::info;
 use crate::error::{ClientError, Result};
 use crate::error_codes::{codes, keys, messages};
 use crate::handler::{
-    CommandHandlerGrpc, ProcessManagerGrpc, ProjectorGrpc, SagaGrpc, UpcasterGrpc,
+    CommandHandlerGrpc, ComponentGrpc, ProcessManagerGrpc, ProjectorGrpc, SagaGrpc, UpcasterGrpc,
 };
 use crate::proto::command_handler_service_server::CommandHandlerServiceServer;
+use crate::proto::component_service_server::ComponentServiceServer;
 use crate::proto::process_manager_service_server::ProcessManagerServiceServer;
 use crate::proto::projector_service_server::ProjectorServiceServer;
 use crate::proto::saga_service_server::SagaServiceServer;
@@ -69,6 +70,7 @@ struct AppService {
 
 /// Builder for a host serving components and application services.
 pub struct ComponentHost {
+    rules_version: String,
     builders: Vec<(Kind, Router)>,
     routers: Vec<Built>,
     services: Vec<AppService>,
@@ -77,15 +79,10 @@ pub struct ComponentHost {
     drain_period: Duration,
 }
 
-impl Default for ComponentHost {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl std::fmt::Debug for ComponentHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ComponentHost")
+            .field("rules_version", &self.rules_version)
             .field(
                 "kinds",
                 &self.builders.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
@@ -103,10 +100,17 @@ impl std::fmt::Debug for ComponentHost {
 }
 
 impl ComponentHost {
-    /// An empty host: no components, transport from the environment, no
-    /// drain period.
-    pub fn new() -> Self {
+    /// An empty host for a binary built as `rules_version`: no components,
+    /// transport from the environment, no drain period.
+    ///
+    /// `rules_version` is the binary's full build version, baked in at
+    /// build time (pass [`crate::rules_version!()`]). Every hosted
+    /// component reports it on every answer and in its description
+    /// (types.proto, ComponentDescriptor); a host without one refuses to
+    /// start.
+    pub fn new(rules_version: impl Into<String>) -> Self {
         Self {
+            rules_version: rules_version.into(),
             builders: Vec::new(),
             routers: Vec::new(),
             services: Vec::new(),
@@ -184,10 +188,14 @@ impl ComponentHost {
     }
 
     /// Build the routers, bind the listener and start serving in the
-    /// background. Fails with a configuration error when nothing is
-    /// registered, a router does not build, or two routers share a kind.
+    /// background, next to the health service and the component service
+    /// (`ComponentService.Describe`, which the coordinator calls to learn
+    /// the hosted components). Fails with a configuration error when the
+    /// host has no rules version, nothing is registered, a router does not
+    /// build, or two routers share a kind.
     pub async fn start(self) -> Result<RunningHost> {
         let ComponentHost {
+            rules_version,
             builders,
             mut routers,
             services,
@@ -195,6 +203,13 @@ impl ComponentHost {
             default_port,
             drain_period,
         } = self;
+        if rules_version.is_empty() {
+            return Err(ClientError::invalid_argument(
+                codes::MISSING_RULES_VERSION,
+                messages::MISSING_RULES_VERSION,
+                std::iter::empty::<(String, String)>(),
+            ));
+        }
         if builders.is_empty() && routers.is_empty() {
             return Err(ClientError::invalid_argument(
                 codes::HOST_HAS_NO_COMPONENTS,
@@ -220,10 +235,22 @@ impl ComponentHost {
             kinds.push(kind);
         }
 
+        let to_client_error = |e: crate::router::BuildError| {
+            ClientError::invalid_argument(e.code(), e.message(), e.details().clone())
+        };
+        for built in &mut routers {
+            built.stamp(&rules_version).map_err(to_client_error)?;
+        }
+        let described = routers.iter().try_fold(Vec::new(), |mut all, built| {
+            all.extend(built.component_descriptors()?);
+            Ok(all)
+        });
+
         let mut hosted = Vec::new();
         for built in routers {
             hosted.push(Hosted::from(built));
         }
+        hosted.push(Hosted::component(ComponentGrpc::new(described)));
         let names: Vec<String> = hosted
             .iter()
             .map(|h| h.name.to_string())
@@ -232,6 +259,7 @@ impl ComponentHost {
         let instance = hosted
             .iter()
             .map(|h| h.instance.as_str())
+            .filter(|i| !i.is_empty())
             .collect::<Vec<_>>()
             .join(",");
 
@@ -438,6 +466,19 @@ struct Hosted {
     name: &'static str,
     instance: String,
     add: AddService,
+}
+
+impl Hosted {
+    /// The component service every host serves.
+    fn component(service: ComponentGrpc) -> Self {
+        Hosted {
+            name: <ComponentServiceServer<ComponentGrpc> as NamedService>::NAME,
+            instance: String::new(),
+            add: Box::new(move |routes| {
+                routes.add_service(ComponentServiceServer::new(service));
+            }),
+        }
+    }
 }
 
 impl From<Built> for Hosted {

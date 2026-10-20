@@ -68,6 +68,34 @@
 /// Version of the angzarr-client crate, injected at build time from VERSION file.
 pub const VERSION: &str = env!("ANGZARR_CLIENT_VERSION");
 
+/// The calling crate's full build version, baked in at compile time from
+/// the `VERSION` file at its manifest root (the file versionator
+/// maintains), surrounding whitespace removed: the rules version a business
+/// binary hands [`ComponentHost::new`]. A crate without a `VERSION` file
+/// does not compile.
+///
+/// ```rust,ignore
+/// ComponentHost::new(angzarr_client::rules_version!())
+///     .with_handler(|| Order)
+///     .serve()
+///     .await?;
+/// ```
+#[macro_export]
+macro_rules! rules_version {
+    () => {
+        $crate::__trimmed_version(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/VERSION"
+        )))
+    };
+}
+
+/// [`rules_version!`]'s trim, usable in constants.
+#[doc(hidden)]
+pub const fn __trimmed_version(text: &'static str) -> &'static str {
+    text.trim_ascii()
+}
+
 pub mod builder;
 pub mod client;
 pub mod convert;
