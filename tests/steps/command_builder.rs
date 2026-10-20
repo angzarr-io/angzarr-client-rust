@@ -231,7 +231,7 @@ async fn when_new_aggregate(world: &mut CommandBuilderWorld, domain: String) {
     world.recipe.root = None;
 }
 
-#[when(expr = "I build one command for domain {string} outside a batch")]
+#[when(expr = "I build one command for domain {string}")]
 async fn when_single_command(world: &mut CommandBuilderWorld, domain: String) {
     world.recipe = Recipe {
         domain,
