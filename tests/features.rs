@@ -45,6 +45,11 @@ const PARITY_DIR: &str = "angzarr-project/parity/client";
 const PENDING: &[(&str, &str)] = &[
     ("C-0336", "no configurable connect timeout"),
     ("C-0337", "no configurable HTTP/2 keep-alive"),
+    // The client has no batch helper, and the owner ruled not to invent
+    // one without a decision on its shape.
+    ("C-0572", "no batch helper"),
+    ("C-0573", "no batch helper"),
+    ("C-0574", "no batch helper"),
 ];
 
 /// Outcome of one feature run.

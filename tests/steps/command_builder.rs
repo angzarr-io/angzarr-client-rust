@@ -231,6 +231,17 @@ async fn when_new_aggregate(world: &mut CommandBuilderWorld, domain: String) {
     world.recipe.root = None;
 }
 
+#[when(expr = "I build one command for domain {string} outside a batch")]
+async fn when_single_command(world: &mut CommandBuilderWorld, domain: String) {
+    world.recipe = Recipe {
+        domain,
+        root: Some(Uuid::new_v4()),
+        command: Some(test_command()),
+        ..Default::default()
+    };
+    world.build();
+}
+
 #[when(expr = "I set the command type to {string}")]
 async fn when_set_type(world: &mut CommandBuilderWorld, name: String) {
     assert_eq!(name, "CreateOrder", "fixtures provide CreateOrder");
