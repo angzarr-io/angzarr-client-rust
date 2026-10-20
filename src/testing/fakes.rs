@@ -43,7 +43,7 @@ pub struct GatewayCall {
 #[derive(Debug, Default)]
 pub struct RecordingGatewayClient {
     calls: Mutex<Vec<GatewayCall>>,
-    /// Canned `execute` response. Returned (cloned)
+    /// Canned `handle` / `handle_sync` response. Returned (cloned)
     /// for every call until overwritten. Unset → `Ok(CommandResponse::default())`.
     response: Mutex<Option<CommandResponse>>,
     /// If set, every call returns `Err(error.clone())` instead of `response`.
@@ -98,21 +98,40 @@ impl RecordingGatewayClient {
             .cloned()
     }
 
-    fn produce(&self) -> Result<CommandResponse> {
-        if let Some(err) = self.error.lock().unwrap().as_ref() {
-            return Err(clone_err(err));
+    fn record(&self, method: &'static str, command: CommandBook) {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(GatewayCall { method, command });
+    }
+
+    fn fail_if_set(&self) -> Result<()> {
+        match self.error.lock().unwrap().as_ref() {
+            Some(err) => Err(clone_err(err)),
+            None => Ok(()),
         }
+    }
+
+    fn produce(&self) -> Result<CommandResponse> {
+        self.fail_if_set()?;
         Ok(self.response.lock().unwrap().clone().unwrap_or_default())
     }
 }
 
 #[async_trait]
 impl GatewayClient for RecordingGatewayClient {
-    async fn execute(&self, command: CommandBook) -> Result<CommandResponse> {
-        self.calls.lock().unwrap().push(GatewayCall {
-            method: "execute",
-            command,
-        });
+    async fn handle_async(&self, command: CommandBook) -> Result<()> {
+        self.record("handle_async", command);
+        self.fail_if_set()
+    }
+
+    async fn handle(&self, command: CommandBook) -> Result<CommandResponse> {
+        self.record("handle", command);
+        self.produce()
+    }
+
+    async fn handle_sync(&self, command: CommandBook) -> Result<CommandResponse> {
+        self.record("handle_sync", command);
         self.produce()
     }
 }
@@ -305,40 +324,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gateway_fake_records_each_rpc_by_name() {
+        let canned = CommandResponse {
+            events: Some(book("orders")),
+            ..Default::default()
+        };
+        let fake = RecordingGatewayClient::new().with_response(canned.clone());
+        fake.handle_async(command("a")).await.unwrap();
+        assert_eq!(fake.handle_sync(command("b")).await.unwrap(), canned);
+        assert_eq!(fake.call_count("handle_async"), 1);
+        assert_eq!(fake.call_count("handle_sync"), 1);
+        assert_eq!(fake.call_count("handle"), 0);
+        assert_eq!(
+            fake.last_call("handle_async").unwrap().command,
+            command("a")
+        );
+        fake.fail_with(stub_rpc_error(Code::Unavailable, "down"));
+        assert!(fake
+            .handle_async(command("c"))
+            .await
+            .unwrap_err()
+            .is_connection_error());
+        assert!(fake
+            .handle_sync(command("d"))
+            .await
+            .unwrap_err()
+            .is_connection_error());
+    }
+
+    #[tokio::test]
     async fn gateway_fake_records_calls_and_answers_canned_response() {
         let canned = CommandResponse {
             events: Some(book("orders")),
             ..Default::default()
         };
         let fake = RecordingGatewayClient::new().with_response(canned.clone());
-        assert_eq!(fake.execute(command("a")).await.unwrap(), canned);
-        fake.execute(command("b")).await.unwrap();
-        assert_eq!(fake.call_count("execute"), 2);
+        assert_eq!(fake.handle(command("a")).await.unwrap(), canned);
+        fake.handle(command("b")).await.unwrap();
+        assert_eq!(fake.call_count("handle"), 2);
         assert_eq!(fake.call_count("other"), 0);
         assert_eq!(fake.calls().len(), 2);
         assert_eq!(fake.calls()[0].command, command("a"));
-        let last = fake.last_call("execute").unwrap();
+        let last = fake.last_call("handle").unwrap();
         assert_eq!(last.command, command("b"));
         assert!(fake.last_call("other").is_none());
 
         let replaced = CommandResponse::default();
         fake.respond(replaced.clone());
-        assert_eq!(fake.execute(command("c")).await.unwrap(), replaced);
+        assert_eq!(fake.handle(command("c")).await.unwrap(), replaced);
     }
 
     #[tokio::test]
     async fn gateway_fake_fails_every_call_once_told_to() {
         let fake = RecordingGatewayClient::new();
         assert_eq!(
-            fake.execute(command("a")).await.unwrap(),
+            fake.handle(command("a")).await.unwrap(),
             CommandResponse::default()
         );
         fake.fail_with(stub_rpc_error(Code::FailedPrecondition, "stale"));
         for _ in 0..2 {
-            let err = fake.execute(command("a")).await.unwrap_err();
+            let err = fake.handle(command("a")).await.unwrap_err();
             assert!(err.is_precondition_failed());
         }
-        assert_eq!(fake.call_count("execute"), 3);
+        assert_eq!(fake.call_count("handle"), 3);
     }
 
     #[tokio::test]

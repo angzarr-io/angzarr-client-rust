@@ -45,11 +45,6 @@ const PARITY_DIR: &str = "angzarr-project/parity/client";
 const PENDING: &[(&str, &str)] = &[
     ("C-0336", "no configurable connect timeout"),
     ("C-0337", "no configurable HTTP/2 keep-alive"),
-    // The delivery-mode surface (fire-and-forget, wait for projectors) is
-    // proposed in docs/design/sender-and-registration.md and awaits
-    // sign-off; its red tests are tests/proposal.rs (`proposal-tests`).
-    ("C-0197", "delivery-mode API awaits sign-off"),
-    ("C-0198", "delivery-mode API awaits sign-off"),
     // Parity scenarios the current protos no longer support: a Cover has
     // no correlation_id, an EventPage no offloaded (PayloadReference)
     // payload, and an unspecified conflict resolution means the

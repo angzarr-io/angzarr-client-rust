@@ -34,7 +34,17 @@ impl MockGatewayClient {
 
 #[async_trait]
 impl traits::GatewayClient for MockGatewayClient {
-    async fn execute(&self, command: CommandBook) -> Result<CommandResponse> {
+    async fn handle_async(&self, command: CommandBook) -> Result<()> {
+        *self.last_command.lock().unwrap() = Some(command);
+        Ok(())
+    }
+
+    async fn handle(&self, command: CommandBook) -> Result<CommandResponse> {
+        *self.last_command.lock().unwrap() = Some(command);
+        Ok(self.response.clone())
+    }
+
+    async fn handle_sync(&self, command: CommandBook) -> Result<CommandResponse> {
         *self.last_command.lock().unwrap() = Some(command);
         Ok(self.response.clone())
     }

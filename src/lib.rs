@@ -48,11 +48,19 @@
 //!
 //! #[async_trait]
 //! impl GatewayClient for MockAggregate {
-//!     async fn execute(&self, _cmd: CommandBook)
+//!     async fn handle_async(&self, _cmd: CommandBook) -> angzarr_client::Result<()> {
+//!         Ok(())
+//!     }
+//!     async fn handle(&self, _cmd: CommandBook)
 //!         -> angzarr_client::Result<angzarr_client::proto::CommandResponse>
 //!     {
 //!         // Return mock response
 //!         Ok(angzarr_client::proto::CommandResponse::default())
+//!     }
+//!     async fn handle_sync(&self, cmd: CommandBook)
+//!         -> angzarr_client::Result<angzarr_client::proto::CommandResponse>
+//!     {
+//!         self.handle(cmd).await
 //!     }
 //! }
 //! ```

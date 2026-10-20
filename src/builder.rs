@@ -142,12 +142,25 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
         })
     }
 
-    /// Build the command and send it, waiting for the coordinator's
-    /// decision.
+    /// Build the command and send it ASYNC (`HandleAsync`): accepted for
+    /// processing, no decision yet.
+    pub async fn execute_async(self) -> Result<()> {
+        let client = self.client;
+        client.handle_async(self.build()?).await
+    }
+
+    /// Build the command and send it for the coordinator's decision
+    /// (DECISION, `Handle`).
     pub async fn execute(self) -> Result<CommandResponse> {
         let client = self.client;
-        let command = self.build()?;
-        client.execute(command).await
+        client.handle(self.build()?).await
+    }
+
+    /// Build the command and send it SIMPLE (`HandleSync`): the decision
+    /// after the synchronous projectors ran.
+    pub async fn execute_sync(self) -> Result<CommandResponse> {
+        let client = self.client;
+        client.handle_sync(self.build()?).await
     }
 }
 

@@ -38,6 +38,8 @@ pub struct AggregateClientWorld {
     domain: String,
     root: Uuid,
     result: Option<Result<CommandResponse, ClientError>>,
+    /// The answer of an ASYNC (fire-and-forget) send.
+    accepted: Option<Result<(), ClientError>>,
     concurrent: Vec<Result<CommandResponse, ClientError>>,
     timed_out: bool,
     looked_up_sequence: Option<u64>,
@@ -267,6 +269,40 @@ async fn when_retry(world: &mut AggregateClientWorld) {
     world.result = Some(world.send_generic("AddItem", seq, 1, None).await);
 }
 
+#[when("I send a command without waiting for downstream work")]
+async fn when_send_async(world: &mut AggregateClientWorld) {
+    let accepted = world
+        .client()
+        .command(&world.domain, world.root)
+        .with_command(
+            format!("{TYPE_PREFIX}AddItem"),
+            &GenericCommand {
+                data: "AddItem-data".into(),
+                count: 1,
+            },
+        )
+        .execute_async()
+        .await;
+    world.accepted = Some(accepted);
+}
+
+#[when("I send a command and wait for projectors")]
+async fn when_send_sync(world: &mut AggregateClientWorld) {
+    let result = world
+        .client()
+        .command(&world.domain, world.root)
+        .with_command(
+            format!("{TYPE_PREFIX}AddItem"),
+            &GenericCommand {
+                data: "AddItem-data".into(),
+                count: 1,
+            },
+        )
+        .execute_sync()
+        .await;
+    world.result = Some(result);
+}
+
 #[when("I send a command with a malformed payload")]
 async fn when_send_malformed(world: &mut AggregateClientWorld) {
     let result = world
@@ -414,6 +450,34 @@ async fn then_other_refused(world: &mut AggregateClientWorld) {
         .collect();
     assert_eq!(refused.len(), 1);
     assert!(is_stale(refused[0]), "got {:?}", refused[0]);
+}
+
+#[then("the response returns before any projectors have caught up")]
+async fn then_returns_before_projectors(world: &mut AggregateClientWorld) {
+    let accepted = world.accepted.as_ref().expect("an async send");
+    assert!(accepted.is_ok(), "async send failed: {accepted:?}");
+    assert!(
+        world.backend().projector_runs().is_empty(),
+        "projector already ran"
+    );
+    assert_eq!(world.backend().rpcs().last(), Some(&"HandleAsync"));
+}
+
+#[then("the response reflects the projectors having processed the event")]
+async fn then_projectors_processed(world: &mut AggregateClientWorld) {
+    let resp = world.ok_response();
+    let emitted = seqs(resp.events.as_ref().expect("events"));
+    let projected: Vec<u64> = resp
+        .outcome
+        .as_ref()
+        .expect("outcome")
+        .projections
+        .iter()
+        .map(|p| p.next_sequence - 1)
+        .collect();
+    assert!(!projected.is_empty(), "no projections in the response");
+    assert_eq!(projected, emitted);
+    assert_eq!(world.backend().rpcs().last(), Some(&"HandleSync"));
 }
 
 #[then("the command is refused as invalid")]

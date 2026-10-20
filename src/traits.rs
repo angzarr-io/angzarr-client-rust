@@ -9,15 +9,23 @@ use async_trait::async_trait;
 use crate::error::Result;
 use crate::proto::{CommandBook, CommandResponse, EventBook, Query};
 
-/// Trait for gateway client operations (command execution).
+/// Trait for gateway client operations (command execution): one method
+/// per `CommandHandlerCoordinatorService` RPC (command_handler.proto).
 ///
 /// Implement this trait to create mock clients for testing or
 /// alternative transport implementations.
 #[async_trait]
 pub trait GatewayClient: Send + Sync {
-    /// Execute a command and return the coordinator's decision
-    /// (`CommandHandlerCoordinatorService.Handle`).
-    async fn execute(&self, command: CommandBook) -> Result<CommandResponse>;
+    /// ASYNC (`HandleAsync`): the command is accepted for processing; no
+    /// decision has been made, so nothing comes back.
+    async fn handle_async(&self, command: CommandBook) -> Result<()>;
+
+    /// DECISION (`Handle`): the decision, its events and delivery outcome.
+    async fn handle(&self, command: CommandBook) -> Result<CommandResponse>;
+
+    /// SIMPLE (`HandleSync`): the decision, after the domain's synchronous
+    /// projectors ran; their results are in `outcome.projections`.
+    async fn handle_sync(&self, command: CommandBook) -> Result<CommandResponse>;
 }
 
 /// Trait for event query client operations.

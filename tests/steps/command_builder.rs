@@ -483,7 +483,7 @@ async fn then_chained(world: &mut CommandBuilderWorld) {
 async fn then_sent(world: &mut CommandBuilderWorld) {
     let call = world
         .mock
-        .last_call("execute")
+        .last_call("handle")
         .expect("gateway received execute");
     let built = world.built();
     // build() and execute() each mint a fresh correlation id, so compare
@@ -518,8 +518,8 @@ async fn then_built_and_executed(world: &mut CommandBuilderWorld) {
         .expect("executed")
         .as_ref()
         .expect("execute succeeds");
-    assert_eq!(world.mock.call_count("execute"), 1);
-    let call = world.mock.last_call("execute").expect("recorded");
+    assert_eq!(world.mock.call_count("handle"), 1);
+    let call = world.mock.last_call("handle").expect("recorded");
     assert_eq!(
         command_any(&call.command).type_url,
         full_type_url::<CreateOrder>()

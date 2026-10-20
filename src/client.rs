@@ -429,29 +429,53 @@ impl CommandHandlerClient {
         drop(self);
     }
 
-    /// Send a command and wait for its decision
-    /// (`CommandHandlerCoordinatorService.Handle`): the response carries
-    /// the persisted events and the delivery outcome.
-    pub async fn handle(&self, command: CommandBook) -> Result<CommandResponse> {
-        // Audit #69 stage (b): `x-correlation-id` from the command page's
-        // correlation_id. Unset skips the header (the coordinator assigns
-        // one).
-        let corr_id = correlation_text(
-            command
-                .page
-                .as_ref()
-                .and_then(|p| p.correlation_id.as_ref()),
-        );
-        let req = crate::proto_ext::correlated_request(command, &corr_id);
-        let response = self.inner.clone().handle(req).await?;
-        Ok(response.into_inner())
+    /// ASYNC (`HandleAsync`): validate, enqueue and return. No decision has
+    /// been made, so nothing comes back.
+    pub async fn handle_async(&self, command: CommandBook) -> Result<()> {
+        let req = correlated_command(command);
+        self.inner.clone().handle_async(req).await?;
+        Ok(())
     }
+
+    /// DECISION (`Handle`): the decision, with the persisted events and the
+    /// delivery outcome.
+    pub async fn handle(&self, command: CommandBook) -> Result<CommandResponse> {
+        let req = correlated_command(command);
+        Ok(self.inner.clone().handle(req).await?.into_inner())
+    }
+
+    /// SIMPLE (`HandleSync`): the decision after the domain's synchronous
+    /// projectors ran; their projections are in `outcome.projections`.
+    pub async fn handle_sync(&self, command: CommandBook) -> Result<CommandResponse> {
+        let req = correlated_command(command);
+        Ok(self.inner.clone().handle_sync(req).await?.into_inner())
+    }
+}
+
+/// The command as a request carrying `x-correlation-id` from its page's
+/// correlation_id (audit #69 stage (b)); unset skips the header.
+fn correlated_command(command: CommandBook) -> tonic::Request<CommandBook> {
+    let corr_id = correlation_text(
+        command
+            .page
+            .as_ref()
+            .and_then(|p| p.correlation_id.as_ref()),
+    );
+    crate::proto_ext::correlated_request(command, &corr_id)
 }
 
 #[async_trait]
 impl traits::GatewayClient for CommandHandlerClient {
-    async fn execute(&self, command: CommandBook) -> Result<CommandResponse> {
+    async fn handle_async(&self, command: CommandBook) -> Result<()> {
+        self.handle_async(command).await
+    }
+
+    async fn handle(&self, command: CommandBook) -> Result<CommandResponse> {
         self.handle(command).await
+    }
+
+    async fn handle_sync(&self, command: CommandBook) -> Result<CommandResponse> {
+        self.handle_sync(command).await
     }
 }
 
@@ -526,10 +550,19 @@ impl DomainClient {
         drop(self);
     }
 
-    /// Send a command and wait for its decision (delegates to the
-    /// command handler client).
-    pub async fn execute(&self, command: CommandBook) -> Result<CommandResponse> {
+    /// ASYNC (`HandleAsync`; delegates to the command handler client).
+    pub async fn handle_async(&self, command: CommandBook) -> Result<()> {
+        self.command_handler.handle_async(command).await
+    }
+
+    /// DECISION (`Handle`; delegates to the command handler client).
+    pub async fn handle(&self, command: CommandBook) -> Result<CommandResponse> {
         self.command_handler.handle(command).await
+    }
+
+    /// SIMPLE (`HandleSync`; delegates to the command handler client).
+    pub async fn handle_sync(&self, command: CommandBook) -> Result<CommandResponse> {
+        self.command_handler.handle_sync(command).await
     }
 
     /// Query events — unary RPC returning single EventBook (delegates to query client).
@@ -545,8 +578,16 @@ impl DomainClient {
 
 #[async_trait]
 impl traits::GatewayClient for DomainClient {
-    async fn execute(&self, command: CommandBook) -> Result<CommandResponse> {
-        self.execute(command).await
+    async fn handle_async(&self, command: CommandBook) -> Result<()> {
+        self.handle_async(command).await
+    }
+
+    async fn handle(&self, command: CommandBook) -> Result<CommandResponse> {
+        self.handle(command).await
+    }
+
+    async fn handle_sync(&self, command: CommandBook) -> Result<CommandResponse> {
+        self.handle_sync(command).await
     }
 }
 

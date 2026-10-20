@@ -45,25 +45,22 @@ fn add_item() -> GenericCommand {
 
 /// C-0197: ASYNC sends HandleAsync and answers nothing but acceptance,
 /// before any decision or projector ran.
-#[cfg(feature = "proposal-tests")]
 #[tokio::test]
 async fn execute_async_is_fire_and_forget_over_handle_async() {
     use angzarr_client::CommandBuilderExt;
     let (backend, client) = connected().await;
-    let accepted: () = client
+    let accepted: angzarr_client::Result<()> = client
         .command_new("orders")
         .with_command(add_item_url(), &add_item())
         .execute_async()
-        .await
-        .expect("accepted for processing");
-    let _ = accepted;
+        .await;
+    accepted.expect("accepted for processing");
     assert_eq!(backend.rpcs(), vec!["HandleAsync"]);
     assert!(backend.projector_runs().is_empty());
 }
 
 /// C-0198: SIMPLE sends HandleSync and answers the events plus the
 /// synchronous projectors' projections.
-#[cfg(feature = "proposal-tests")]
 #[tokio::test]
 async fn execute_sync_waits_for_the_synchronous_projectors() {
     use angzarr_client::CommandBuilderExt;
@@ -82,7 +79,6 @@ async fn execute_sync_waits_for_the_synchronous_projectors() {
 }
 
 /// DECISION (Handle) answers the decision's events and no projections.
-#[cfg(feature = "proposal-tests")]
 #[tokio::test]
 async fn execute_is_the_decision() {
     use angzarr_client::CommandBuilderExt;
@@ -99,7 +95,6 @@ async fn execute_is_the_decision() {
 }
 
 /// The client and the GatewayClient trait carry the three RPCs by name.
-#[cfg(feature = "proposal-tests")]
 #[tokio::test]
 async fn the_gateway_trait_names_the_three_rpcs() {
     use angzarr_client::traits::GatewayClient;
