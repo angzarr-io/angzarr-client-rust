@@ -1,0 +1,14 @@
+error[E0599]: no method named `with_upcaster` found for struct `angzarr_client::router::Router<OneComponent, OneUpcaster>` in the current scope
+  --> tests/router/ui/component_takes_one_upcaster_chain.rs:49:10
+   |
+46 |       let _ = Router::new("x")
+   |  _____________-
+47 | |         .with_handler(|| A)
+48 | |         .with_upcaster(|| Lift)
+49 | |         .with_upcaster(|| Lift);
+   | |         -^^^^^^^^^^^^^ method not found in `angzarr_client::router::Router<OneComponent, OneUpcaster>`
+   | |_________|
+   |
+   |
+   = note: the method was found for
+           - `angzarr_client::router::Router<OneComponent>`

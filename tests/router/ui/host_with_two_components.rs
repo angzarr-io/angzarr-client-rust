@@ -1,5 +1,5 @@
-//! A host serves exactly one component: a second registration does not
-//! compile, nor does starting a host with none.
+//! C-0579: a host given a second component cannot be expressed: Rust makes
+//! the case unrepresentable, so it does not compile.
 
 use angzarr_client::proto::EventBook;
 use angzarr_client::router::command_handler;
@@ -25,18 +25,8 @@ impl A {
     }
 }
 
-async fn twice() {
+fn main() {
     let _ = ComponentHost::new("1.0.0")
         .with_handler(|| A)
-        .with_handler(|| A)
-        .start()
-        .await;
-}
-
-async fn none() {
-    let _ = ComponentHost::new("1.0.0").start().await;
-}
-
-fn main() {
-    let _ = (twice(), none());
+        .with_handler(|| A);
 }

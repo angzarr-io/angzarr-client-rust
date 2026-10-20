@@ -394,12 +394,68 @@ mod describe {
         }
     }
 
-    /// An upcaster has no component description.
+    /// The aggregate's host serves UpcasterService alongside its
+    /// aggregate when the aggregate has an upcaster chain, and still
+    /// describes the aggregate.
     #[tokio::test]
-    async fn describe_refuses_an_upcaster_host() {
-        let status = describe(ComponentHost::new("1.0.0").with_handler(|| Lift))
+    async fn an_aggregate_host_serves_its_upcaster_chain() {
+        use angzarr_client::proto::upcaster_service_client::UpcasterServiceClient;
+        use angzarr_client::proto::{EventPage, UpcastRequest};
+        let built = angzarr_client::router::Router::new("order")
+            .with_handler(|| Order)
+            .with_upcaster(|| Lift)
+            .build()
+            .expect("builds");
+        let running = ComponentHost::new("1.4.2+build.7")
+            .with_router(built)
+            .with_transport(ephemeral())
+            .start()
             .await
-            .expect_err("no description");
-        assert_eq!(status.code(), tonic::Code::Unimplemented);
+            .expect("starts");
+        assert!(running
+            .services()
+            .contains(&"io.angzarr.v1.UpcasterService".to_string()));
+        let ch = channel(running.address()).await;
+        let page = EventPage {
+            payload: Some(angzarr_client::testing::pack_event(&AddItem {})),
+            ..Default::default()
+        };
+        let upcast = UpcasterServiceClient::new(ch.clone())
+            .upcast(UpcastRequest {
+                domain: "order".into(),
+                events: vec![page],
+            })
+            .await
+            .expect("upcast")
+            .into_inner();
+        assert_eq!(
+            upcast.events[0]
+                .payload
+                .as_ref()
+                .map(|a| a.type_url.as_str()),
+            Some("/orders.v1.ItemAdded")
+        );
+        let described = ComponentServiceClient::new(ch)
+            .describe(DescribeRequest {})
+            .await
+            .expect("described")
+            .into_inner();
+        assert_eq!(described.name, "order");
+        running.shutdown().await.unwrap();
+    }
+
+    /// Without a chain the host serves no UpcasterService.
+    #[tokio::test]
+    async fn an_aggregate_host_without_a_chain_serves_no_upcaster() {
+        let running = ComponentHost::new("1.0.0")
+            .with_handler(|| Order)
+            .with_transport(ephemeral())
+            .start()
+            .await
+            .expect("starts");
+        assert!(!running
+            .services()
+            .contains(&"io.angzarr.v1.UpcasterService".to_string()));
+        running.shutdown().await.unwrap();
     }
 }

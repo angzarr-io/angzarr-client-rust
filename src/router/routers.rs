@@ -142,16 +142,8 @@ impl ProjectorRouter {
         begin_dispatch();
         self.tables
             .inner
-            .dispatch_projectors(&book)
-            .map_err(from_coded)?
-            .pop()
-            .ok_or_else(|| {
-                ClientError::invalid_argument(
-                    crate::error_codes::codes::UNHANDLED_HANDLER_ERROR,
-                    crate::error_codes::messages::UNHANDLED_HANDLER_ERROR,
-                    std::iter::empty::<(String, String)>(),
-                )
-            })
+            .dispatch_projector(&book)
+            .map_err(from_coded)
     }
 
     /// The projector's name.
@@ -168,33 +160,6 @@ impl ProjectorRouter {
     }
 }
 
-/// Runtime router over one upcaster.
-pub struct UpcasterRouter {
-    pub(crate) tables: Tables,
-    pub(crate) config: HandlerConfig,
-}
-
-impl UpcasterRouter {
-    /// Run every page of the request's domain through the upcaster.
-    pub fn dispatch(&self, request: UpcastRequest) -> Result<UpcastResponse, ClientError> {
-        begin_dispatch();
-        self.tables.inner.upcast(&request).map_err(from_coded)
-    }
-
-    /// The upcaster's name.
-    pub fn name(&self) -> String {
-        match &self.config {
-            HandlerConfig::Upcaster { name, .. } => name.clone(),
-            _ => String::new(),
-        }
-    }
-
-    /// Upcasters transform events in place; no outbound destinations.
-    pub fn output_domains(&self) -> Vec<String> {
-        Vec::new()
-    }
-}
-
 macro_rules! impl_component_descriptor {
     ($($ty:ident),*) => {$(
         impl $ty {
@@ -205,12 +170,21 @@ macro_rules! impl_component_descriptor {
             /// aggregate or process manager, its state is not a protobuf
             /// message (MISSING_STATE_TYPE).
             pub fn component_descriptor(&self) -> Result<ComponentDescriptor, ClientError> {
-                let mut described = self
-                    .tables
-                    .inner
-                    .component_descriptors()
-                    .map_err(from_coded)?;
-                Ok(described.pop().unwrap_or_default())
+                self.tables.inner.component_descriptor().map_err(from_coded)
+            }
+
+            /// True when the component has an upcaster chain
+            /// ([`crate::router::Router::with_upcaster`]).
+            pub fn has_upcaster(&self) -> bool {
+                self.tables.has_upcaster()
+            }
+
+            /// Run the pages through the component's upcaster chain when the
+            /// request is for the chain's domain (C-0136); otherwise, or
+            /// with no chain, the pages pass through unchanged.
+            pub fn upcast(&self, request: UpcastRequest) -> Result<UpcastResponse, ClientError> {
+                begin_dispatch();
+                self.tables.inner.upcast(&request).map_err(from_coded)
             }
         }
     )*};
@@ -239,6 +213,5 @@ impl_debug!(
     CommandHandlerRouter,
     SagaRouter,
     ProcessManagerRouter,
-    ProjectorRouter,
-    UpcasterRouter
+    ProjectorRouter
 );

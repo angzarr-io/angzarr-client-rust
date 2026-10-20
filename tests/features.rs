@@ -45,10 +45,6 @@ const PARITY_DIR: &str = "angzarr-project/parity/client";
 const PENDING: &[(&str, &str)] = &[
     ("C-0336", "no configurable connect timeout"),
     ("C-0337", "no configurable HTTP/2 keep-alive"),
-    // A host with no component cannot be started: `start` exists only on a
-    // host with its one component (tests/router/ui/host_takes_one_component.rs),
-    // so this is refused at compile time, not at run time.
-    ("C-0504", "refused at compile time by the host's type"),
     // The client has no batch helper, and the owner ruled not to invent
     // one without a decision on its shape.
     ("C-0572", "no batch helper"),

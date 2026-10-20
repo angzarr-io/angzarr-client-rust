@@ -5,4 +5,4 @@ error[E0599]: no method named `build` found for struct `angzarr_client::router::
   |                              ^^^^^ method not found in `angzarr_client::router::Router`
   |
   = note: the method was found for
-          - `angzarr_client::router::Router<OneComponent>`
+          - `angzarr_client::router::Router<OneComponent, U>`

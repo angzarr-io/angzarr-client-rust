@@ -26,5 +26,15 @@ fn routers_and_hosts_take_exactly_one_component() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/router/ui/router_takes_one_component.rs");
     t.compile_fail("tests/router/ui/router_without_component_does_not_build.rs");
-    t.compile_fail("tests/router/ui/host_takes_one_component.rs");
+    t.compile_fail("tests/router/ui/host_with_two_components.rs");
+    t.compile_fail("tests/router/ui/host_without_component.rs");
+}
+
+/// An upcaster is part of its component: it is never a component itself,
+/// and a component has one chain.
+#[test]
+fn an_upcaster_belongs_to_its_component() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/router/ui/upcaster_is_not_a_component.rs");
+    t.compile_fail("tests/router/ui/component_takes_one_upcaster_chain.rs");
 }

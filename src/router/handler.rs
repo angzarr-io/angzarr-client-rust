@@ -5,16 +5,14 @@
 //! [`HandlerKind`] (static metadata plus the component's angzarr-router
 //! dispatch table) and [`Handler`] (the instance view of the metadata).
 
-/// The five handler kinds the unified router understands.
-///
-/// Stored in [`HandlerConfig`] for mode inference at build time.
+/// The four component kinds: what a router and a host serve one of. An
+/// upcaster chain is part of its component, not a kind of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     CommandHandler,
     Saga,
     ProcessManager,
     Projector,
-    Upcaster,
 }
 
 impl Kind {
@@ -28,7 +26,6 @@ impl Kind {
             Kind::Saga => "Saga",
             Kind::ProcessManager => "ProcessManager",
             Kind::Projector => "Projector",
-            Kind::Upcaster => "Upcaster",
         }
     }
 }
@@ -88,14 +85,15 @@ pub enum HandlerConfig {
 }
 
 impl HandlerConfig {
-    /// Which kind this config represents.
-    pub fn kind(&self) -> Kind {
+    /// Which component kind this config represents; `None` for an
+    /// upcaster chain, which is part of a component.
+    pub fn kind(&self) -> Option<Kind> {
         match self {
-            Self::CommandHandler { .. } => Kind::CommandHandler,
-            Self::Saga { .. } => Kind::Saga,
-            Self::ProcessManager { .. } => Kind::ProcessManager,
-            Self::Projector { .. } => Kind::Projector,
-            Self::Upcaster { .. } => Kind::Upcaster,
+            Self::CommandHandler { .. } => Some(Kind::CommandHandler),
+            Self::Saga { .. } => Some(Kind::Saga),
+            Self::ProcessManager { .. } => Some(Kind::ProcessManager),
+            Self::Projector { .. } => Some(Kind::Projector),
+            Self::Upcaster { .. } => None,
         }
     }
 }
@@ -180,7 +178,6 @@ pub enum Built {
     Saga(crate::router::routers::SagaRouter),
     ProcessManager(crate::router::routers::ProcessManagerRouter),
     Projector(crate::router::routers::ProjectorRouter),
-    Upcaster(crate::router::routers::UpcasterRouter),
 }
 
 impl Built {
@@ -191,21 +188,28 @@ impl Built {
             Built::Saga(r) => r.tables.stamp(rules_version),
             Built::ProcessManager(r) => r.tables.stamp(rules_version),
             Built::Projector(r) => r.tables.stamp(rules_version),
-            Built::Upcaster(r) => r.tables.stamp(rules_version),
         }
     }
 
-    /// The component's description (types.proto, ComponentDescriptor);
-    /// an upcaster has none.
+    /// The component's description (types.proto, ComponentDescriptor).
     pub fn component_descriptor(
         &self,
-    ) -> Result<Option<crate::proto::ComponentDescriptor>, crate::ClientError> {
+    ) -> Result<crate::proto::ComponentDescriptor, crate::ClientError> {
         match self {
-            Built::CommandHandler(r) => r.component_descriptor().map(Some),
-            Built::Saga(r) => r.component_descriptor().map(Some),
-            Built::ProcessManager(r) => r.component_descriptor().map(Some),
-            Built::Projector(r) => r.component_descriptor().map(Some),
-            Built::Upcaster(_) => Ok(None),
+            Built::CommandHandler(r) => r.component_descriptor(),
+            Built::Saga(r) => r.component_descriptor(),
+            Built::ProcessManager(r) => r.component_descriptor(),
+            Built::Projector(r) => r.component_descriptor(),
+        }
+    }
+
+    /// The angzarr-router engine, shared with the upcaster service.
+    pub(crate) fn tables(&self) -> &crate::router::component::Tables {
+        match self {
+            Built::CommandHandler(r) => &r.tables,
+            Built::Saga(r) => &r.tables,
+            Built::ProcessManager(r) => &r.tables,
+            Built::Projector(r) => &r.tables,
         }
     }
 }
@@ -216,6 +220,19 @@ impl Built {
 pub trait Handler: Send + Sync {
     /// Describe this handler's kind and registered behaviors.
     fn config(&self) -> HandlerConfig;
+}
+
+/// An upcaster chain's static metadata and constructor: the macro trait of
+/// `#[upcaster]`. A chain is part of its component (`Router::with_upcaster`),
+/// never a component itself, so it implements this instead of
+/// [`HandlerKind`].
+pub trait UpcasterKind: Sized + Send + Sync + 'static {
+    /// Static handler config — no instance required.
+    fn handler_config() -> HandlerConfig;
+
+    /// The chain's angzarr-router table.
+    #[doc(hidden)]
+    fn upcaster() -> angzarr_router::upcaster::UpcasterDispatch;
 }
 
 /// Compile-time kind marker and dispatch-table constructor.
@@ -254,7 +271,6 @@ mod kind_str_tests {
         assert_eq!(Kind::Saga.as_str(), "Saga");
         assert_eq!(Kind::ProcessManager.as_str(), "ProcessManager");
         assert_eq!(Kind::Projector.as_str(), "Projector");
-        assert_eq!(Kind::Upcaster.as_str(), "Upcaster");
     }
 
     #[test]
@@ -264,7 +280,6 @@ mod kind_str_tests {
             Kind::Saga,
             Kind::ProcessManager,
             Kind::Projector,
-            Kind::Upcaster,
         ] {
             assert_eq!(kind.to_string(), kind.as_str());
         }

@@ -56,6 +56,9 @@ pub struct HostingWorld {
     start_error: Option<ClientError>,
     in_flight: Option<JoinHandle<Result<String, tonic::Status>>>,
     shutting_down: Option<JoinHandle<angzarr_client::Result<()>>>,
+    /// A host the scenario asks for that Rust cannot express: the
+    /// compile-fail fixture that proves it (C-0504, C-0579).
+    unrepresentable: Option<&'static str>,
 }
 
 impl std::fmt::Debug for HostingWorld {
@@ -131,6 +134,51 @@ async fn given_host_one(world: &mut HostingWorld, domain: String) {
     );
 }
 
+// A host serves exactly one component, and Rust makes the other cases
+// unrepresentable: `ComponentHost::with_handler` / `with_router` exist only
+// on a host with no component yet, and `start` only on a host with one. So
+// "a host with no component" and "a host given a second component" refuse
+// to start at compile time, never at run time. The scenarios bind to the
+// compile-fail fixtures that prove it, which are the configuration error.
+
+#[given("a component host with no component registered")]
+async fn given_host_without_component(world: &mut HostingWorld) {
+    world.lock_env().await;
+    world.unrepresentable = Some("tests/router/ui/host_without_component.rs");
+}
+
+#[given(expr = "a second component, an aggregate for domain {string}, registered on the same host")]
+async fn given_second_component(world: &mut HostingWorld, domain: String) {
+    assert_eq!(domain, "payment");
+    assert!(world.host.is_some(), "the first component is registered");
+    world.unrepresentable = Some("tests/router/ui/host_with_two_components.rs");
+}
+
+/// The host does not compile: the fixture fails to build, with the error
+/// pinned in its `.stderr` snapshot (no `with_handler` on a host that has
+/// a component; no `start` on a host that has none).
+fn refused_at_compile_time(world: &HostingWorld) {
+    let fixture = world.unrepresentable.expect("an unrepresentable host");
+    static TRYBUILD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one_at_a_time = TRYBUILD.lock().unwrap_or_else(|e| e.into_inner());
+    trybuild::TestCases::new().compile_fail(fixture);
+}
+
+#[then("starting fails with a configuration error")]
+async fn then_start_fails(world: &mut HostingWorld) {
+    refused_at_compile_time(world);
+}
+
+#[then("starting fails with a configuration error naming both components")]
+async fn then_start_fails_naming_both(world: &mut HostingWorld) {
+    refused_at_compile_time(world);
+}
+
+#[then("no service is served")]
+async fn then_nothing_served(world: &mut HostingWorld) {
+    assert!(world.running.is_none(), "a host started");
+}
+
 #[given(
     expr = "a started component host with an aggregate component for domain {string} registered"
 )]
@@ -189,6 +237,10 @@ async fn when_starts_tcp(world: &mut HostingWorld) {
 
 #[when("the host starts")]
 async fn when_starts(world: &mut HostingWorld) {
+    if world.unrepresentable.is_some() {
+        // There is no such host value to start: see `unrepresentable`.
+        return;
+    }
     world.start(None).await;
 }
 

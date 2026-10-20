@@ -60,7 +60,7 @@ Handler classes are declared with attribute macros. No trait is implemented by h
 | Saga | `#[saga(name, source, target)]` | Translate source-domain events into target-domain commands |
 | Process manager | `#[process_manager(name, pm_domain, sources, targets, state)]` | Stateful multi-domain orchestrator |
 | Projector | `#[projector(name, domains)]` | Side-effect fan-out over event books |
-| Upcaster | `#[upcaster(name, domain)]` | Transform legacy event versions in place |
+| Upcaster chain | `#[upcaster(name, domain)]` | Transform legacy event versions in place; part of its component (`Router::with_upcaster`), whose host serves `UpcasterService` |
 
 Method markers inside the impl block:
 

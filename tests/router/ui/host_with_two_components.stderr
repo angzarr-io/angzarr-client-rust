@@ -1,0 +1,13 @@
+error[E0599]: no method named `with_handler` found for struct `ComponentHost<HostComponent>` in the current scope
+  --> tests/router/ui/host_with_two_components.rs:31:10
+   |
+29 |       let _ = ComponentHost::new("1.0.0")
+   |  _____________-
+30 | |         .with_handler(|| A)
+31 | |         .with_handler(|| A);
+   | |         -^^^^^^^^^^^^ method not found in `ComponentHost<HostComponent>`
+   | |_________|
+   |
+   |
+   = note: the method was found for
+           - `ComponentHost`

@@ -8,8 +8,9 @@
 //! into a component on [`binding`], the angzarr-router engine. Serve the
 //! component with [`crate::ComponentHost`]; [`Router`] builds the
 //! kind-specific runtime router ([`CommandHandlerRouter`], [`SagaRouter`],
-//! [`ProcessManagerRouter`], [`ProjectorRouter`], [`UpcasterRouter`]) for
-//! direct dispatch.
+//! [`ProcessManagerRouter`], [`ProjectorRouter`]) for direct dispatch. An
+//! [`upcaster`] chain is part of its component
+//! ([`Router::with_upcaster`]).
 //!
 //! # Example
 //!
@@ -40,11 +41,11 @@ pub use angzarr_macros::{
 };
 
 // Public types
-pub use builder::{NoComponent, OneComponent, Router};
-pub use handler::{BuildError, Built, DispatchError, Handler, HandlerConfig, HandlerKind, Kind};
-pub use responses::{FactRecord, IntoFactRecord, ProcessManagerResponse, SagaHandlerResponse};
-pub use routers::{
-    CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter, UpcasterRouter,
+pub use builder::{NoComponent, NoUpcaster, OneComponent, OneUpcaster, Router};
+pub use handler::{
+    BuildError, Built, DispatchError, Handler, HandlerConfig, HandlerKind, Kind, UpcasterKind,
 };
+pub use responses::{FactRecord, IntoFactRecord, ProcessManagerResponse, SagaHandlerResponse};
+pub use routers::{CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter};
 
 pub use crate::error::{CommandRejectedError, CommandResult};

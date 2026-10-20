@@ -13,7 +13,7 @@ use angzarr_client::router::{
 };
 use angzarr_client::server::{
     run_command_handler_server, run_process_manager_server, run_projector_server, run_saga_server,
-    run_server, run_upcaster_server,
+    run_server,
 };
 use angzarr_client::{CommandResult, ComponentHost, HostAddress, ServerConfig};
 use tonic_health::pb::health_check_response::ServingStatus;
@@ -316,10 +316,12 @@ async fn the_runners_serve_until_a_signal() {
         unreachable!()
     };
     assert_serves_until_signal(run_projector_server(r, "1.0.0", 0)).await;
-    let Built::Upcaster(r) = built(|| Lift) else {
-        unreachable!()
-    };
-    assert_serves_until_signal(run_upcaster_server(r, "1.0.0", 0)).await;
+    let with_chain = Router::new("ledger")
+        .with_handler(|| Ledger)
+        .with_upcaster(|| Lift)
+        .build()
+        .expect("builds");
+    assert_serves_until_signal(run_server("1.0.0", 0, with_chain)).await;
     assert_serves_until_signal(
         ComponentHost::new(angzarr_client::rules_version!())
             .with_handler(|| Ledger)

@@ -27,39 +27,77 @@ pub enum Component {
     Saga(angzarr_router::saga::SagaDispatch),
     ProcessManager(Box<dyn angzarr_router::router::ProcessManagerHandler>),
     Projector(Box<dyn angzarr_router::router::ProjectorHandler>),
-    Upcaster(angzarr_router::upcaster::UpcasterDispatch),
 }
 
 /// Builds one component's dispatch table for a rules version.
 pub(crate) type Table = Arc<dyn Fn(&str) -> Component + Send + Sync>;
 
-/// A runtime router's component: how to build its table, and the
-/// angzarr-router engine holding the table built for one rules version.
+/// Builds a component's upcaster chain.
+pub(crate) type UpcasterTable =
+    Arc<dyn Fn() -> angzarr_router::upcaster::UpcasterDispatch + Send + Sync>;
+
+/// A runtime router's component: how to build its table (and its upcaster
+/// chain, when it has one), and the angzarr-router engine holding them for
+/// one rules version. The engine is shared with the upcaster service.
 pub(crate) struct Tables {
     table: Table,
-    pub(crate) inner: angzarr_router::router::Router,
+    upcaster: Option<UpcasterTable>,
+    pub(crate) inner: Arc<angzarr_router::router::Router>,
 }
 
 impl Tables {
-    /// The engine over `table`, reporting `rules_version`.
+    /// The engine over `table` and `upcaster`, reporting `rules_version`.
     pub(crate) fn assemble(
         table: Table,
+        upcaster: Option<UpcasterTable>,
         rules_version: &str,
     ) -> Result<Self, crate::router::BuildError> {
-        let inner = engine(&table, rules_version)?;
-        Ok(Tables { table, inner })
+        let inner = Arc::new(engine(&table, upcaster.as_ref(), rules_version)?);
+        Ok(Tables {
+            table,
+            upcaster,
+            inner,
+        })
     }
 
     /// Rebuild the engine so the table reports `rules_version`. The
     /// factory is not invoked.
     pub(crate) fn stamp(&mut self, rules_version: &str) -> Result<(), crate::router::BuildError> {
-        self.inner = engine(&self.table, rules_version)?;
+        self.inner = Arc::new(engine(&self.table, self.upcaster.as_ref(), rules_version)?);
         Ok(())
+    }
+
+    /// True when the component has an upcaster chain.
+    pub(crate) fn has_upcaster(&self) -> bool {
+        self.upcaster.is_some()
+    }
+
+    /// The component's upcaster chain, sharing this engine, when it has
+    /// one.
+    pub(crate) fn upcaster_chain(&self) -> Option<UpcasterChain> {
+        self.has_upcaster()
+            .then(|| UpcasterChain(Arc::clone(&self.inner)))
+    }
+}
+
+/// A component's upcaster chain, for the upcaster service.
+pub(crate) struct UpcasterChain(Arc<angzarr_router::router::Router>);
+
+impl UpcasterChain {
+    /// Run the pages through the chain (pages of other domains pass
+    /// through unchanged).
+    pub(crate) fn upcast(
+        &self,
+        request: &crate::proto::UpcastRequest,
+    ) -> Result<crate::proto::UpcastResponse, ClientError> {
+        begin_dispatch();
+        self.0.upcast(request).map_err(from_coded)
     }
 }
 
 fn engine(
     table: &Table,
+    upcaster: Option<&UpcasterTable>,
     rules_version: &str,
 ) -> Result<angzarr_router::router::Router, crate::router::BuildError> {
     let builder = angzarr_router::router::RouterBuilder::new();
@@ -68,7 +106,10 @@ fn engine(
         Component::Saga(s) => builder.saga(s),
         Component::ProcessManager(pm) => builder.process_manager(pm),
         Component::Projector(p) => builder.projector(p),
-        Component::Upcaster(u) => builder.upcaster(u),
+    };
+    let builder = match upcaster {
+        Some(upcaster) => builder.upcaster(upcaster()),
+        None => builder,
     };
     builder.build().map_err(build_error)
 }

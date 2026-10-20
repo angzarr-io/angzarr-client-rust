@@ -322,14 +322,13 @@ async fn projector_dispatch_does_not_block_the_runtime() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn upcaster_dispatch_does_not_block_the_runtime() {
-    let Built::Upcaster(router) = Router::new("blocking")
-        .with_handler(|| BlockingUpcaster)
+    let flag = Arc::new(AtomicBool::new(true));
+    let built = Router::new("blocking")
+        .with_handler(move || BlockingAggregate(Arc::clone(&flag)))
+        .with_upcaster(|| BlockingUpcaster)
         .build()
-        .expect("build")
-    else {
-        panic!("expected an upcaster router");
-    };
-    let svc = UpcasterGrpc::new(router);
+        .expect("build");
+    let svc = UpcasterGrpc::for_component(&built).expect("the component has a chain");
     tokio::spawn(async {
         UPCAST_FLAG.store(true, Ordering::SeqCst);
     });

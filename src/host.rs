@@ -151,7 +151,8 @@ impl ComponentHost {
         self.hosting(Pending::Handler(Box::new(router)))
     }
 
-    /// Register the host's component as an already-built router.
+    /// Register the host's component as an already-built router: the way to
+    /// host a component with its upcaster chain (`Router::with_upcaster`).
     pub fn with_router(self, built: Built) -> ComponentHost<HostComponent> {
         self.hosting(Pending::Built(Box::new(built)))
     }
@@ -215,9 +216,10 @@ impl<C> ComponentHost<C> {
 
 impl ComponentHost<HostComponent> {
     /// Build the component's router, bind the listener and start serving in
-    /// the background, next to the health service and the component service
+    /// the background, next to the health service, the component service
     /// (`ComponentService.Describe`, which the coordinator calls to learn
-    /// the component). Fails with a configuration error when the host has
+    /// the component) and, when the component has an upcaster chain, the
+    /// upcaster service. Fails with a configuration error when the host has
     /// no rules version or the router does not build.
     pub async fn start(self) -> Result<RunningHost> {
         let ComponentHost {
@@ -244,11 +246,13 @@ impl ComponentHost<HostComponent> {
         };
         built.stamp(&rules_version).map_err(to_client_error)?;
         let described = built.component_descriptor();
+        let upcaster = UpcasterGrpc::for_component(&built);
 
-        let hosted = vec![
+        let mut hosted = vec![
             Hosted::from(built),
             Hosted::component(ComponentGrpc::new(described)),
         ];
+        hosted.extend(upcaster.map(Hosted::upcaster));
         let names: Vec<String> = hosted
             .iter()
             .map(|h| h.name.to_string())
@@ -455,7 +459,6 @@ fn built_kind(built: &Built) -> Kind {
         Built::Saga(_) => Kind::Saga,
         Built::ProcessManager(_) => Kind::ProcessManager,
         Built::Projector(_) => Kind::Projector,
-        Built::Upcaster(_) => Kind::Upcaster,
     }
 }
 
@@ -467,6 +470,17 @@ struct Hosted {
 }
 
 impl Hosted {
+    /// The upcaster service of the component's chain, when it has one.
+    fn upcaster(service: UpcasterGrpc) -> Self {
+        Hosted {
+            name: <UpcasterServiceServer<UpcasterGrpc> as NamedService>::NAME,
+            instance: String::new(),
+            add: Box::new(move |routes| {
+                routes.add_service(UpcasterServiceServer::new(service));
+            }),
+        }
+    }
+
     /// The component service every host serves.
     fn component(service: ComponentGrpc) -> Self {
         Hosted {
@@ -510,13 +524,6 @@ impl From<Built> for Hosted {
                 instance: r.name(),
                 add: Box::new(move |routes| {
                     routes.add_service(ProjectorServiceServer::new(ProjectorGrpc::new(r)));
-                }),
-            },
-            Built::Upcaster(r) => Hosted {
-                name: <UpcasterServiceServer<UpcasterGrpc> as NamedService>::NAME,
-                instance: r.name(),
-                add: Box::new(move |routes| {
-                    routes.add_service(UpcasterServiceServer::new(UpcasterGrpc::new(r)));
                 }),
             },
         }

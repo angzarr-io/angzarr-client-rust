@@ -277,15 +277,6 @@ pub async fn run_process_manager_server(
     run_server(rules_version, default_port, Built::ProcessManager(router)).await
 }
 
-/// Serve an upcaster router until SIGINT / SIGTERM.
-pub async fn run_upcaster_server(
-    router: crate::router::routers::UpcasterRouter,
-    rules_version: &str,
-    default_port: u16,
-) -> Result<()> {
-    run_server(rules_version, default_port, Built::Upcaster(router)).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

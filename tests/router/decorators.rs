@@ -88,7 +88,7 @@ impl Player {
 #[test]
 fn aggregate_config_reports_command_handler_kind() {
     let cfg = Player.config();
-    assert_eq!(cfg.kind(), Kind::CommandHandler);
+    assert_eq!(cfg.kind(), Some(Kind::CommandHandler));
 }
 
 #[test]

@@ -157,27 +157,16 @@ impl ProjectorService for ProjectorGrpc {
 /// gRPC component service (component.proto): answers the coordinator's
 /// `Describe` with the hosted component's description, built once when the
 /// host starts. A description the router refused is answered as its error
-/// status on every call; an upcaster, which has no description, is
-/// answered UNIMPLEMENTED.
+/// status on every call.
 #[derive(Clone)]
 pub struct ComponentGrpc {
     described: Arc<std::result::Result<ComponentDescriptor, Status>>,
 }
 
 impl ComponentGrpc {
-    pub fn new(described: Result<Option<ComponentDescriptor>, ClientError>) -> Self {
-        let described = match described {
-            Ok(Some(descriptor)) => Ok(descriptor),
-            Ok(None) => Err(with_canonical_details(
-                Code::Unimplemented,
-                messages::NO_COMPONENT_DESCRIPTION,
-                codes::NO_COMPONENT_DESCRIPTION,
-                None,
-            )),
-            Err(err) => Err(client_error_to_status(err)),
-        };
+    pub fn new(described: Result<ComponentDescriptor, ClientError>) -> Self {
         Self {
-            described: Arc::new(described),
+            described: Arc::new(described.map_err(client_error_to_status)),
         }
     }
 }
@@ -265,19 +254,24 @@ fn with_canonical_details(
 }
 
 // ---------------------------------------------------------------------------
-// Upcaster wrappers — unified-Router factory-based dispatch (R8b).
+// The upcaster service of a component's upcaster chain.
 // ---------------------------------------------------------------------------
 
-/// gRPC upcaster service wrapping an [`crate::router::UpcasterRouter`].
+/// gRPC upcaster service over a component's upcaster chain: the
+/// coordinator calls its own business process's UpcasterService, which the
+/// component's host serves alongside the component.
+#[derive(Clone)]
 pub struct UpcasterGrpc {
-    router: Arc<crate::router::routers::UpcasterRouter>,
+    chain: Arc<crate::router::component::UpcasterChain>,
 }
 
 impl UpcasterGrpc {
-    pub fn new(router: crate::router::routers::UpcasterRouter) -> Self {
-        Self {
-            router: Arc::new(router),
-        }
+    /// The upcaster service of `built`'s component, when it has an
+    /// upcaster chain.
+    pub fn for_component(built: &crate::router::Built) -> Option<Self> {
+        built.tables().upcaster_chain().map(|chain| Self {
+            chain: Arc::new(chain),
+        })
     }
 }
 
@@ -288,7 +282,7 @@ impl UpcasterService for UpcasterGrpc {
         request: Request<UpcastRequest>,
     ) -> Result<Response<UpcastResponse>, Status> {
         let req = request.into_inner();
-        let response = on_blocking_pool(&self.router, move |r| r.dispatch(req)).await?;
+        let response = on_blocking_pool(&self.chain, move |chain| chain.upcast(&req)).await?;
         Ok(Response::new(response))
     }
 }

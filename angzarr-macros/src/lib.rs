@@ -1286,8 +1286,11 @@ impl syn::parse::Parse for UpcastsArgs {
     }
 }
 
-/// Marks a class as an upcaster — transforms events in a given `domain`
-/// from one version to another.
+/// Marks an impl as an upcaster chain — transforms events in a given
+/// `domain` from one version to another. A chain is part of its component,
+/// never a component itself: give it to the component's router with
+/// `Router::with_upcaster`, and the component's host serves
+/// `UpcasterService` alongside the component.
 ///
 /// # Attributes
 /// - `name = "..."` — identifier for this upcaster (used in logging / registry)
@@ -1301,17 +1304,15 @@ impl syn::parse::Parse for UpcastsArgs {
 ///     fn upgrade(old: IncreasedV1) -> IncreasedV2 { /* ... */ }
 /// }
 ///
-/// let Built::Upcaster(router) = Router::new("upcaster-counter")
-///     .with_handler(|| CounterUpcaster)
-///     .build()?
-/// else {
-///     unreachable!("a router of upcasters builds an upcaster router")
-/// };
+/// let built = Router::new("counter")
+///     .with_handler(|| Counter)
+///     .with_upcaster(|| CounterUpcaster)
+///     .build()?;
 /// ```
 ///
-/// The macro emits `impl HandlerKind` + `impl Handler` on the annotated
-/// type so the unified `Router` builder (from the `angzarr-client` crate)
-/// accepts it as a homogeneous factory. Dispatch matches each incoming
+/// The macro emits `impl UpcasterKind` + `impl Handler` on the annotated
+/// type, so `Router::with_upcaster` accepts it and `with_handler` (which
+/// takes components) does not. Dispatch matches each incoming
 /// event's type URL against the registered `#[upcasts(from = …, to = …)]`
 /// pairs and invokes the first
 /// matching method; events without a matching transform pass through.
@@ -1362,8 +1363,7 @@ fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
     quote! {
         #input
 
-        impl ::angzarr_client::router::HandlerKind for #self_ty {
-            const KIND: ::angzarr_client::router::Kind = ::angzarr_client::router::Kind::Upcaster;
+        impl ::angzarr_client::router::UpcasterKind for #self_ty {
             fn handler_config() -> ::angzarr_client::router::HandlerConfig {
                 ::angzarr_client::router::HandlerConfig::Upcaster {
                     name: #name.to_string(),
@@ -1371,23 +1371,18 @@ fn expand_upcaster(args: UpcasterArgs, mut input: ItemImpl) -> TokenStream2 {
                     upcasts: ::std::vec![#( #upcast_pairs ),*],
                 }
             }
-            fn component(
-                factory: ::angzarr_client::router::component::Factory<Self>,
-                rules_version: &str,
-            ) -> ::angzarr_client::router::component::Component {
+            fn upcaster() -> ::angzarr_client::router::binding::upcaster::UpcasterDispatch {
                 use ::angzarr_client::router::component as __p;
-                // Upcasts are associated functions; no instance is needed,
-                // and an upcaster has no description to version.
-                let _ = (factory, rules_version);
+                // Upcasts are associated functions; no instance is needed.
                 let table = ::angzarr_client::router::binding::upcaster::UpcasterDispatch::new(#name, #domain);
                 #(#regs)*
-                __p::Component::Upcaster(table)
+                table
             }
         }
 
         impl ::angzarr_client::router::Handler for #self_ty {
             fn config(&self) -> ::angzarr_client::router::HandlerConfig {
-                <#self_ty as ::angzarr_client::router::HandlerKind>::handler_config()
+                <#self_ty as ::angzarr_client::router::UpcasterKind>::handler_config()
             }
         }
     }

@@ -8,7 +8,9 @@ use angzarr_client::proto::{
     Cover, EventBook, EventPage, ProcessManagerHandleResponse, SagaResponse, UpcastRequest,
 };
 #[allow(unused_imports)]
-use angzarr_client::router::{handles, process_manager, projector, saga, upcaster, upcasts};
+use angzarr_client::router::{
+    command_handler, handles, process_manager, projector, saga, upcaster, upcasts,
+};
 use angzarr_client::router::{Built, Router};
 #[allow(unused_imports)]
 use angzarr_client::{full_type_url, CommandResult};
@@ -166,6 +168,15 @@ fn projector_router_runs_projectors_and_echoes_the_book() {
     assert_eq!(projection.next_sequence, 4);
 }
 
+struct Ledger;
+#[command_handler(domain = "a", state = NoState)]
+impl Ledger {
+    #[handles(Ping)]
+    fn on(&self, _c: Ping, _s: &NoState, _seq: u64) -> CommandResult<EventBook> {
+        Ok(EventBook::default())
+    }
+}
+
 struct Up;
 #[upcaster(name = "up", domain = "a")]
 impl Up {
@@ -175,29 +186,50 @@ impl Up {
     }
 }
 
+fn ping_page() -> EventPage {
+    EventPage {
+        payload: Some(Any {
+            type_url: full_type_url::<Ping>(),
+            value: vec![],
+        }),
+        ..Default::default()
+    }
+}
+
+/// An upcaster chain is part of its component: the component's router
+/// upcasts its domain's events, and passes other domains' through.
 #[test]
-fn upcaster_router_metadata_and_dispatch() {
-    let Ok(Built::Upcaster(r)) = Router::new("ups").with_handler(|| Up).build() else {
-        panic!("upcaster router");
+fn a_components_upcaster_chain_upcasts_its_domain() {
+    let Ok(Built::CommandHandler(r)) = Router::new("a")
+        .with_handler(|| Ledger)
+        .with_upcaster(|| Up)
+        .build()
+    else {
+        panic!("command-handler router");
     };
-    assert_eq!(r.name(), "up");
-    assert!(r.output_domains().is_empty());
+    assert!(r.has_upcaster());
     let out = r
-        .dispatch(UpcastRequest {
+        .upcast(UpcastRequest {
             domain: "a".into(),
-            events: vec![EventPage {
-                payload: Some(Any {
-                    type_url: full_type_url::<Ping>(),
-                    value: vec![],
-                }),
-                ..Default::default()
-            }],
+            events: vec![ping_page()],
         })
         .expect("upcast");
     let Some(any) = &out.events[0].payload else {
         panic!("event");
     };
     assert_eq!(any.type_url, full_type_url::<PingV2>());
+    let other = r
+        .upcast(UpcastRequest {
+            domain: "b".into(),
+            events: vec![ping_page()],
+        })
+        .expect("pass through");
+    assert_eq!(other.events, vec![ping_page()]);
+
+    let Ok(Built::CommandHandler(plain)) = Router::new("a").with_handler(|| Ledger).build() else {
+        panic!("command-handler router");
+    };
+    assert!(!plain.has_upcaster());
 }
 
 struct AnyDomain(Arc<Mutex<u32>>);

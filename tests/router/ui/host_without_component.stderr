@@ -1,0 +1,8 @@
+error[E0599]: no method named `start` found for struct `ComponentHost` in the current scope
+ --> tests/router/ui/host_without_component.rs:7:41
+  |
+7 |     let _ = ComponentHost::new("1.0.0").start().await;
+  |                                         ^^^^^ method not found in `ComponentHost`
+  |
+  = note: the method was found for
+          - `ComponentHost<HostComponent>`
