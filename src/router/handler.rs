@@ -66,9 +66,14 @@ pub enum HandlerConfig {
     },
     ProcessManager {
         name: String,
-        pm_domain: String,
-        sources: Vec<String>,
-        targets: Vec<String>,
+        /// The workflow stream it owns (ComponentOptions.domain).
+        domain: String,
+        /// Its command targets: `output_domain` (when set) together with
+        /// every `output_domains` entry (ComponentOptions).
+        output_domains: Vec<String>,
+        /// `(domain, type_url)` of each trigger: the domains are per event
+        /// (`#[handles(Event, domain = "...")]`), never an input_domain.
+        triggers: Vec<(String, String)>,
         handled: Vec<String>,
         applies: Vec<String>,
         state_factory: Option<String>,

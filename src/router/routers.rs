@@ -124,7 +124,7 @@ impl ProcessManagerRouter {
     /// The domains the process manager issues commands to.
     pub fn output_domains(&self) -> Vec<String> {
         match &self.config {
-            HandlerConfig::ProcessManager { targets, .. } => targets.clone(),
+            HandlerConfig::ProcessManager { output_domains, .. } => output_domains.clone(),
             _ => Vec::new(),
         }
     }

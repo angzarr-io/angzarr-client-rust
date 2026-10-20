@@ -112,15 +112,9 @@ impl BlockingSaga {
 
 struct BlockingPm(Arc<AtomicBool>);
 
-#[process_manager(
-    name = "blocking-pm",
-    pm_domain = "blocking-pm",
-    sources = ["blocking"],
-    targets = ["other"],
-    state = S
-)]
+#[process_manager(name = "blocking-pm", domain = "blocking-pm", state = S, output_domains = ["other"])]
 impl BlockingPm {
-    #[handles(Ping)]
+    #[handles(Ping, domain = "blocking")]
     fn on_ping(&self, _evt: Ping, _state: &S) -> CommandResult<ProcessManagerHandleResponse> {
         wait_for(&self.0)?;
         Ok(ProcessManagerHandleResponse {

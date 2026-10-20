@@ -58,7 +58,7 @@ Handler classes are declared with attribute macros. No trait is implemented by h
 |------|-------|---------|
 | Command handler | `#[command_handler(domain, state)]` | Validate commands, emit events |
 | Saga | `#[saga(name, input_domain, output_domain)]` | Translate one source domain's events into commands for its one destination domain (several destinations make a process manager) |
-| Process manager | `#[process_manager(name, pm_domain, sources, targets, state)]` | Stateful multi-domain orchestrator |
+| Process manager | `#[process_manager(name, domain, state, output_domain, output_domains)]`, each `#[handles(Event, domain = "...")]` naming its trigger's domain | Stateful multi-domain orchestrator |
 | Projector | `#[projector(name, domains)]` | Side-effect fan-out over event books |
 | Upcaster chain | `#[upcaster(name, domain)]` | Transform legacy event versions in place; part of its component (`Router::with_upcaster`), whose host serves `UpcasterService` |
 
@@ -66,7 +66,7 @@ Method markers inside the impl block:
 
 | Marker | Applies to | Role |
 |--------|-----------|------|
-| `#[handles(MessageType)]` | Any kind | Register a handler for an incoming message |
+| `#[handles(MessageType)]` | Any kind | Register a handler for an incoming message; a process manager's also names its trigger's domain: `#[handles(Event, domain = "...")]` |
 | `#[handles_fact(EventType)]` | command_handler | Record a fact (optionally with flag events) |
 | `#[applies(EventType)]` | command_handler, process_manager | Mutate state during rebuild |
 | `#[state_factory]` | command_handler, process_manager | Override `Default::default()` for initial state |

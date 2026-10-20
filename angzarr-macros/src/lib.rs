@@ -186,6 +186,9 @@ fn expand_aggregate(args: AggregateArgs, mut input: ItemImpl) -> TokenStream2 {
         Ok(meta) => meta,
         Err(e) => return e.to_compile_error(),
     };
+    if let Some(err) = reject_handler_domains(&meta) {
+        return err;
+    }
     strip_method_markers(&mut input);
     let self_ty = &input.self_ty;
 
@@ -394,6 +397,9 @@ struct MethodMetadata {
     handled: Vec<syn::Path>,
     /// `(method name, command type)` pairs for dispatch-arm generation.
     handled_with_methods: Vec<(Ident, syn::Path)>,
+    /// The `domain = "..."` of each `#[handles]`, aligned with
+    /// `handled_with_methods`: a process manager's per-event trigger domain.
+    handled_domains: Vec<Option<syn::LitStr>>,
     /// Types named in `#[applies(T)]` (kept for config emission).
     applies: Vec<syn::Path>,
     /// `(method name, event type)` pairs for state-rebuild-arm generation.
@@ -434,6 +440,7 @@ fn collect_method_metadata(input: &ItemImpl) -> syn::Result<MethodMetadata> {
     let mut meta = MethodMetadata {
         handled: Vec::new(),
         handled_with_methods: Vec::new(),
+        handled_domains: Vec::new(),
         applies: Vec::new(),
         applies_with_methods: Vec::new(),
         state_factory: None,
@@ -465,10 +472,11 @@ fn collect_method_metadata(input: &ItemImpl) -> syn::Result<MethodMetadata> {
                 _ => role = Some(marker),
             }
             match marker {
-                "handles" => match get_attr_path(attr) {
-                    Ok(ty) => {
+                "handles" => match get_handles_args(attr) {
+                    Ok((ty, domain)) => {
                         meta.handled.push(ty.clone());
                         meta.handled_with_methods.push((name.clone(), ty));
+                        meta.handled_domains.push(domain);
                     }
                     Err(e) => push_err(e),
                 },
@@ -514,6 +522,64 @@ fn collect_method_metadata(input: &ItemImpl) -> syn::Result<MethodMetadata> {
         Some(e) => Err(e),
         None => Ok(meta),
     }
+}
+
+/// `#[handles(Type)]`, or `#[handles(Type, domain = "...")]` (a process
+/// manager's per-event trigger domain).
+fn get_handles_args(attr: &Attribute) -> syn::Result<(syn::Path, Option<syn::LitStr>)> {
+    let Meta::List(list) = &attr.meta else {
+        return get_attr_path(attr).map(|ty| (ty, None));
+    };
+    let parser = |input: syn::parse::ParseStream| -> syn::Result<(syn::Path, Option<syn::LitStr>)> {
+        let ty: syn::Path = input.parse()?;
+        if input.is_empty() {
+            return Ok((ty, None));
+        }
+        input.parse::<Token![,]>()?;
+        let key: Ident = input.parse()?;
+        if key != "domain" {
+            return Err(syn::Error::new(
+                key.span(),
+                "expected `domain = \"...\"`, e.g. #[handles(MyEvent, domain = \"order\")]",
+            ));
+        }
+        input.parse::<Token![=]>()?;
+        let domain: syn::LitStr = input.parse()?;
+        if domain.value().is_empty() {
+            return Err(syn::Error::new(
+                domain.span(),
+                "domain must be a non-empty string",
+            ));
+        }
+        if input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+        }
+        Ok((ty, Some(domain)))
+    };
+    if let Ok(ty) = get_attr_path(attr) {
+        return Ok((ty, None));
+    }
+    let has_args = list
+        .tokens
+        .clone()
+        .into_iter()
+        .any(|t| matches!(&t, proc_macro2::TokenTree::Punct(p) if p.as_char() == ','));
+    match syn::parse::Parser::parse2(parser, list.tokens.clone()) {
+        Ok(parsed) => Ok(parsed),
+        Err(e) if has_args => Err(e),
+        Err(_) => get_attr_path(attr).map(|ty| (ty, None)),
+    }
+}
+
+/// Only a process manager's `#[handles]` names its trigger's domain.
+fn reject_handler_domains(meta: &MethodMetadata) -> Option<TokenStream2> {
+    meta.handled_domains.iter().flatten().next().map(|domain| {
+        syn::Error::new(
+            domain.span(),
+            "only a process manager's #[handles] names a domain (its trigger's, per event)",
+        )
+        .to_compile_error()
+    })
 }
 
 fn get_upcasts_args(attr: &Attribute) -> syn::Result<(syn::Path, syn::Path)> {
@@ -781,6 +847,9 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
         Ok(meta) => meta,
         Err(e) => return e.to_compile_error(),
     };
+    if let Some(err) = reject_handler_domains(&meta) {
+        return err;
+    }
     let mut regs = Vec::new();
     for (method, evt_ty) in &meta.handled_with_methods {
         let extra = match context_args(find_method(&input, method), 1, ContextKind::Saga) {
@@ -847,24 +916,32 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
 
 /// Marks an impl block as a process manager with event handlers.
 ///
+/// The attributes mirror options.proto `ComponentOptions` for a process
+/// manager: it owns `domain` (its workflow stream), declares no
+/// `input_domain` (each trigger's domain is per event, on its `#[handles]`),
+/// and issues commands to `output_domain` together with `output_domains`.
+///
 /// # Attributes
 /// - `name = "pm-name"` - The PM's name (required)
-/// - `pm_domain = "pm-domain"` - The PM's own domain for state (required)
+/// - `domain = "pm-domain"` - The workflow stream it owns (required)
 /// - `state = StateType` - The PM's state type (required)
-/// - `sources = ["domain1", "domain2"]` - Domains whose events trigger it (required)
-/// - `targets = ["domain"]` - Domains it issues commands to (required)
+/// - `output_domain = "domain"` - A domain it issues commands to (optional)
+/// - `output_domains = ["domain", ...]` - Further domains it issues commands to (optional)
+///
+/// Each `#[handles(Event, domain = "source")]` names the domain of the
+/// trigger event it handles (required on a process manager).
 ///
 /// # Example
 /// ```rust,ignore
-/// #[process_manager(name = "hand-flow", pm_domain = "hand-flow", state = PMState,
-///                   sources = ["table", "hand"], targets = ["hand"])]
+/// #[process_manager(name = "hand-flow", domain = "hand-flow", state = PMState,
+///                   output_domain = "hand")]
 /// impl HandFlowPM {
 ///     #[applies(PMStateUpdated)]
 ///     fn apply_state(state: &mut PMState, event: PMStateUpdated) {
 ///         // ...
 ///     }
 ///
-///     #[handles(HandStarted)]
+///     #[handles(HandStarted, domain = "table")]
 ///     fn handle_hand(&self, event: HandStarted, state: &PMState)
 ///         -> CommandResult<ProcessManagerHandleResponse> {
 ///         // ...
@@ -886,19 +963,21 @@ pub fn process_manager(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 struct ProcessManagerArgs {
     name: String,
-    pm_domain: String,
+    /// The workflow stream it owns (ComponentOptions.domain).
+    domain: String,
     state: Ident,
-    sources: Vec<String>,
-    targets: Vec<String>,
+    /// Command targets: `output_domain` (when set) together with every
+    /// entry of `output_domains` (ComponentOptions).
+    output_domains: Vec<String>,
 }
 
 impl syn::parse::Parse for ProcessManagerArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut name = None;
-        let mut pm_domain = None;
+        let mut domain = None;
         let mut state = None;
-        let mut sources = None;
-        let mut targets = None;
+        let mut output_domain: Option<String> = None;
+        let mut output_domains: Vec<String> = Vec::new();
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -909,19 +988,27 @@ impl syn::parse::Parse for ProcessManagerArgs {
                     let value: syn::LitStr = input.parse()?;
                     name = Some(value.value());
                 }
-                "pm_domain" => {
+                "domain" => {
                     let value: syn::LitStr = input.parse()?;
-                    pm_domain = Some(value.value());
+                    domain = Some(value.value());
                 }
                 "state" => {
                     let value: Ident = input.parse()?;
                     state = Some(value);
                 }
-                "sources" => {
-                    sources = Some(parse_str_list(input)?);
+                "output_domain" => {
+                    let value: syn::LitStr = input.parse()?;
+                    output_domain = Some(value.value());
                 }
-                "targets" => {
-                    targets = Some(parse_str_list(input)?);
+                "output_domains" => {
+                    output_domains = parse_str_list(input)?;
+                }
+                "input_domain" => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        "a process manager declares no input_domain: each trigger's domain is \
+                         per event, #[handles(MyEvent, domain = \"order\")]",
+                    ))
                 }
                 _ => return Err(syn::Error::new(ident.span(), "unknown attribute")),
             }
@@ -931,14 +1018,25 @@ impl syn::parse::Parse for ProcessManagerArgs {
             }
         }
 
+        if output_domains.iter().any(|d| d.is_empty()) {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "output_domains must not contain empty strings",
+            ));
+        }
+        let mut outputs: Vec<String> = output_domain.into_iter().collect();
+        for d in output_domains {
+            if !outputs.contains(&d) {
+                outputs.push(d);
+            }
+        }
         Ok(ProcessManagerArgs {
             name: require_non_empty_str(name, "name")?,
-            pm_domain: require_non_empty_str(pm_domain, "pm_domain")?,
+            domain: require_non_empty_str(domain, "domain")?,
             state: state.ok_or_else(|| {
                 syn::Error::new(proc_macro2::Span::call_site(), "state is required")
             })?,
-            sources: require_non_empty_str_list(sources, "sources")?,
-            targets: require_non_empty_str_list(targets, "targets")?,
+            output_domains: outputs,
         })
     }
 }
@@ -960,39 +1058,53 @@ fn parse_str_list(input: syn::parse::ParseStream) -> syn::Result<Vec<String>> {
 
 fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> TokenStream2 {
     let name = &args.name;
-    let pm_domain = &args.pm_domain;
+    let pm_domain = &args.domain;
     let state_ty = &args.state;
-    let sources = &args.sources;
-    let targets = &args.targets;
+    let targets = &args.output_domains;
 
     let meta = match collect_method_metadata(&input) {
         Ok(meta) => meta,
         Err(e) => return e.to_compile_error(),
     };
     let mut regs = Vec::new();
-    for (method, evt_ty) in &meta.handled_with_methods {
+    let mut triggers = Vec::new();
+    for ((method, evt_ty), domain) in meta.handled_with_methods.iter().zip(&meta.handled_domains) {
+        let Some(source) = domain else {
+            let attr = find_method(&input, method)
+                .attrs
+                .iter()
+                .find(|a| a.path().is_ident("handles"))
+                .expect("a #[handles] method");
+            return syn::Error::new_spanned(
+                attr,
+                "a process manager's #[handles] names its trigger's domain: \
+                 #[handles(MyEvent, domain = \"order\")]",
+            )
+            .to_compile_error();
+        };
         let extra = match context_args(find_method(&input, method), 2, ContextKind::ProcessManager)
         {
             Ok(extra) => extra,
             Err(e) => return e.to_compile_error(),
         };
-        for source in sources {
-            regs.push(quote! {
-                let f = ::std::sync::Arc::clone(&factory);
-                table = table.on_event(
-                    #source,
-                    &<#evt_ty as ::prost::Name>::full_name(),
-                    move |any, state, source_cover| {
-                        let _ = &source_cover;
-                        let event: #evt_ty = __p::decode(any)?;
-                        let handler = f();
-                        handler
-                            .#method(event, &*state #(, #extra)*)
-                            .map_err(__p::rejected)
-                    },
-                );
-            });
-        }
+        triggers.push(quote! {
+            (#source.to_string(), ::angzarr_client::full_type_url::<#evt_ty>())
+        });
+        regs.push(quote! {
+            let f = ::std::sync::Arc::clone(&factory);
+            table = table.on_event(
+                #source,
+                &<#evt_ty as ::prost::Name>::full_name(),
+                move |any, state, source_cover| {
+                    let _ = &source_cover;
+                    let event: #evt_ty = __p::decode(any)?;
+                    let handler = f();
+                    handler
+                        .#method(event, &*state #(, #extra)*)
+                        .map_err(__p::rejected)
+                },
+            );
+        });
     }
     strip_method_markers(&mut input);
     let self_ty = &input.self_ty;
@@ -1013,7 +1125,6 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
         }
         None => quote! { ::std::option::Option::None },
     };
-    let sources_vec = sources.iter().map(|s| quote! { #s.to_string() });
     let targets_vec = targets.iter().map(|s| quote! { #s.to_string() });
 
     quote! {
@@ -1025,11 +1136,11 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
             fn handler_config() -> ::angzarr_client::router::HandlerConfig {
                 ::angzarr_client::router::HandlerConfig::ProcessManager {
                     name: #name.to_string(),
-                    pm_domain: #pm_domain.to_string(),
-                    sources: ::std::vec![#(#sources_vec),*],
-                    targets: ::std::vec![#(#targets_vec),*],
+                    domain: #pm_domain.to_string(),
+                    output_domains: ::std::vec![#(#targets_vec),*],
+                    triggers: ::std::vec![#(#triggers),*],
                     handled: ::std::vec![#(#handled_exprs),*],
-                            applies: ::std::vec![#(#applies_exprs),*],
+                    applies: ::std::vec![#(#applies_exprs),*],
                     state_factory: #state_factory_expr,
                 }
             }
@@ -1136,6 +1247,9 @@ fn expand_projector(args: ProjectorArgs, mut input: ItemImpl) -> TokenStream2 {
         Ok(meta) => meta,
         Err(e) => return e.to_compile_error(),
     };
+    if let Some(err) = reject_handler_domains(&meta) {
+        return err;
+    }
     strip_method_markers(&mut input);
     let self_ty = &input.self_ty;
 

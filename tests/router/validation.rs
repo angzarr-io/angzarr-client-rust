@@ -26,25 +26,21 @@ fn a_saga_with_several_destinations_fails_to_compile() {
 }
 
 #[test]
-fn process_manager_without_targets_fails_to_compile() {
-    let t = trybuild::TestCases::new();
-    t.compile_fail("tests/router/ui/process_manager_without_targets.rs");
-}
-
-#[test]
 fn projector_without_domains_fails_to_compile() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/router/ui/projector_without_domains.rs");
 }
 
 #[test]
-fn process_manager_without_pm_domain_fails_to_compile() {
+fn process_manager_without_domain_fails_to_compile() {
     let t = trybuild::TestCases::new();
-    t.compile_fail("tests/router/ui/process_manager_without_pm_domain.rs");
+    t.compile_fail("tests/router/ui/process_manager_without_domain.rs");
 }
 
 #[test]
-fn process_manager_without_sources_fails_to_compile() {
+fn process_manager_input_domains_are_per_event() {
     let t = trybuild::TestCases::new();
-    t.compile_fail("tests/router/ui/process_manager_without_sources.rs");
+    t.compile_fail("tests/router/ui/process_manager_with_input_domain.rs");
+    t.compile_fail("tests/router/ui/process_manager_handler_without_domain.rs");
+    t.compile_fail("tests/router/ui/handles_unknown_argument.rs");
 }

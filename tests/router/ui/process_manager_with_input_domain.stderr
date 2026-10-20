@@ -1,0 +1,5 @@
+error: a process manager declares no input_domain: each trigger's domain is per event, #[handles(MyEvent, domain = "order")]
+  --> tests/router/ui/process_manager_with_input_domain.rs:10:46
+   |
+10 | #[process_manager(name = "pm", domain = "d", input_domain = "a", state = State)]
+   |                                              ^^^^^^^^^^^^

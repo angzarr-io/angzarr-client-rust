@@ -65,15 +65,9 @@ impl Relay {
 
 struct Flow;
 
-#[process_manager(
-    name = "flow",
-    pm_domain = "flow",
-    sources = ["ledger"],
-    targets = ["audit"],
-    state = S
-)]
+#[process_manager(name = "flow", domain = "flow", state = S, output_domains = ["audit"])]
 impl Flow {
-    #[handles(Tick)]
+    #[handles(Tick, domain = "ledger")]
     fn on_tick(&self, _evt: Tick, _state: &S) -> CommandResult<ProcessManagerHandleResponse> {
         Ok(ProcessManagerHandleResponse::default())
     }

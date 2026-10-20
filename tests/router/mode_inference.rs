@@ -42,9 +42,9 @@ impl StubSaga {
 }
 
 struct StubPm;
-#[process_manager(name = "stub-pm", pm_domain = "pm", state = NoState, sources = ["a"], targets = ["b"])]
+#[process_manager(name = "stub-pm", domain = "pm", state = NoState, output_domains = ["b"])]
 impl StubPm {
-    #[handles(Ping)]
+    #[handles(Ping, domain = "a")]
     fn on_ping(&self, _evt: Ping, _state: &NoState) -> CommandResult<ProcessManagerHandleResponse> {
         Ok(ProcessManagerHandleResponse::default())
     }

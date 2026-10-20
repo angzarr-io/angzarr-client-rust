@@ -68,28 +68,27 @@ fn saga_router_metadata() {
 struct Pm;
 #[process_manager(
     name = "flow",
-    pm_domain = "flow",
+    domain = "flow",
     state = NoState,
-    sources = ["a"],
-    targets = ["inventory", "shipping"]
+    output_domain = "inventory",
+    output_domains = ["shipping"]
 )]
 impl Pm {
-    #[handles(Ping)]
+    #[handles(Ping, domain = "a")]
     fn on(&self, _e: Ping, _s: &NoState) -> CommandResult<ProcessManagerHandleResponse> {
+        Ok(ProcessManagerHandleResponse::default())
+    }
+
+    #[handles(PingV2, domain = "b")]
+    fn on_v2(&self, _e: PingV2, _s: &NoState) -> CommandResult<ProcessManagerHandleResponse> {
         Ok(ProcessManagerHandleResponse::default())
     }
 }
 
 struct SyncPm;
-#[process_manager(
-    name = "sync-flow",
-    pm_domain = "sync-flow",
-    state = NoState,
-    sources = ["a"],
-    targets = ["inventory"]
-)]
+#[process_manager(name = "sync-flow", domain = "sync-flow", state = NoState, output_domains = ["inventory"])]
 impl SyncPm {
-    #[handles(Ping)]
+    #[handles(Ping, domain = "a")]
     fn on(&self, _e: Ping, _s: &NoState) -> CommandResult<ProcessManagerHandleResponse> {
         Ok(ProcessManagerHandleResponse::default())
     }
@@ -101,7 +100,25 @@ fn process_manager_router_metadata() {
         panic!("PM router");
     };
     assert_eq!(r.name(), "flow");
+    // output_domain (when set) together with every output_domains entry.
     assert_eq!(r.output_domains(), vec!["inventory", "shipping"]);
+    // Trigger domains are per event (options.proto: "empty (per-event
+    // domains)"), each from its #[handles(.., domain = ..)].
+    use angzarr_client::router::Handler as _;
+    let angzarr_client::router::HandlerConfig::ProcessManager {
+        domain, triggers, ..
+    } = Pm.config()
+    else {
+        panic!("a process manager");
+    };
+    assert_eq!(domain, "flow");
+    assert_eq!(
+        triggers,
+        vec![
+            ("a".to_string(), full_type_url::<Ping>()),
+            ("b".to_string(), full_type_url::<PingV2>()),
+        ]
+    );
 
     let Ok(Built::ProcessManager(sync_only)) = Router::new("pms").with_handler(|| SyncPm).build()
     else {

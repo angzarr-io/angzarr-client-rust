@@ -67,15 +67,9 @@ struct NoState;
 
 struct ContextPm(Seen);
 
-#[process_manager(
-    name = "ctx-pm",
-    pm_domain = "ctx",
-    state = NoState,
-    sources = ["clock"],
-    targets = ["audit", "billing"]
-)]
+#[process_manager(name = "ctx-pm", domain = "ctx", state = NoState, output_domains = ["audit", "billing"])]
 impl ContextPm {
-    #[handles(Tick)]
+    #[handles(Tick, domain = "clock")]
     fn on_tick(
         &self,
         _tick: Tick,
