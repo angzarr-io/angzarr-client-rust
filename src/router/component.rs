@@ -1,8 +1,8 @@
-//! Components: each registered handler type becomes an angzarr-router
+//! Components: a registered handler type becomes an angzarr-router
 //! dispatch table, and the helpers the kind macros' generated thunks use.
 //!
-//! Dispatch semantics (rebuild, conflicts, upcasting, fan-out and merging)
-//! live in the `angzarr-router` crate. This module only adapts typed Rust handlers to its tables and
+//! Dispatch semantics (rebuild, conflicts, upcasting) live in the
+//! `angzarr-router` crate. This module only adapts typed Rust handlers to its tables and
 //! translates its coded errors into [`ClientError`].
 
 use std::cell::RefCell;
@@ -33,45 +33,43 @@ pub enum Component {
 /// Builds one component's dispatch table for a rules version.
 pub(crate) type Table = Arc<dyn Fn(&str) -> Component + Send + Sync>;
 
-/// A runtime router's components: how to build each one's table, and the
-/// angzarr-router engine holding the tables built for one rules version.
+/// A runtime router's component: how to build its table, and the
+/// angzarr-router engine holding the table built for one rules version.
 pub(crate) struct Tables {
-    tables: Vec<Table>,
+    table: Table,
     pub(crate) inner: angzarr_router::router::Router,
 }
 
 impl Tables {
-    /// The engine over `tables`, each reporting `rules_version`.
+    /// The engine over `table`, reporting `rules_version`.
     pub(crate) fn assemble(
-        tables: Vec<Table>,
+        table: Table,
         rules_version: &str,
     ) -> Result<Self, crate::router::BuildError> {
-        let inner = engine(&tables, rules_version)?;
-        Ok(Tables { tables, inner })
+        let inner = engine(&table, rules_version)?;
+        Ok(Tables { table, inner })
     }
 
-    /// Rebuild the engine so every table reports `rules_version`. Factories
-    /// are not invoked.
+    /// Rebuild the engine so the table reports `rules_version`. The
+    /// factory is not invoked.
     pub(crate) fn stamp(&mut self, rules_version: &str) -> Result<(), crate::router::BuildError> {
-        self.inner = engine(&self.tables, rules_version)?;
+        self.inner = engine(&self.table, rules_version)?;
         Ok(())
     }
 }
 
 fn engine(
-    tables: &[Table],
+    table: &Table,
     rules_version: &str,
 ) -> Result<angzarr_router::router::Router, crate::router::BuildError> {
-    let mut builder = angzarr_router::router::RouterBuilder::new();
-    for table in tables {
-        builder = match table(rules_version) {
-            Component::CommandHandler(t) => builder.aggregate(t),
-            Component::Saga(s) => builder.saga(s),
-            Component::ProcessManager(pm) => builder.process_manager(pm),
-            Component::Projector(p) => builder.projector(p),
-            Component::Upcaster(u) => builder.upcaster(u),
-        };
-    }
+    let builder = angzarr_router::router::RouterBuilder::new();
+    let builder = match table(rules_version) {
+        Component::CommandHandler(t) => builder.aggregate(t),
+        Component::Saga(s) => builder.saga(s),
+        Component::ProcessManager(pm) => builder.process_manager(pm),
+        Component::Projector(p) => builder.projector(p),
+        Component::Upcaster(u) => builder.upcaster(u),
+    };
     builder.build().map_err(build_error)
 }
 

@@ -1,15 +1,14 @@
-//! Composition through the client builder: build-time validation and the
-//! routing that depends on each component's identity.
+//! Composition through the client builder: rejections keep their cover,
+//! and a command handler is probed once at build.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use angzarr_client::proto::{
     command_page, Command, CommandBook, CommandPage, ContextualCommand, Cover, EventBook,
-    EventPage, ProcessManagerHandleRequest, ProcessManagerHandleResponse,
 };
 #[allow(unused_imports)]
-use angzarr_client::router::{command_handler, handles, process_manager};
-use angzarr_client::router::{BuildError, Built, Router};
+use angzarr_client::router::{command_handler, handles};
+use angzarr_client::router::{Built, Router};
 #[allow(unused_imports)]
 use angzarr_client::{full_type_url, ClientError, CommandRejectedError, CommandResult};
 use prost_types::Any;
@@ -24,7 +23,6 @@ macro_rules! msg {
         }
     };
 }
-msg!(OrderCreated);
 msg!(Charge);
 
 fn pack<M: ::prost::Message + ::prost::Name>(m: &M) -> Any {
@@ -36,8 +34,6 @@ fn pack<M: ::prost::Message + ::prost::Name>(m: &M) -> Any {
 
 #[derive(Default)]
 struct NoState;
-
-type Log = Arc<Mutex<Vec<&'static str>>>;
 
 struct PaymentComp;
 #[command_handler(domain = "payment", state = NoState)]
@@ -66,7 +62,6 @@ fn rejections_carry_the_request_cover() {
     let router = payment_router();
     assert_eq!(router.name(), "payment");
     assert!(router.output_domains().is_empty());
-    assert_eq!(router.handler_count(), 1);
     let cover = Cover {
         domain: "payment".into(),
         edition: Some("trial".into()),
@@ -146,119 +141,9 @@ fn a_handler_set_rejection_cover_is_kept() {
     assert_eq!(rej.cover.map(|c| c.domain), Some("handler-set".to_string()));
 }
 
-struct PmA(Log);
-#[process_manager(name = "pm-a", pm_domain = "flow-a", state = NoState, sources = ["order"], targets = ["inventory"])]
-impl PmA {
-    #[handles(OrderCreated)]
-    fn on_created(
-        &self,
-        _e: OrderCreated,
-        _s: &NoState,
-    ) -> CommandResult<ProcessManagerHandleResponse> {
-        self.0.lock().unwrap().push("pm-a");
-        Ok(ProcessManagerHandleResponse::default())
-    }
-}
-
-struct PmB(Log);
-#[process_manager(name = "pm-b", pm_domain = "flow-b", state = NoState, sources = ["order"], targets = ["inventory"])]
-impl PmB {
-    #[handles(OrderCreated)]
-    fn on_created(
-        &self,
-        _e: OrderCreated,
-        _s: &NoState,
-    ) -> CommandResult<ProcessManagerHandleResponse> {
-        self.0.lock().unwrap().push("pm-b");
-        Ok(ProcessManagerHandleResponse::default())
-    }
-}
-
-fn pm_router(log: &Log) -> angzarr_client::router::ProcessManagerRouter {
-    let (a, b) = (Arc::clone(log), Arc::clone(log));
-    match Router::new("pms")
-        .with_handler(move || PmA(Arc::clone(&a)))
-        .with_handler(move || PmB(Arc::clone(&b)))
-        .build()
-    {
-        Ok(Built::ProcessManager(r)) => r,
-        other => panic!("expected a PM router, got {other:?}"),
-    }
-}
-
-fn order_trigger(any: Any) -> EventBook {
-    EventBook {
-        cover: Some(Cover {
-            domain: "order".into(),
-            ..Default::default()
-        }),
-        pages: vec![EventPage {
-            sequence: 0,
-            payload: Some(any),
-            ..Default::default()
-        }],
-        next_sequence: 1,
-        ..Default::default()
-    }
-}
-
-/// A process-state book names its PM; a new workflow reaches every PM
-/// consuming the trigger domain.
+/// A command handler is instantiated once at build (C-0065).
 #[test]
-fn process_state_routes_to_its_own_process_manager() {
-    let log: Log = Arc::default();
-    let router = pm_router(&log);
-    router
-        .dispatch(ProcessManagerHandleRequest {
-            trigger: Some(order_trigger(pack(&OrderCreated {}))),
-            process_state: Some(EventBook {
-                cover: Some(Cover {
-                    domain: "flow-b".into(),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-        })
-        .expect("dispatch");
-    assert_eq!(*log.lock().unwrap(), vec!["pm-b"]);
-    router
-        .dispatch(ProcessManagerHandleRequest {
-            trigger: Some(order_trigger(pack(&OrderCreated {}))),
-            process_state: None,
-        })
-        .expect("dispatch");
-    assert_eq!(*log.lock().unwrap(), vec!["pm-b", "pm-a", "pm-b"]);
-}
-
-/// Command handlers are checked for duplicate (domain, command) claims and
-/// instantiated once at build; other kinds are not instantiated.
-#[test]
-fn command_handlers_are_checked_and_probed_at_build() {
-    let probes = Arc::new(std::sync::atomic::AtomicU32::new(0));
-    let (p1, p2) = (Arc::clone(&probes), Arc::clone(&probes));
-    let err = Router::new("dup")
-        .with_handler(move || {
-            p1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            PaymentComp
-        })
-        .with_handler(move || {
-            p2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            PaymentComp
-        })
-        .build()
-        .expect_err("duplicate claim");
-    assert!(
-        matches!(err, BuildError::DuplicateCommandHandler(_)),
-        "got {err:?}"
-    );
-    assert_eq!(
-        err.details().get("type_url"),
-        Some(&full_type_url::<Charge>())
-    );
-
-    // The first handler was probed before the duplicate was found.
-    assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 1);
-
+fn a_command_handler_is_probed_once_at_build() {
     let probed = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let p = Arc::clone(&probed);
     let built = Router::new("one")
@@ -269,38 +154,4 @@ fn command_handlers_are_checked_and_probed_at_build() {
         .build();
     assert!(matches!(built, Ok(Built::CommandHandler(_))));
     assert_eq!(probed.load(std::sync::atomic::Ordering::SeqCst), 1);
-}
-
-struct BillingPm(Log);
-#[process_manager(name = "billing-pm", pm_domain = "billing-flow", state = NoState, sources = ["billing"], targets = ["inventory"])]
-impl BillingPm {
-    #[handles(OrderCreated)]
-    fn on_created(
-        &self,
-        _e: OrderCreated,
-        _s: &NoState,
-    ) -> CommandResult<ProcessManagerHandleResponse> {
-        self.0.lock().unwrap().push("billing-pm");
-        Ok(ProcessManagerHandleResponse::default())
-    }
-}
-
-#[test]
-fn a_new_workflow_reaches_only_process_managers_consuming_its_domain() {
-    let log: Log = Arc::default();
-    let (a, b) = (Arc::clone(&log), Arc::clone(&log));
-    let Ok(Built::ProcessManager(router)) = Router::new("pms")
-        .with_handler(move || BillingPm(Arc::clone(&a)))
-        .with_handler(move || PmA(Arc::clone(&b)))
-        .build()
-    else {
-        panic!("PM router");
-    };
-    router
-        .dispatch(ProcessManagerHandleRequest {
-            trigger: Some(order_trigger(pack(&OrderCreated {}))),
-            process_state: None,
-        })
-        .expect("dispatch");
-    assert_eq!(*log.lock().unwrap(), vec!["pm-a"]);
 }

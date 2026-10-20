@@ -1,0 +1,8 @@
+error[E0599]: no method named `with_handler` found for struct `angzarr_client::router::Router<OneComponent>` in the current scope
+  --> tests/router/ui/router_takes_one_component.rs:29:49
+   |
+29 |     let _ = Router::new("x").with_handler(|| A).with_handler(|| A);
+   |                                                 ^^^^^^^^^^^^ method not found in `angzarr_client::router::Router<OneComponent>`
+   |
+   = note: the method was found for
+           - `angzarr_client::router::Router`

@@ -9,7 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use angzarr_client::proto::command_handler_service_server::CommandHandlerServiceServer;
-use angzarr_client::{ClientError, ComponentHost, HostAddress, RunningHost, ServerConfig};
+use angzarr_client::{
+    ClientError, ComponentHost, HostAddress, HostComponent, RunningHost, ServerConfig,
+};
 use cucumber::{given, then, when, World};
 use tokio::sync::OwnedMutexGuard;
 use tokio::task::JoinHandle;
@@ -19,7 +21,7 @@ use tonic_health::pb::health_check_response::ServingStatus;
 use crate::common::backend::env_lock;
 use crate::common::host_fixtures::{
     await_health, connect, echo, handled_by, health, send_record, Gate, OrderComponent,
-    OrderReportService, PaymentComponent, ORDER_REPORT_SERVICE,
+    OrderReportService, ORDER_REPORT_SERVICE,
 };
 
 const COMMAND_HANDLER_SERVICE: &str = <CommandHandlerServiceServer<
@@ -48,7 +50,7 @@ pub struct HostingWorld {
     env: Option<OwnedMutexGuard<()>>,
     transport_from_env: bool,
     gate: Arc<Gate>,
-    host: Option<ComponentHost>,
+    host: Option<ComponentHost<HostComponent>>,
     running: Option<RunningHost>,
     draining: Option<HostAddress>,
     start_error: Option<ClientError>,
@@ -127,27 +129,6 @@ async fn given_host_one(world: &mut HostingWorld, domain: String) {
             .with_handler(move || OrderComponent(Arc::clone(&gate)))
             .with_drain_period(DRAIN),
     );
-}
-
-#[given(
-    expr = "a component host with aggregate components for domains {string} and {string} registered"
-)]
-async fn given_host_two(world: &mut HostingWorld, first: String, second: String) {
-    world.lock_env().await;
-    assert_eq!((first.as_str(), second.as_str()), ("order", "payment"));
-    let order_gate = Arc::clone(&world.gate);
-    let payment_gate = Arc::clone(&world.gate);
-    world.host = Some(
-        ComponentHost::new(angzarr_client::rules_version!())
-            .with_handler(move || OrderComponent(Arc::clone(&order_gate)))
-            .with_handler(move || PaymentComponent(Arc::clone(&payment_gate))),
-    );
-}
-
-#[given("a component host with no components registered")]
-async fn given_host_empty(world: &mut HostingWorld) {
-    world.lock_env().await;
-    world.host = Some(ComponentHost::new(angzarr_client::rules_version!()));
 }
 
 #[given(
@@ -262,15 +243,6 @@ async fn then_reaches_order_via_handle(world: &mut HostingWorld, domain: String)
     assert_eq!(handled_by(&response), "order");
 }
 
-#[then(expr = "a ContextualCommand for domain {string} reaches the {word} component")]
-async fn then_reaches(world: &mut HostingWorld, domain: String, component: String) {
-    let channel = connect(world.running().address()).await;
-    let response = send_record(channel, &domain, false)
-        .await
-        .expect("Handle succeeds");
-    assert_eq!(handled_by(&response), component);
-}
-
 #[then(regex = r#"^the host listens on (TCP|Unix socket) at "([^"]*)"$"#)]
 async fn then_listens(world: &mut HostingWorld, transport: String, address: String) {
     let running = world.running();
@@ -295,7 +267,7 @@ async fn then_listens(world: &mut HostingWorld, transport: String, address: Stri
 }
 
 #[then(
-    "the overall server's health status is SERVING only after every registered component's service is listening"
+    "the overall server's health status is SERVING only after the component's service is listening"
 )]
 async fn then_serving_after_listening(world: &mut HostingWorld) {
     let channel = connect(world.running().address()).await;
@@ -385,15 +357,4 @@ async fn then_app_service_served(world: &mut HostingWorld) {
         .await
         .expect("Handle succeeds");
     assert_eq!(handled_by(&response), "order");
-}
-
-#[then("starting fails with a configuration error")]
-async fn then_start_fails(world: &mut HostingWorld) {
-    assert!(world.running.is_none(), "host started");
-    let err = world.start_error.as_ref().expect("start error");
-    assert!(err.is_invalid_argument(), "got {err:?}");
-    assert_eq!(
-        err.code(),
-        angzarr_client::error_codes::codes::HOST_HAS_NO_COMPONENTS
-    );
 }

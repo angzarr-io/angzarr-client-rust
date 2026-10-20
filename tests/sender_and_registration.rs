@@ -326,14 +326,11 @@ mod describe {
         running.shutdown().await.unwrap();
     }
 
-    /// C-0535, C-0565: the coordinator pulls the description; it lists
-    /// every hosted component with the host's version and, for an
-    /// aggregate, the state type of its state message.
-    #[tokio::test]
-    async fn describe_lists_every_hosted_component() {
-        let running = ComponentHost::new("1.4.2+build.7")
-            .with_handler(|| Order)
-            .with_handler(|| OrderFulfillment)
+    /// What `Describe` answers for a host serving `host`'s component.
+    async fn describe(
+        host: ComponentHost<angzarr_client::HostComponent>,
+    ) -> Result<angzarr_client::proto::ComponentDescriptor, tonic::Status> {
+        let running = host
             .with_transport(ephemeral())
             .start()
             .await
@@ -344,41 +341,65 @@ mod describe {
         let described = ComponentServiceClient::new(channel(running.address()).await)
             .describe(DescribeRequest {})
             .await
-            .expect("described")
-            .into_inner();
-        let mut rows: Vec<(String, ComponentKind, String, String)> = described
-            .components
-            .iter()
-            .map(|c| {
-                (
-                    c.name.clone(),
-                    c.kind(),
-                    c.rules_version.clone(),
-                    c.state
-                        .as_ref()
-                        .map(|s| s.type_url.clone())
-                        .unwrap_or_default(),
-                )
-            })
-            .collect();
-        rows.sort();
-        assert_eq!(
-            rows,
-            vec![
-                (
-                    "OrderFulfillment".to_string(),
-                    ComponentKind::Saga,
-                    "1.4.2+build.7".to_string(),
-                    String::new(),
-                ),
-                (
-                    "order".to_string(),
-                    ComponentKind::Aggregate,
-                    "1.4.2+build.7".to_string(),
-                    "/orders.v1.OrderState".to_string(),
-                ),
-            ]
-        );
+            .map(|r| r.into_inner());
         running.shutdown().await.unwrap();
+        described
+    }
+
+    /// C-0535: the coordinator pulls the description of the host's one
+    /// component: the host's version and the state type of its state
+    /// message.
+    #[tokio::test]
+    async fn describe_answers_the_aggregates_description() {
+        let described = describe(ComponentHost::new("1.4.2+build.7").with_handler(|| Order))
+            .await
+            .expect("described");
+        assert_eq!(described.name, "order");
+        assert_eq!(described.kind(), ComponentKind::Aggregate);
+        assert_eq!(described.rules_version, "1.4.2+build.7");
+        assert_eq!(
+            described.state.map(|s| s.type_url),
+            Some("/orders.v1.OrderState".to_string())
+        );
+    }
+
+    /// C-0565 (one component per process): a saga is described with its
+    /// input domain and no state.
+    #[tokio::test]
+    async fn describe_answers_the_sagas_description() {
+        let described = describe(ComponentHost::new("2.0.1").with_handler(|| OrderFulfillment))
+            .await
+            .expect("described");
+        assert_eq!(described.name, "OrderFulfillment");
+        assert_eq!(described.kind(), ComponentKind::Saga);
+        assert_eq!(described.rules_version, "2.0.1");
+        assert_eq!(
+            described
+                .inputs
+                .iter()
+                .map(|t| t.domain.as_str())
+                .collect::<Vec<_>>(),
+            vec!["order"]
+        );
+        assert_eq!(described.state, None);
+    }
+
+    pub struct Lift;
+
+    #[angzarr_client::router::upcaster(name = "lift", domain = "order")]
+    impl Lift {
+        #[upcasts(from = AddItem, to = ItemAdded)]
+        fn up(_old: AddItem) -> ItemAdded {
+            ItemAdded {}
+        }
+    }
+
+    /// An upcaster has no component description.
+    #[tokio::test]
+    async fn describe_refuses_an_upcaster_host() {
+        let status = describe(ComponentHost::new("1.0.0").with_handler(|| Lift))
+            .await
+            .expect_err("no description");
+        assert_eq!(status.code(), tonic::Code::Unimplemented);
     }
 }

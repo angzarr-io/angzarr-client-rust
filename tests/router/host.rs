@@ -7,7 +7,6 @@
 
 use std::time::Duration;
 
-use angzarr_client::error_codes::codes;
 use angzarr_client::proto::{EventBook, ProcessManagerHandleResponse, SagaResponse};
 use angzarr_client::router::{
     command_handler, process_manager, projector, saga, upcaster, Built, Router,
@@ -201,20 +200,6 @@ async fn a_prebuilt_router_is_served() {
     let port = tcp_port(running.address());
     assert!(await_status(port, ServingStatus::Serving, Duration::from_secs(2)).await);
     running.shutdown().await.expect("clean shutdown");
-}
-
-#[tokio::test]
-async fn two_routers_of_one_kind_are_refused() {
-    let _env = ENV.lock().await;
-    clear_env();
-    let err = ComponentHost::new(angzarr_client::rules_version!())
-        .with_router(built(|| Ledger))
-        .with_router(built(|| Ledger))
-        .with_transport(ephemeral())
-        .start()
-        .await
-        .expect_err("duplicate kind");
-    assert_eq!(err.code(), codes::HOST_DUPLICATE_KIND);
 }
 
 #[tokio::test]

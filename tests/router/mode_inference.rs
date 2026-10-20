@@ -1,19 +1,13 @@
-//! `Router::build()` mode-inference + structural error coverage.
-//!
-//! Mirrors the build-time invariants exercised by Python's
-//! `tests/router/test_mode_inference.py`:
-//!
-//! * empty router → `BuildError::Empty`
-//! * mixed kinds → `BuildError::MixedKinds` (carries both kinds in `details`)
-//! * single-kind register → returns the matching `Built::*` variant
-//! * `handler_count()` reports the registered factory count
+//! `Router::build()` mode inference: the one component's kind picks the
+//! `Built::*` variant. A router with no component, or a second one, does
+//! not compile (`stacking::routers_and_hosts_take_exactly_one_component`).
 //!
 //! Uses minimal macro-declared handlers, one per kind.
 
 use angzarr_client::proto::{EventBook, ProcessManagerHandleResponse, SagaResponse};
 #[allow(unused_imports)]
 use angzarr_client::router::{command_handler, handles, process_manager, projector, saga};
-use angzarr_client::router::{BuildError, Built, Router};
+use angzarr_client::router::{Built, Router};
 #[allow(unused_imports)]
 use angzarr_client::CommandResult;
 
@@ -68,14 +62,6 @@ impl StubProjector {
 // --- Build outcome assertions ------------------------------------------
 
 #[test]
-fn empty_router_yields_build_error_empty() {
-    let err = Router::new("empty")
-        .build()
-        .expect_err("empty router rejected");
-    assert!(matches!(err, BuildError::Empty(_)), "got {:?}", err);
-}
-
-#[test]
 fn single_command_handler_returns_command_handler_built() {
     let built = Router::new("single-ch")
         .with_handler(|| StubCh)
@@ -112,51 +98,10 @@ fn single_projector_returns_projector_built() {
 }
 
 #[test]
-fn mixing_command_handler_and_saga_yields_mixed_kinds() {
-    let err = Router::new("mixed-ch-saga")
-        .with_handler(|| StubCh)
-        .with_handler(|| StubSaga)
-        .build()
-        .expect_err("mixed kinds rejected");
-    let detail = match err {
-        BuildError::MixedKinds(d) => d,
-        other => panic!("expected MixedKinds, got {:?}", other),
-    };
-    let blob = format!("{:?}", detail);
-    assert!(blob.contains("CommandHandler"), "details: {}", blob);
-    assert!(blob.contains("Saga"), "details: {}", blob);
-}
-
-#[test]
-fn mixing_saga_and_process_manager_yields_mixed_kinds() {
-    let err = Router::new("mixed-saga-pm")
-        .with_handler(|| StubSaga)
-        .with_handler(|| StubPm)
-        .build()
-        .expect_err("mixed kinds rejected");
-    assert!(matches!(err, BuildError::MixedKinds(_)));
-}
-
-#[test]
-fn mixing_projector_and_command_handler_yields_mixed_kinds() {
-    let err = Router::new("mixed-proj-ch")
-        .with_handler(|| StubProjector)
-        .with_handler(|| StubCh)
-        .build()
-        .expect_err("mixed kinds rejected");
-    assert!(matches!(err, BuildError::MixedKinds(_)));
-}
-
-#[test]
-fn handler_count_reports_registered_factories() {
-    let r = Router::new("count")
-        .with_handler(|| StubProjector)
-        .with_handler(|| StubProjector);
-    assert_eq!(r.handler_count(), 2);
-}
-
-#[test]
-fn router_name_is_stored_verbatim() {
+fn router_name_and_kind_are_kept() {
     let r = Router::new("my-router-name");
     assert_eq!(r.name(), "my-router-name");
+    let r = r.with_handler(|| StubPm);
+    assert_eq!(r.name(), "my-router-name");
+    assert_eq!(r.kind(), angzarr_client::router::Kind::ProcessManager);
 }

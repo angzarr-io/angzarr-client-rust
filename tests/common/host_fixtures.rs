@@ -1,8 +1,7 @@
 //! Components, an application gRPC service and client helpers for the
 //! component-host scenarios.
 //!
-//! The components are generic aggregates for the "order" and "payment"
-//! domains: a `Record` command emits one `Recorded` event naming the
+//! The component is a generic aggregate for the "order" domain: a `Record` command emits one `Recorded` event naming the
 //! component that handled it, so a caller can tell which component a
 //! command reached. A `Record` with `hold` set blocks its handler on a
 //! [`Gate`] until the gate opens, standing in for an in-flight call.
@@ -113,17 +112,6 @@ impl OrderComponent {
     #[handles(Record)]
     fn on_record(&self, cmd: Record, _state: &Tally, _seq: u64) -> CommandResult<EventBook> {
         Ok(record("order", &cmd, &self.0))
-    }
-}
-
-/// Aggregate component for the "payment" domain.
-pub struct PaymentComponent(pub Arc<Gate>);
-
-#[command_handler(domain = "payment", state = Tally)]
-impl PaymentComponent {
-    #[handles(Record)]
-    fn on_record(&self, cmd: Record, _state: &Tally, _seq: u64) -> CommandResult<EventBook> {
-        Ok(record("payment", &cmd, &self.0))
     }
 }
 

@@ -5,8 +5,8 @@
 //!
 //! The kind attributes ([`command_handler`], [`saga`], [`process_manager`],
 //! [`projector`], [`upcaster`]) and their method markers turn a handler type
-//! into registrations on [`binding`], the angzarr-router engine. Serve
-//! components with [`crate::ComponentHost`]; [`Router`] builds a
+//! into a component on [`binding`], the angzarr-router engine. Serve the
+//! component with [`crate::ComponentHost`]; [`Router`] builds the
 //! kind-specific runtime router ([`CommandHandlerRouter`], [`SagaRouter`],
 //! [`ProcessManagerRouter`], [`ProjectorRouter`], [`UpcasterRouter`]) for
 //! direct dispatch.
@@ -16,7 +16,7 @@
 //! ```rust,ignore
 //! use angzarr_client::ComponentHost;
 //!
-//! ComponentHost::new()
+//! ComponentHost::new(angzarr_client::rules_version!())
 //!     .with_handler(|| Ledger::new(pool.clone()))
 //!     .serve()
 //!     .await?;
@@ -40,7 +40,7 @@ pub use angzarr_macros::{
 };
 
 // Public types
-pub use builder::Router;
+pub use builder::{NoComponent, OneComponent, Router};
 pub use handler::{BuildError, Built, DispatchError, Handler, HandlerConfig, HandlerKind, Kind};
 pub use responses::{FactRecord, IntoFactRecord, ProcessManagerResponse, SagaHandlerResponse};
 pub use routers::{

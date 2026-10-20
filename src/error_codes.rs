@@ -58,10 +58,9 @@ pub mod codes {
     pub const STREAM_LIMIT_EXCEEDED: &str = "STREAM_LIMIT_EXCEEDED";
 
     // Component host
-    pub const HOST_HAS_NO_COMPONENTS: &str = "HOST_HAS_NO_COMPONENTS";
-    pub const HOST_DUPLICATE_KIND: &str = "HOST_DUPLICATE_KIND";
     pub const HOST_SERVER_TASK_FAILED: &str = "HOST_SERVER_TASK_FAILED";
     pub const MISSING_RULES_VERSION: &str = "MISSING_RULES_VERSION";
+    pub const NO_COMPONENT_DESCRIPTION: &str = "NO_COMPONENT_DESCRIPTION";
 
     // Dispatch — common
     pub const HANDLER_WRONG_RESPONSE_KIND: &str = "HANDLER_WRONG_RESPONSE_KIND";
@@ -96,13 +95,6 @@ pub mod codes {
     pub const HANDLER_FIELD_EMPTY_LIST: &str = "HANDLER_FIELD_EMPTY_LIST";
     pub const HANDLER_STATE_NOT_TYPE: &str = "HANDLER_STATE_NOT_TYPE";
     pub const HANDLER_UNKNOWN_KIND: &str = "HANDLER_UNKNOWN_KIND";
-    pub const ROUTER_NO_HANDLERS: &str = "ROUTER_NO_HANDLERS";
-    /// Audit #62: a Router was built with two `#[command_handler]`s
-    /// claiming the same `(domain, type_url)` pair.
-    pub const DUPLICATE_COMMAND_HANDLER: &str = "DUPLICATE_COMMAND_HANDLER";
-    /// Audit #72: a Router was built with handlers of different kinds
-    /// (e.g., a `command_handler` and a `saga` registered together).
-    pub const MIXED_HANDLER_KINDS: &str = "MIXED_HANDLER_KINDS";
 }
 
 /// Static human-readable messages — the value of `message` on every
@@ -150,12 +142,10 @@ pub mod messages {
     pub const STREAM_LIMIT_EXCEEDED: &str = "server stream exceeded the configured maximum";
 
     // Component host
-    pub const HOST_HAS_NO_COMPONENTS: &str = "component host has no components registered";
-    pub const HOST_DUPLICATE_KIND: &str =
-        "component host has two routers of one kind; register their handlers on one router";
     pub const HOST_SERVER_TASK_FAILED: &str = "component host server task failed";
     pub const MISSING_RULES_VERSION: &str =
         "component host has no rules version; build it with the binary's version";
+    pub const NO_COMPONENT_DESCRIPTION: &str = "an upcaster has no component description";
 
     // Dispatch — common
     pub const HANDLER_WRONG_RESPONSE_KIND: &str = "handler returned wrong response kind";
@@ -192,11 +182,6 @@ pub mod messages {
     pub const HANDLER_FIELD_EMPTY_LIST: &str = "handler field must be a non-empty list";
     pub const HANDLER_STATE_NOT_TYPE: &str = "handler 'state' must be a type";
     pub const HANDLER_UNKNOWN_KIND: &str = "unknown handler kind";
-    pub const ROUTER_NO_HANDLERS: &str = "no handlers registered on Router";
-    pub const DUPLICATE_COMMAND_HANDLER: &str =
-        "duplicate command handler registration for (domain, type_url)";
-    pub const MIXED_HANDLER_KINDS: &str =
-        "cannot mix handler kinds in one Router — all handlers must share a kind";
 }
 
 /// Detail-map key constants — the keys used in the `details` mapping on
@@ -213,13 +198,7 @@ pub mod keys {
     pub const EXPECTED_KIND: &str = "expected_kind";
     pub const DOMAIN: &str = "domain";
     pub const TYPE_URL: &str = "type_url";
-    pub const ROUTER_NAME: &str = "router_name";
     pub const HANDLER_CLASS: &str = "handler_class";
-    pub const HANDLER_KIND: &str = "handler_kind";
     pub const ACTUAL_RETURN_TYPE: &str = "actual_return_type";
     pub const ENV_VAR: &str = "env_var";
-    /// Audit #72: paired with `HANDLER_KIND` for `MIXED_HANDLER_KINDS` errors —
-    /// `details["handler_kind"]` is the first kind found, `details["other_kind"]`
-    /// is the conflicting one.
-    pub const OTHER_KIND: &str = "other_kind";
 }

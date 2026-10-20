@@ -18,9 +18,8 @@ use crate::proto::{
     process_manager_service_server::ProcessManagerService,
     projector_service_server::ProjectorService, saga_service_server::SagaService,
     upcaster_service_server::UpcasterService, CommandHandlerResponse, ComponentDescriptor,
-    ComponentDescriptors, ContextualCommand, DescribeRequest, EventBook,
-    ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, SagaResponse,
-    UpcastRequest, UpcastResponse,
+    ContextualCommand, DescribeRequest, EventBook, ProcessManagerHandleRequest,
+    ProcessManagerHandleResponse, Projection, SagaResponse, UpcastRequest, UpcastResponse,
 };
 use crate::router::routers::{
     CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter,
@@ -156,22 +155,29 @@ impl ProjectorService for ProjectorGrpc {
 }
 
 /// gRPC component service (component.proto): answers the coordinator's
-/// `Describe` with the hosted components' descriptions, built once when the
+/// `Describe` with the hosted component's description, built once when the
 /// host starts. A description the router refused is answered as its error
-/// status on every call.
+/// status on every call; an upcaster, which has no description, is
+/// answered UNIMPLEMENTED.
 #[derive(Clone)]
 pub struct ComponentGrpc {
-    described: Arc<std::result::Result<ComponentDescriptors, Status>>,
+    described: Arc<std::result::Result<ComponentDescriptor, Status>>,
 }
 
 impl ComponentGrpc {
-    pub fn new(described: Result<Vec<ComponentDescriptor>, ClientError>) -> Self {
+    pub fn new(described: Result<Option<ComponentDescriptor>, ClientError>) -> Self {
+        let described = match described {
+            Ok(Some(descriptor)) => Ok(descriptor),
+            Ok(None) => Err(with_canonical_details(
+                Code::Unimplemented,
+                messages::NO_COMPONENT_DESCRIPTION,
+                codes::NO_COMPONENT_DESCRIPTION,
+                None,
+            )),
+            Err(err) => Err(client_error_to_status(err)),
+        };
         Self {
-            described: Arc::new(
-                described
-                    .map(|components| ComponentDescriptors { components })
-                    .map_err(client_error_to_status),
-            ),
+            described: Arc::new(described),
         }
     }
 }
@@ -181,7 +187,7 @@ impl ComponentService for ComponentGrpc {
     async fn describe(
         &self,
         _request: Request<DescribeRequest>,
-    ) -> Result<Response<ComponentDescriptors>, Status> {
+    ) -> Result<Response<ComponentDescriptor>, Status> {
         match self.described.as_ref() {
             Ok(described) => Ok(Response::new(described.clone())),
             Err(status) => Err(status.clone()),

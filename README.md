@@ -138,15 +138,16 @@ async fn main() -> angzarr_client::Result<()> {
 
 - Transport comes from the environment (`get_transport_config`): TCP, or a
   Unix socket the host removes on shutdown.
-- Components of one kind share one router, which routes among them (e.g.
-  aggregates by domain). The factory closure runs once per dispatch, so
-  close over shared dependencies (`move || Ledger::new(pool.clone())`).
+- A host serves exactly one component (one coordinator = one component =
+  one business process); registering a second, or starting with none, does
+  not compile. The factory closure runs once per dispatch, so close over
+  shared dependencies (`move || Ledger::new(pool.clone())`).
 - Health reports `NOT_SERVING` until the listener is bound and every sync
   output domain is reachable, then `SERVING`; on SIGINT / SIGTERM it reports
   `NOT_SERVING`, waits the drain period (`with_drain_period`), then stops
   accepting and lets in-flight calls finish.
-- A host with no components, or with an empty rules version
-  (`MISSING_RULES_VERSION`), refuses to start.
+- A host with an empty rules version refuses to start
+  (`MISSING_RULES_VERSION`).
 
 ## Clients
 

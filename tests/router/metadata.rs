@@ -50,23 +50,17 @@ impl AsyncSaga {
 
 #[test]
 fn saga_router_metadata() {
-    let Ok(Built::Saga(r)) = Router::new("sagas")
-        .with_handler(|| SyncSaga)
-        .with_handler(|| AsyncSaga)
-        .with_handler(|| SyncSaga)
-        .build()
-    else {
+    let Ok(Built::Saga(r)) = Router::new("sagas").with_handler(|| AsyncSaga).build() else {
         panic!("saga router");
     };
-    assert_eq!(r.name(), "s-sync");
-    assert_eq!(r.output_domains(), vec!["inventory", "shipping"]);
-    assert_eq!(r.handler_count(), 3);
+    assert_eq!(r.name(), "s-async");
+    assert_eq!(r.output_domains(), vec!["shipping"]);
 
     let Ok(Built::Saga(only_sync)) = Router::new("sagas").with_handler(|| SyncSaga).build() else {
         panic!("saga router");
     };
+    assert_eq!(only_sync.name(), "s-sync");
     assert_eq!(only_sync.output_domains(), vec!["inventory"]);
-    assert_eq!(only_sync.handler_count(), 1);
 }
 
 struct Pm;
@@ -101,16 +95,11 @@ impl SyncPm {
 
 #[test]
 fn process_manager_router_metadata() {
-    let Ok(Built::ProcessManager(r)) = Router::new("pms")
-        .with_handler(|| Pm)
-        .with_handler(|| SyncPm)
-        .build()
-    else {
+    let Ok(Built::ProcessManager(r)) = Router::new("pms").with_handler(|| Pm).build() else {
         panic!("PM router");
     };
     assert_eq!(r.name(), "flow");
     assert_eq!(r.output_domains(), vec!["inventory", "shipping"]);
-    assert_eq!(r.handler_count(), 2);
 
     let Ok(Built::ProcessManager(sync_only)) = Router::new("pms").with_handler(|| SyncPm).build()
     else {
@@ -141,17 +130,6 @@ fn projector_router_runs_projectors_and_echoes_the_book() {
     };
     assert_eq!(r.name(), "proj");
     assert!(r.output_domains().is_empty());
-    assert_eq!(r.handler_count(), 1);
-    let c2 = Arc::clone(&count);
-    let c3 = Arc::clone(&count);
-    let Ok(Built::Projector(two)) = Router::new("projectors")
-        .with_handler(move || Proj(Arc::clone(&c2)))
-        .with_handler(move || Proj(Arc::clone(&c3)))
-        .build()
-    else {
-        panic!("projector router");
-    };
-    assert_eq!(two.handler_count(), 2);
     let cover = Cover {
         domain: "a".into(),
         ..Default::default()
@@ -176,16 +154,15 @@ fn projector_router_runs_projectors_and_echoes_the_book() {
     assert_eq!(projection.next_sequence, 7);
     assert_eq!(*count.lock().unwrap(), 1);
 
-    // A book with no pages answers its own next_sequence; several
-    // projectors answer one unnamed projection of the book.
+    // A book with no pages answers its own next_sequence.
     let empty = EventBook {
         cover: Some(cover.clone()),
         next_sequence: 4,
         ..Default::default()
     };
-    let projection = two.dispatch(empty).expect("projector dispatch");
+    let projection = r.dispatch(empty).expect("projector dispatch");
     assert_eq!(projection.cover, Some(cover));
-    assert_eq!(projection.projector, "");
+    assert_eq!(projection.projector, "proj");
     assert_eq!(projection.next_sequence, 4);
 }
 
@@ -200,20 +177,11 @@ impl Up {
 
 #[test]
 fn upcaster_router_metadata_and_dispatch() {
-    let Ok(Built::Upcaster(two)) = Router::new("ups")
-        .with_handler(|| Up)
-        .with_handler(|| Up)
-        .build()
-    else {
-        panic!("upcaster router");
-    };
-    assert_eq!(two.handler_count(), 2);
     let Ok(Built::Upcaster(r)) = Router::new("ups").with_handler(|| Up).build() else {
         panic!("upcaster router");
     };
     assert_eq!(r.name(), "up");
     assert!(r.output_domains().is_empty());
-    assert_eq!(r.handler_count(), 1);
     let out = r
         .dispatch(UpcastRequest {
             domain: "a".into(),
@@ -273,10 +241,13 @@ fn a_wildcard_projector_consumes_every_domain() {
 }
 
 #[test]
-fn a_router_debug_names_it_and_counts_its_handlers() {
+fn a_router_debug_names_it_and_its_component_kind() {
     let router = Router::new("projectors").with_handler(|| AnyDomain(Arc::new(Mutex::new(0))));
-    assert_eq!(
-        format!("{router:?}"),
-        r#"Router { name: "projectors", handlers: 1 }"#
+    let shown = format!("{router:?}");
+    assert!(
+        shown.starts_with(
+            r#"Router { name: "projectors", component: OneComponent { kind: Projector"#
+        ),
+        "{shown}"
     );
 }

@@ -1,8 +1,8 @@
 //! Typed runtime routers — output of [`Router::build`].
 //!
-//! Each wraps one validated [`angzarr_router::router::Router`] holding the
-//! registered components' dispatch tables, plus the static handler
-//! metadata the gRPC adapters read.
+//! Each wraps the one component a router serves: its angzarr-router
+//! dispatch table, built for the hosting binary's rules version, and the
+//! static handler metadata the gRPC adapters read.
 //!
 //! [`Router::build`]: crate::router::Router::build
 
@@ -16,7 +16,7 @@ use crate::router::HandlerConfig;
 use crate::ClientError;
 
 /// Attach the request's cover to a propagating rejection so callers can
-/// trace which (domain, root, correlation_id) produced it. No-op for
+/// trace which stream (domain, edition, root) produced it. No-op for
 /// non-rejection errors and when the cover is missing or already set.
 fn stamp_cover(err: ClientError, cover: Option<&Cover>) -> ClientError {
     match (err, cover) {
@@ -27,27 +27,14 @@ fn stamp_cover(err: ClientError, cover: Option<&Cover>) -> ClientError {
     }
 }
 
-/// Deduplicated, order-preserving union of string lists.
-fn union<'a>(lists: impl IntoIterator<Item = &'a [String]>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for list in lists {
-        for item in list {
-            if !item.is_empty() && !out.contains(item) {
-                out.push(item.clone());
-            }
-        }
-    }
-    out
-}
-
-/// Runtime router over one or more command handlers (aggregates).
+/// Runtime router over one command handler (aggregate).
 pub struct CommandHandlerRouter {
     pub(crate) tables: Tables,
-    pub(crate) configs: Vec<HandlerConfig>,
+    pub(crate) config: HandlerConfig,
 }
 
 impl CommandHandlerRouter {
-    /// Route a contextual command (its page's Command or Fact arm) to its
+    /// Route a contextual command (its page's Command or Fact arm) to the
     /// aggregate.
     pub fn dispatch(&self, cmd: ContextualCommand) -> Result<CommandHandlerResponse, ClientError> {
         begin_dispatch();
@@ -58,10 +45,10 @@ impl CommandHandlerRouter {
             .map_err(|e| stamp_cover(from_coded(e), cover.as_ref()))
     }
 
-    /// The first registered aggregate's domain.
+    /// The aggregate's domain.
     pub fn name(&self) -> String {
-        match self.configs.first() {
-            Some(HandlerConfig::CommandHandler { domain, .. }) => domain.clone(),
+        match &self.config {
+            HandlerConfig::CommandHandler { domain, .. } => domain.clone(),
             _ => String::new(),
         }
     }
@@ -70,22 +57,16 @@ impl CommandHandlerRouter {
     pub fn output_domains(&self) -> Vec<String> {
         Vec::new()
     }
-
-    /// Number of registered handlers.
-    pub fn handler_count(&self) -> usize {
-        self.configs.len()
-    }
 }
 
-/// Runtime router over one or more sagas.
+/// Runtime router over one saga.
 pub struct SagaRouter {
     pub(crate) tables: Tables,
-    pub(crate) configs: Vec<HandlerConfig>,
+    pub(crate) config: HandlerConfig,
 }
 
 impl SagaRouter {
-    /// Run every saga consuming the source book's domain; their commands
-    /// merge in registration order.
+    /// Run the saga over every page of the source book.
     pub fn dispatch(&self, source: EventBook) -> Result<SagaResponse, ClientError> {
         begin_dispatch();
         self.tables
@@ -94,42 +75,31 @@ impl SagaRouter {
             .map_err(|e| stamp_cover(from_coded(e), source.cover.as_ref()))
     }
 
-    /// The first registered saga's name.
+    /// The saga's name.
     pub fn name(&self) -> String {
-        match self.configs.first() {
-            Some(HandlerConfig::Saga { name, .. }) => name.clone(),
+        match &self.config {
+            HandlerConfig::Saga { name, .. } => name.clone(),
             _ => String::new(),
         }
     }
 
-    /// Every registered saga's target, deduplicated.
+    /// The saga's target domain.
     pub fn output_domains(&self) -> Vec<String> {
-        let targets: Vec<Vec<String>> = self
-            .configs
-            .iter()
-            .filter_map(|c| match c {
-                HandlerConfig::Saga { target, .. } => Some(vec![target.clone()]),
-                _ => None,
-            })
-            .collect();
-        union(targets.iter().map(Vec::as_slice))
-    }
-
-    /// Number of registered handlers.
-    pub fn handler_count(&self) -> usize {
-        self.configs.len()
+        match &self.config {
+            HandlerConfig::Saga { target, .. } => vec![target.clone()],
+            _ => Vec::new(),
+        }
     }
 }
 
-/// Runtime router over one or more process managers.
+/// Runtime router over one process manager.
 pub struct ProcessManagerRouter {
     pub(crate) tables: Tables,
-    pub(crate) configs: Vec<HandlerConfig>,
+    pub(crate) config: HandlerConfig,
 }
 
 impl ProcessManagerRouter {
-    /// Run the process managers the request is addressed to; their
-    /// responses merge in registration order.
+    /// Run the process manager on the request's newest trigger event.
     pub fn dispatch(
         &self,
         request: ProcessManagerHandleRequest,
@@ -142,68 +112,52 @@ impl ProcessManagerRouter {
             .map_err(|e| stamp_cover(from_coded(e), cover.as_ref()))
     }
 
-    /// The first registered process manager's name.
+    /// The process manager's name.
     pub fn name(&self) -> String {
-        match self.configs.first() {
-            Some(HandlerConfig::ProcessManager { name, .. }) => name.clone(),
+        match &self.config {
+            HandlerConfig::ProcessManager { name, .. } => name.clone(),
             _ => String::new(),
         }
     }
 
-    /// Every registered process manager's targets, deduplicated.
+    /// The domains the process manager issues commands to.
     pub fn output_domains(&self) -> Vec<String> {
-        union(self.configs.iter().filter_map(|c| match c {
-            HandlerConfig::ProcessManager { targets, .. } => Some(targets.as_slice()),
-            _ => None,
-        }))
-    }
-
-    /// Number of registered handlers.
-    pub fn handler_count(&self) -> usize {
-        self.configs.len()
+        match &self.config {
+            HandlerConfig::ProcessManager { targets, .. } => targets.clone(),
+            _ => Vec::new(),
+        }
     }
 }
 
-/// Runtime router over one or more projectors.
+/// Runtime router over one projector.
 pub struct ProjectorRouter {
     pub(crate) tables: Tables,
-    pub(crate) configs: Vec<HandlerConfig>,
+    pub(crate) config: HandlerConfig,
 }
 
 impl ProjectorRouter {
-    /// Run every projector over the book (each filters by its domains).
-    /// A sole projector answers its own `Projection`; several answer one
-    /// carrying the book's cover, with no projector name and no
-    /// projection. Either way `next_sequence` follows types.proto
-    /// (`Projection`): the last page's sequence + 1, or the book's
-    /// `next_sequence` when it has no pages.
+    /// Run the projector over the book (it filters by its domains) and
+    /// answer its `Projection`.
     pub fn dispatch(&self, book: EventBook) -> Result<Projection, ClientError> {
         begin_dispatch();
-        let mut projections = self
-            .tables
+        self.tables
             .inner
             .dispatch_projectors(&book)
-            .map_err(from_coded)?;
-        let next_sequence = book
-            .pages
-            .last()
-            .map_or(book.next_sequence, |page| page.sequence + 1);
-        let mut projection = if projections.len() == 1 {
-            projections.remove(0)
-        } else {
-            Projection {
-                cover: book.cover,
-                ..Default::default()
-            }
-        };
-        projection.next_sequence = next_sequence;
-        Ok(projection)
+            .map_err(from_coded)?
+            .pop()
+            .ok_or_else(|| {
+                ClientError::invalid_argument(
+                    crate::error_codes::codes::UNHANDLED_HANDLER_ERROR,
+                    crate::error_codes::messages::UNHANDLED_HANDLER_ERROR,
+                    std::iter::empty::<(String, String)>(),
+                )
+            })
     }
 
-    /// The first registered projector's name.
+    /// The projector's name.
     pub fn name(&self) -> String {
-        match self.configs.first() {
-            Some(HandlerConfig::Projector { name, .. }) => name.clone(),
+        match &self.config {
+            HandlerConfig::Projector { name, .. } => name.clone(),
             _ => String::new(),
         }
     }
@@ -212,31 +166,25 @@ impl ProjectorRouter {
     pub fn output_domains(&self) -> Vec<String> {
         Vec::new()
     }
-
-    /// Number of registered handlers.
-    pub fn handler_count(&self) -> usize {
-        self.configs.len()
-    }
 }
 
-/// Runtime router over one or more upcasters.
+/// Runtime router over one upcaster.
 pub struct UpcasterRouter {
     pub(crate) tables: Tables,
-    pub(crate) configs: Vec<HandlerConfig>,
+    pub(crate) config: HandlerConfig,
 }
 
 impl UpcasterRouter {
-    /// Run every page through each upcaster of the request's domain, in
-    /// registration order, each one's output feeding the next.
+    /// Run every page of the request's domain through the upcaster.
     pub fn dispatch(&self, request: UpcastRequest) -> Result<UpcastResponse, ClientError> {
         begin_dispatch();
         self.tables.inner.upcast(&request).map_err(from_coded)
     }
 
-    /// The first registered upcaster's name.
+    /// The upcaster's name.
     pub fn name(&self) -> String {
-        match self.configs.first() {
-            Some(HandlerConfig::Upcaster { name, .. }) => name.clone(),
+        match &self.config {
+            HandlerConfig::Upcaster { name, .. } => name.clone(),
             _ => String::new(),
         }
     }
@@ -245,36 +193,34 @@ impl UpcasterRouter {
     pub fn output_domains(&self) -> Vec<String> {
         Vec::new()
     }
-
-    /// Number of registered handlers.
-    pub fn handler_count(&self) -> usize {
-        self.configs.len()
-    }
 }
 
-macro_rules! impl_component_descriptors {
+macro_rules! impl_component_descriptor {
     ($($ty:ident),*) => {$(
         impl $ty {
-            /// Every component's description (types.proto,
-            /// ComponentDescriptor), in registration order, built by
-            /// angzarr-router from its table: what `ComponentService.Describe`
-            /// answers. Refused when a component has no rules version
-            /// (MISSING_RULES_VERSION) or, for an aggregate or process
-            /// manager, its state is not a protobuf message
-            /// (MISSING_STATE_TYPE).
-            pub fn component_descriptors(&self) -> Result<Vec<ComponentDescriptor>, ClientError> {
-                self.tables.inner.component_descriptors().map_err(from_coded)
+            /// The component's description (types.proto,
+            /// ComponentDescriptor), built by angzarr-router from its
+            /// table: what `ComponentService.Describe` answers. Refused when
+            /// it has no rules version (MISSING_RULES_VERSION) or, for an
+            /// aggregate or process manager, its state is not a protobuf
+            /// message (MISSING_STATE_TYPE).
+            pub fn component_descriptor(&self) -> Result<ComponentDescriptor, ClientError> {
+                let mut described = self
+                    .tables
+                    .inner
+                    .component_descriptors()
+                    .map_err(from_coded)?;
+                Ok(described.pop().unwrap_or_default())
             }
         }
     )*};
 }
 
-impl_component_descriptors!(
+impl_component_descriptor!(
     CommandHandlerRouter,
     SagaRouter,
     ProcessManagerRouter,
-    ProjectorRouter,
-    UpcasterRouter
+    ProjectorRouter
 );
 
 macro_rules! impl_debug {
@@ -282,7 +228,7 @@ macro_rules! impl_debug {
         impl std::fmt::Debug for $ty {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.debug_struct(stringify!($ty))
-                    .field("configs", &self.configs)
+                    .field("config", &self.config)
                     .finish_non_exhaustive()
             }
         }

@@ -3,8 +3,8 @@
 //! [`get_transport_config`] resolves the transport (TCP or a Unix socket)
 //! from the environment the coordinator sets. Each `run_*_server` function
 //! serves one built router through a [`crate::host::ComponentHost`] until
-//! SIGINT / SIGTERM; use the host directly to serve several components or
-//! application services together.
+//! SIGINT / SIGTERM; use the host directly to serve application services
+//! next to the component.
 
 use std::env;
 use std::net::SocketAddr;

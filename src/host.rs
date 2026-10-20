@@ -1,14 +1,15 @@
 //! Generic gRPC component host.
 //!
-//! A [`ComponentHost`] serves an application's components — handler types
-//! declared with the kind macros, or routers already built from them — next
-//! to the gRPC health service, plus any gRPC services the application
-//! registers itself. It knows framework concepts only: component kinds,
-//! transport, readiness and shutdown.
+//! A [`ComponentHost`] serves one component (one coordinator = one
+//! component = one business process) — a handler type declared with a kind
+//! macro, or a router already built from one — next to the gRPC health
+//! service and the component service, plus any gRPC services the
+//! application registers itself. It knows framework concepts only:
+//! component kinds, transport, readiness and shutdown.
 //!
 //! Lifecycle:
 //!
-//! 1. [`ComponentHost::start`] builds one router per component kind, binds
+//! 1. [`ComponentHost::start`] builds the component's router, binds
 //!    the listener (TCP, or a Unix socket, from [`get_transport_config`]
 //!    unless [`ComponentHost::with_transport`] says otherwise) and serves.
 //! 2. Every served service name, and the overall `""` name, reports
@@ -47,7 +48,7 @@ use crate::proto::process_manager_service_server::ProcessManagerServiceServer;
 use crate::proto::projector_service_server::ProjectorServiceServer;
 use crate::proto::saga_service_server::SagaServiceServer;
 use crate::proto::upcaster_service_server::UpcasterServiceServer;
-use crate::router::{Built, Handler, HandlerKind, Kind, Router};
+use crate::router::{Built, Handler, HandlerKind, Kind, NoComponent, OneComponent, Router};
 use crate::server::{
     bind_tcp_listener, bind_uds_listener, cleanup_socket, ensure_uds_parent_dir,
     get_transport_config, parse_bind_address, resolve_bind_address, shutdown_signal, ServerConfig,
@@ -68,26 +69,47 @@ struct AppService {
     add: AddService,
 }
 
-/// Builder for a host serving components and application services.
-pub struct ComponentHost {
+/// The one component a host serves, registered by
+/// [`ComponentHost::with_handler`] or [`ComponentHost::with_router`].
+pub struct HostComponent(Pending);
+
+enum Pending {
+    Handler(Box<Router<OneComponent>>),
+    Built(Box<Built>),
+}
+
+impl std::fmt::Debug for HostComponent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Pending::Handler(r) => f.debug_tuple("HostComponent").field(&r.kind()).finish(),
+            Pending::Built(b) => f
+                .debug_tuple("HostComponent")
+                .field(&built_kind(b))
+                .finish(),
+        }
+    }
+}
+
+/// Builder for a host serving one component (one coordinator = one
+/// component = one business process) and application services.
+///
+/// The type system enforces "exactly one": `with_handler` and `with_router`
+/// are available only on a host with no component yet, and `start` /
+/// `serve` only on a host with one.
+pub struct ComponentHost<C = NoComponent> {
     rules_version: String,
-    builders: Vec<(Kind, Router)>,
-    routers: Vec<Built>,
+    component: C,
     services: Vec<AppService>,
     transport: Option<ServerConfig>,
     default_port: u16,
     drain_period: Duration,
 }
 
-impl std::fmt::Debug for ComponentHost {
+impl<C: std::fmt::Debug> std::fmt::Debug for ComponentHost<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ComponentHost")
             .field("rules_version", &self.rules_version)
-            .field(
-                "kinds",
-                &self.builders.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
-            )
-            .field("routers", &self.routers.len())
+            .field("component", &self.component)
             .field(
                 "services",
                 &self.services.iter().map(|s| s.name).collect::<Vec<_>>(),
@@ -100,19 +122,17 @@ impl std::fmt::Debug for ComponentHost {
 }
 
 impl ComponentHost {
-    /// An empty host for a binary built as `rules_version`: no components,
-    /// transport from the environment, no drain period.
+    /// An empty host for a binary built as `rules_version`: no component
+    /// yet, transport from the environment, no drain period.
     ///
     /// `rules_version` is the binary's full build version, baked in at
-    /// build time (pass [`crate::rules_version!()`]). Every hosted
-    /// component reports it on every answer and in its description
-    /// (types.proto, ComponentDescriptor); a host without one refuses to
-    /// start.
+    /// build time (pass [`crate::rules_version!()`]). The hosted component
+    /// reports it on every answer and in its description (types.proto,
+    /// ComponentDescriptor); a host without one refuses to start.
     pub fn new(rules_version: impl Into<String>) -> Self {
         Self {
             rules_version: rules_version.into(),
-            builders: Vec::new(),
-            routers: Vec::new(),
+            component: NoComponent,
             services: Vec::new(),
             transport: None,
             default_port: DEFAULT_HOST_PORT,
@@ -120,32 +140,37 @@ impl ComponentHost {
         }
     }
 
-    /// Register a component: a handler type declared with a kind macro.
-    /// Components of one kind are served by one router, which routes among
-    /// them (e.g. aggregates by domain).
-    pub fn with_handler<H, F>(mut self, factory: F) -> Self
+    /// Register the host's component: a handler type declared with a kind
+    /// macro.
+    pub fn with_handler<H, F>(self, factory: F) -> ComponentHost<HostComponent>
     where
         H: Handler + HandlerKind,
         F: Fn() -> H + Send + Sync + 'static,
     {
-        let at = self.builders.iter().position(|(k, _)| *k == H::KIND);
-        let router = match at {
-            Some(i) => self.builders.remove(i).1,
-            None => Router::new(H::KIND.as_str()),
-        };
-        self.builders.push((H::KIND, router.with_handler(factory)));
-        self
+        let router = Router::new(H::KIND.as_str()).with_handler(factory);
+        self.hosting(Pending::Handler(Box::new(router)))
     }
 
-    /// Register an already-built router. A host serves one router per
-    /// component kind.
-    pub fn with_router(mut self, built: Built) -> Self {
-        self.routers.push(built);
-        self
+    /// Register the host's component as an already-built router.
+    pub fn with_router(self, built: Built) -> ComponentHost<HostComponent> {
+        self.hosting(Pending::Built(Box::new(built)))
     }
 
+    fn hosting(self, pending: Pending) -> ComponentHost<HostComponent> {
+        ComponentHost {
+            rules_version: self.rules_version,
+            component: HostComponent(pending),
+            services: self.services,
+            transport: self.transport,
+            default_port: self.default_port,
+            drain_period: self.drain_period,
+        }
+    }
+}
+
+impl<C> ComponentHost<C> {
     /// Register an application-defined gRPC service, served next to the
-    /// components and reported by the health service under its name.
+    /// component and reported by the health service under its name.
     pub fn with_service<S>(mut self, service: S) -> Self
     where
         S: Service<
@@ -186,18 +211,18 @@ impl ComponentHost {
         self.drain_period = period;
         self
     }
+}
 
-    /// Build the routers, bind the listener and start serving in the
-    /// background, next to the health service and the component service
+impl ComponentHost<HostComponent> {
+    /// Build the component's router, bind the listener and start serving in
+    /// the background, next to the health service and the component service
     /// (`ComponentService.Describe`, which the coordinator calls to learn
-    /// the hosted components). Fails with a configuration error when the
-    /// host has no rules version, nothing is registered, a router does not
-    /// build, or two routers share a kind.
+    /// the component). Fails with a configuration error when the host has
+    /// no rules version or the router does not build.
     pub async fn start(self) -> Result<RunningHost> {
         let ComponentHost {
             rules_version,
-            builders,
-            mut routers,
+            component,
             services,
             transport,
             default_port,
@@ -210,47 +235,20 @@ impl ComponentHost {
                 std::iter::empty::<(String, String)>(),
             ));
         }
-        if builders.is_empty() && routers.is_empty() {
-            return Err(ClientError::invalid_argument(
-                codes::HOST_HAS_NO_COMPONENTS,
-                messages::HOST_HAS_NO_COMPONENTS,
-                std::iter::empty::<(String, String)>(),
-            ));
-        }
-        for (_, router) in builders {
-            routers.push(router.build().map_err(|e| {
-                ClientError::invalid_argument(e.code(), e.message(), e.details().clone())
-            })?);
-        }
-        let mut kinds: Vec<Kind> = Vec::new();
-        for built in &routers {
-            let kind = built_kind(built);
-            if kinds.contains(&kind) {
-                return Err(ClientError::invalid_argument(
-                    codes::HOST_DUPLICATE_KIND,
-                    messages::HOST_DUPLICATE_KIND,
-                    [(keys::HANDLER_KIND, kind.as_str())],
-                ));
-            }
-            kinds.push(kind);
-        }
-
         let to_client_error = |e: crate::router::BuildError| {
             ClientError::invalid_argument(e.code(), e.message(), e.details().clone())
         };
-        for built in &mut routers {
-            built.stamp(&rules_version).map_err(to_client_error)?;
-        }
-        let described = routers.iter().try_fold(Vec::new(), |mut all, built| {
-            all.extend(built.component_descriptors()?);
-            Ok(all)
-        });
+        let mut built = match component.0 {
+            Pending::Handler(router) => (*router).build().map_err(to_client_error)?,
+            Pending::Built(built) => *built,
+        };
+        built.stamp(&rules_version).map_err(to_client_error)?;
+        let described = built.component_descriptor();
 
-        let mut hosted = Vec::new();
-        for built in routers {
-            hosted.push(Hosted::from(built));
-        }
-        hosted.push(Hosted::component(ComponentGrpc::new(described)));
+        let hosted = vec![
+            Hosted::from(built),
+            Hosted::component(ComponentGrpc::new(described)),
+        ];
         let names: Vec<String> = hosted
             .iter()
             .map(|h| h.name.to_string())

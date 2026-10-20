@@ -107,34 +107,11 @@ impl HandlerConfig {
 /// Audit #72: each variant carries a [`crate::error::ErrorDetail`] following
 /// the structural error model from audit #59 (`code: &'static str`,
 /// static `message: &'static str`, `details: BTreeMap<String, String>`).
-/// `Display` emits the static message verbatim; runtime context (router
-/// name, conflicting kinds, duplicate (domain, type_url), etc.) rides in
-/// `details` for cucumber assertions on `err.code` / `err.details["..."]`.
+/// `Display` emits the static message verbatim; runtime context (the
+/// router's extras) rides in `details` for cucumber assertions on
+/// `err.code` / `err.details["..."]`.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum BuildError {
-    /// `Router::build()` called with zero registered handlers.
-    /// `code = ROUTER_NO_HANDLERS`, `details["router_name"]`.
-    #[error("{}", .0.message)]
-    Empty(crate::error::ErrorDetail),
-
-    /// `Router::build()` called with handlers of different kinds (e.g.
-    /// a `command_handler` and a `saga` registered together).
-    /// `code = MIXED_HANDLER_KINDS`,
-    /// `details["handler_kind"]` (first kind), `details["other_kind"]`
-    /// (conflicting kind), `details["router_name"]`.
-    #[error("{}", .0.message)]
-    MixedKinds(crate::error::ErrorDetail),
-
-    /// Audit finding #51 (reframed as #18): two CommandHandlers register
-    /// for the same `(domain, command_type_url)` pair within one Router.
-    /// Multi-handler CH dispatch is forbidden — each `(domain, type)` key
-    /// admits exactly one handler. Saga / PM / projector / upcaster fan-
-    /// out is still allowed (those kinds legitimately broadcast).
-    /// `code = DUPLICATE_COMMAND_HANDLER`,
-    /// `details["domain"]`, `details["type_url"]`, `details["router_name"]`.
-    #[error("{}", .0.message)]
-    DuplicateCommandHandler(crate::error::ErrorDetail),
-
     /// A component's own table is invalid, as reported by angzarr-router.
     /// `code` is the router's code.
     #[error("{}", .0.message)]
@@ -146,9 +123,6 @@ impl BuildError {
     /// rather than message-substring matching.
     pub fn code(&self) -> &'static str {
         match self {
-            BuildError::Empty(d) => d.code,
-            BuildError::MixedKinds(d) => d.code,
-            BuildError::DuplicateCommandHandler(d) => d.code,
             BuildError::InvalidComponent(d) => d.code,
         }
     }
@@ -156,19 +130,13 @@ impl BuildError {
     /// Static message (same string across languages for the same predicate).
     pub fn message(&self) -> &'static str {
         match self {
-            BuildError::Empty(d) => d.message,
-            BuildError::MixedKinds(d) => d.message,
-            BuildError::DuplicateCommandHandler(d) => d.message,
             BuildError::InvalidComponent(d) => d.message,
         }
     }
 
-    /// Structured runtime context (router name, conflicting kinds, etc.).
+    /// Structured runtime context (the router's extras).
     pub fn details(&self) -> &std::collections::BTreeMap<String, String> {
         match self {
-            BuildError::Empty(d) => &d.details,
-            BuildError::MixedKinds(d) => &d.details,
-            BuildError::DuplicateCommandHandler(d) => &d.details,
             BuildError::InvalidComponent(d) => &d.details,
         }
     }
@@ -227,17 +195,17 @@ impl Built {
         }
     }
 
-    /// Every component's description (types.proto, ComponentDescriptor),
-    /// in registration order; an upcaster router has none.
-    pub fn component_descriptors(
+    /// The component's description (types.proto, ComponentDescriptor);
+    /// an upcaster has none.
+    pub fn component_descriptor(
         &self,
-    ) -> Result<Vec<crate::proto::ComponentDescriptor>, crate::ClientError> {
+    ) -> Result<Option<crate::proto::ComponentDescriptor>, crate::ClientError> {
         match self {
-            Built::CommandHandler(r) => r.component_descriptors(),
-            Built::Saga(r) => r.component_descriptors(),
-            Built::ProcessManager(r) => r.component_descriptors(),
-            Built::Projector(r) => r.component_descriptors(),
-            Built::Upcaster(r) => r.component_descriptors(),
+            Built::CommandHandler(r) => r.component_descriptor().map(Some),
+            Built::Saga(r) => r.component_descriptor().map(Some),
+            Built::ProcessManager(r) => r.component_descriptor().map(Some),
+            Built::Projector(r) => r.component_descriptor().map(Some),
+            Built::Upcaster(_) => Ok(None),
         }
     }
 }

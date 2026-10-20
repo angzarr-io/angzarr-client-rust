@@ -18,3 +18,13 @@ fn with_handler_rejects_types_not_implementing_handler() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/router/ui/with_handler_rejects_non_handler.rs");
 }
+
+/// One component per router and per host (owner ruling: one coordinator =
+/// one component = one business process).
+#[test]
+fn routers_and_hosts_take_exactly_one_component() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/router/ui/router_takes_one_component.rs");
+    t.compile_fail("tests/router/ui/router_without_component_does_not_build.rs");
+    t.compile_fail("tests/router/ui/host_takes_one_component.rs");
+}

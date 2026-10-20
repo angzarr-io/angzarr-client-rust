@@ -1,0 +1,8 @@
+error[E0599]: no method named `build` found for struct `angzarr_client::router::Router` in the current scope
+ --> tests/router/ui/router_without_component_does_not_build.rs:6:30
+  |
+6 |     let _ = Router::new("x").build();
+  |                              ^^^^^ method not found in `angzarr_client::router::Router`
+  |
+  = note: the method was found for
+          - `angzarr_client::router::Router<OneComponent>`

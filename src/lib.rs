@@ -143,7 +143,7 @@ pub use proto_ext::{
 };
 
 // Component host and transport configuration
-pub use host::{ComponentHost, HostAddress, RunningHost};
+pub use host::{ComponentHost, HostAddress, HostComponent, RunningHost};
 pub use server::{
     configure_logging, get_transport_config, resolve_bind_address, ServerConfig, DEFAULT_BIND_HOST,
     ENV_BIND_ADDRESS,
