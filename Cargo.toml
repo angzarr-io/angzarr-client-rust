@@ -93,9 +93,18 @@ sha2 = "0.10"
 name = "features"
 harness = false
 
+# Red design tests for the proposal in docs/design/sender-and-registration.md;
+# they do not compile until it is signed off and implemented.
+[[test]]
+name = "proposal"
+required-features = ["proposal-tests"]
+
 [features]
 default = []
 # `angzarr_client::testing`: proto builders, deterministic test UUIDs,
 # ScenarioContext and recording fakes of the client traits. Enable it from
 # a consumer's [dev-dependencies].
 testing = []
+# Builds tests/proposal.rs (red until the proposal is implemented). Never
+# enable outside design review.
+proposal-tests = ["testing"]
