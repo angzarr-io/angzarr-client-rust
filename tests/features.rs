@@ -45,12 +45,6 @@ const PARITY_DIR: &str = "angzarr-project/parity/client";
 const PENDING: &[(&str, &str)] = &[
     ("C-0336", "no configurable connect timeout"),
     ("C-0337", "no configurable HTTP/2 keep-alive"),
-    // Rewritten upstream: the builder sends no correlation id unless one
-    // is set (owner ruling), and the coordinator assigns it.
-    (
-        "C-0305",
-        "spec rewrite pending: no generated correlation id",
-    ),
 ];
 
 /// Outcome of one feature run.

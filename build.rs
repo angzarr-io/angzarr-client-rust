@@ -66,9 +66,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for file in ROUTER_PROTO_FILES {
         let text = std::fs::read_to_string(file)?;
         for name in top_level_types(&text) {
-            if NOT_YET_IN_ROUTER.contains(&name.as_str()) {
-                continue;
-            }
             builder = builder.extern_path(
                 format!(".io.angzarr.v1.{name}"),
                 format!("::angzarr_router::pb::{}", name.to_upper_camel_case()),
@@ -89,11 +86,6 @@ const ROUTER_PROTO_FILES: &[&str] = &[
     "angzarr-project/proto/io/angzarr/v1/saga.proto",
     "angzarr-project/proto/io/angzarr/v1/process_manager.proto",
 ];
-
-/// Messages of the router's proto files that the pinned angzarr-router's
-/// own (older) angzarr-project pin does not have yet, so they are generated
-/// here. Empty this when the router's pin catches up.
-const NOT_YET_IN_ROUTER: &[&str] = &["ComponentDescriptors"];
 
 /// Names of the messages and enums declared at the top level of a proto
 /// file (nested types travel with their parent's extern path).

@@ -407,14 +407,10 @@ async fn then_type_url(world: &mut CommandBuilderWorld, part: String) {
     assert!(any.type_url.contains(&part), "type_url: {}", any.type_url);
 }
 
-#[then("the built command should have a non-empty correlation ID")]
-async fn then_nonempty_correlation(world: &mut CommandBuilderWorld) {
-    assert!(!world.correlation().is_nil());
-}
-
-#[then("the correlation ID should be a valid UUID")]
-async fn then_correlation_uuid(world: &mut CommandBuilderWorld) {
-    assert_eq!(world.correlation().get_version_num(), 4);
+#[then("the built command should have no correlation ID")]
+async fn then_no_correlation(world: &mut CommandBuilderWorld) {
+    let page = world.built().page.as_ref().expect("a command page");
+    assert_eq!(page.correlation_id, None);
 }
 
 #[then(expr = "the built command should have correlation ID {string}")]
