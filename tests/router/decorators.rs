@@ -186,7 +186,11 @@ test_proto!(InventoryReserved);
 
 struct AsyncSaga;
 
-#[saga(name = "saga-async", source = "order", target = "inventory")]
+#[saga(
+    name = "saga-async",
+    input_domain = "order",
+    output_domain = "inventory"
+)]
 impl AsyncSaga {
     #[handles(InventoryReserved)]
     #[allow(unused_variables, dead_code)]
@@ -196,9 +200,9 @@ impl AsyncSaga {
 }
 
 #[test]
-fn saga_router_output_domains_is_its_target() {
+fn a_saga_router_has_its_one_output_domain() {
     match AsyncSaga.config() {
-        HandlerConfig::Saga { target, .. } => assert_eq!(target, "inventory"),
+        HandlerConfig::Saga { output_domain, .. } => assert_eq!(output_domain, "inventory"),
         other => panic!("expected Saga, got {:?}", other),
     }
     let built = Router::new("saga-async")
@@ -208,7 +212,60 @@ fn saga_router_output_domains_is_its_target() {
     let Built::Saga(r) = built else {
         panic!("expected SagaRouter")
     };
-    assert_eq!(r.output_domains(), vec!["inventory".to_string()]);
+    assert_eq!(r.output_domain(), "inventory");
+}
+
+struct StraySaga;
+
+#[saga(
+    name = "saga-stray",
+    input_domain = "order",
+    output_domain = "inventory"
+)]
+impl StraySaga {
+    #[handles(InventoryReserved)]
+    #[allow(unused_variables, dead_code)]
+    fn on(&self, evt: InventoryReserved) -> CommandResult<angzarr_client::proto::SagaResponse> {
+        Ok(angzarr_client::proto::SagaResponse {
+            commands: vec![angzarr_client::proto::CommandBook {
+                cover: Some(angzarr_client::proto::Cover {
+                    domain: "billing".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+        })
+    }
+}
+
+/// A command outside the saga's one destination is a saga bug: INTERNAL,
+/// SAGA_COMMAND_OUTSIDE_DESTINATION, and no commands (saga.proto).
+#[test]
+fn a_saga_command_outside_its_destination_is_refused() {
+    let Ok(Built::Saga(r)) = Router::new("stray").with_handler(|| StraySaga).build() else {
+        panic!("expected SagaRouter")
+    };
+    let err = r
+        .dispatch(angzarr_client::proto::EventBook {
+            cover: Some(angzarr_client::proto::Cover {
+                domain: "order".into(),
+                ..Default::default()
+            }),
+            pages: vec![angzarr_client::proto::EventPage {
+                payload: Some(prost_types::Any {
+                    type_url: angzarr_client::full_type_url::<InventoryReserved>(),
+                    value: vec![],
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .expect_err("outside the destination");
+    let status = err.status().expect("a status");
+    assert_eq!(status.code(), tonic::Code::Internal);
+    let (code, _, _) =
+        angzarr_client::error::unpack_status_details(status.details()).expect("details");
+    assert_eq!(code, "SAGA_COMMAND_OUTSIDE_DESTINATION");
 }
 
 // ----------------------------------------------------------------------------

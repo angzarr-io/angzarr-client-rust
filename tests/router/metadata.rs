@@ -33,7 +33,7 @@ msg!(PingV2);
 struct NoState;
 
 struct SyncSaga;
-#[saga(name = "s-sync", source = "a", target = "inventory")]
+#[saga(name = "s-sync", input_domain = "a", output_domain = "inventory")]
 impl SyncSaga {
     #[handles(Ping)]
     fn on(&self, _e: Ping) -> CommandResult<SagaResponse> {
@@ -42,7 +42,7 @@ impl SyncSaga {
 }
 
 struct AsyncSaga;
-#[saga(name = "s-async", source = "a", target = "shipping")]
+#[saga(name = "s-async", input_domain = "a", output_domain = "shipping")]
 impl AsyncSaga {
     #[handles(Ping)]
     fn on(&self, _e: Ping) -> CommandResult<SagaResponse> {
@@ -56,13 +56,13 @@ fn saga_router_metadata() {
         panic!("saga router");
     };
     assert_eq!(r.name(), "s-async");
-    assert_eq!(r.output_domains(), vec!["shipping"]);
+    assert_eq!(r.output_domain(), "shipping");
 
     let Ok(Built::Saga(only_sync)) = Router::new("sagas").with_handler(|| SyncSaga).build() else {
         panic!("saga router");
     };
     assert_eq!(only_sync.name(), "s-sync");
-    assert_eq!(only_sync.output_domains(), vec!["inventory"]);
+    assert_eq!(only_sync.output_domain(), "inventory");
 }
 
 struct Pm;

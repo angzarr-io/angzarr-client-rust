@@ -58,8 +58,10 @@ pub enum HandlerConfig {
     },
     Saga {
         name: String,
-        source: String,
-        target: String,
+        /// The one source domain (ComponentOptions.input_domain).
+        input_domain: String,
+        /// The one destination domain (ComponentOptions.output_domain).
+        output_domain: String,
         handled: Vec<String>,
     },
     ProcessManager {

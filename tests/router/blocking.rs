@@ -95,7 +95,11 @@ impl BlockingAggregate {
 
 struct BlockingSaga(Arc<AtomicBool>);
 
-#[saga(name = "blocking-saga", source = "blocking", target = "other")]
+#[saga(
+    name = "blocking-saga",
+    input_domain = "blocking",
+    output_domain = "other"
+)]
 impl BlockingSaga {
     #[handles(Ping)]
     fn on_ping(&self, _evt: Ping) -> CommandResult<SagaResponse> {

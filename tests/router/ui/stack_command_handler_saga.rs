@@ -5,7 +5,7 @@ struct T;
 struct State;
 
 #[command_handler(domain = "x", state = State)]
-#[saga(name = "s", source = "a", target = "b")]
+#[saga(name = "s", input_domain = "a", output_domain = "b")]
 impl T {}
 
 fn main() {}

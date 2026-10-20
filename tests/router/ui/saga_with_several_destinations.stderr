@@ -1,0 +1,11 @@
+error: a saga has exactly one destination (output_domain = "domain"); a component issuing commands to several domains is a process manager
+ --> tests/router/ui/saga_with_several_destinations.rs:8:40
+  |
+8 | #[saga(name = "s", input_domain = "a", output_domains = ["b", "c"])]
+  |                                        ^^^^^^^^^^^^^^
+
+error: a saga has exactly one destination (output_domain = "domain"); a component issuing commands to several domains is a process manager
+  --> tests/router/ui/saga_with_several_destinations.rs:13:40
+   |
+13 | #[saga(name = "u", input_domain = "a", output_domain = ["b", "c"])]
+   |                                        ^^^^^^^^^^^^^

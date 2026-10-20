@@ -55,7 +55,7 @@ impl Ledger {
 
 struct Relay;
 
-#[saga(name = "relay", source = "ledger", target = "audit")]
+#[saga(name = "relay", input_domain = "ledger", output_domain = "audit")]
 impl Relay {
     #[handles(Tick)]
     fn on_tick(&self, _evt: Tick) -> CommandResult<SagaResponse> {

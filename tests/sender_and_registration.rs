@@ -250,7 +250,11 @@ mod describe {
 
     pub struct OrderFulfillment;
 
-    #[saga(name = "OrderFulfillment", source = "order", target = "shipping")]
+    #[saga(
+        name = "OrderFulfillment",
+        input_domain = "order",
+        output_domain = "shipping"
+    )]
     impl OrderFulfillment {
         #[handles(ItemAdded)]
         fn on_added(&self, _evt: ItemAdded) -> CommandResult<SagaResponse> {

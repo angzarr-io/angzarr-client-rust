@@ -33,7 +33,7 @@ impl StubCh {
 }
 
 struct StubSaga;
-#[saga(name = "stub-saga", source = "src", target = "tgt")]
+#[saga(name = "stub-saga", input_domain = "src", output_domain = "tgt")]
 impl StubSaga {
     #[handles(Ping)]
     fn on_ping(&self, _evt: Ping) -> CommandResult<SagaResponse> {

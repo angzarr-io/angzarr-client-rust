@@ -14,7 +14,7 @@ impl ::prost::Name for OrderCreated {
 
 struct S;
 
-#[saga(name = "x", source = "order", target = "inventory")]
+#[saga(name = "x", input_domain = "order", output_domain = "inventory")]
 impl S {
     #[handles(OrderCreated)]
     fn on_created(&self, _evt: OrderCreated, trigger_seq: u32) -> CommandResult<SagaResponse> {

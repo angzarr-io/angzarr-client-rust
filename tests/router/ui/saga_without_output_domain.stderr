@@ -1,0 +1,7 @@
+error: output_domain is required
+ --> tests/router/ui/saga_without_output_domain.rs:8:1
+  |
+8 | #[saga(name = "s", input_domain = "a")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `saga` (in Nightly builds, run with -Z macro-backtrace for more info)

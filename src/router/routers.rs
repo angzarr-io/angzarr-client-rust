@@ -83,11 +83,12 @@ impl SagaRouter {
         }
     }
 
-    /// The saga's target domain.
-    pub fn output_domains(&self) -> Vec<String> {
+    /// The saga's one destination domain (decision 14.24): a command for
+    /// any other domain fails INTERNAL (SAGA_COMMAND_OUTSIDE_DESTINATION).
+    pub fn output_domain(&self) -> String {
         match &self.config {
-            HandlerConfig::Saga { target, .. } => vec![target.clone()],
-            _ => Vec::new(),
+            HandlerConfig::Saga { output_domain, .. } => output_domain.clone(),
+            _ => String::new(),
         }
     }
 }

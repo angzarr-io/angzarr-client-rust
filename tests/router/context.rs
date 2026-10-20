@@ -44,7 +44,7 @@ fn record(seen: &Seen, source_cover: Option<Cover>) {
 
 struct ContextSaga(Seen);
 
-#[saga(name = "ctx-saga", source = "clock", target = "audit")]
+#[saga(name = "ctx-saga", input_domain = "clock", output_domain = "audit")]
 impl ContextSaga {
     #[handles(Tick)]
     fn on_tick(

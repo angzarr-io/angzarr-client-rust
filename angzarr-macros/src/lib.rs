@@ -25,7 +25,7 @@
 //! ```rust,ignore
 //! use angzarr_macros::{saga, handles};
 //!
-//! #[saga(name = "saga-order-fulfillment", source = "order", target = "inventory")]
+//! #[saga(name = "saga-order-fulfillment", input_domain = "order", output_domain = "inventory")]
 //! impl OrderFulfillmentSaga {
 //!     #[handles(OrderCompleted)]
 //!     fn handle_completed(&self, event: OrderCompleted)
@@ -685,12 +685,15 @@ pub fn applies(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Attributes
 /// - `name = "saga-name"` - The saga's name (required)
-/// - `source = "domain"` - Source domain whose events drive the saga (required)
-/// - `target = "domain"` - Target domain that emitted commands/facts land on (required)
+/// - `input_domain = "domain"` - The one source domain whose events drive the saga (required)
+/// - `output_domain = "domain"` - The one destination domain its commands go to (required).
+///   A saga has exactly one destination (decision 14.24): `output_domains` or a
+///   list is a compile error, and a command for any other domain fails INTERNAL
+///   (SAGA_COMMAND_OUTSIDE_DESTINATION). Several destinations make a process manager.
 ///
 /// # Example
 /// ```rust,ignore
-/// #[saga(name = "saga-order-fulfillment", source = "order", target = "inventory")]
+/// #[saga(name = "saga-order-fulfillment", input_domain = "order", output_domain = "inventory")]
 /// impl OrderFulfillmentSaga {
 ///     #[handles(OrderCompleted)]
 ///     fn handle_completed(&self, event: OrderCompleted) -> CommandResult<SagaResponse> {
@@ -714,15 +717,21 @@ pub fn saga(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 struct SagaArgs {
     name: String,
-    source: String,
-    target: String,
+    input_domain: String,
+    output_domain: String,
 }
+
+/// A saga has exactly one destination (decision 14.24); anything needing
+/// several is a process manager.
+const SAGA_ONE_DESTINATION: &str =
+    "a saga has exactly one destination (output_domain = \"domain\"); \
+     a component issuing commands to several domains is a process manager";
 
 impl syn::parse::Parse for SagaArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut name = None;
-        let mut source = None;
-        let mut target = None;
+        let mut input_domain = None;
+        let mut output_domain = None;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -733,13 +742,19 @@ impl syn::parse::Parse for SagaArgs {
                     let value: syn::LitStr = input.parse()?;
                     name = Some(value.value());
                 }
-                "source" => {
+                "input_domain" => {
                     let value: syn::LitStr = input.parse()?;
-                    source = Some(value.value());
+                    input_domain = Some(value.value());
                 }
-                "target" => {
+                "output_domain" => {
+                    if input.peek(syn::token::Bracket) {
+                        return Err(syn::Error::new(ident.span(), SAGA_ONE_DESTINATION));
+                    }
                     let value: syn::LitStr = input.parse()?;
-                    target = Some(value.value());
+                    output_domain = Some(value.value());
+                }
+                "output_domains" => {
+                    return Err(syn::Error::new(ident.span(), SAGA_ONE_DESTINATION));
                 }
                 _ => return Err(syn::Error::new(ident.span(), "unknown attribute")),
             }
@@ -751,16 +766,16 @@ impl syn::parse::Parse for SagaArgs {
 
         Ok(SagaArgs {
             name: require_non_empty_str(name, "name")?,
-            source: require_non_empty_str(source, "source")?,
-            target: require_non_empty_str(target, "target")?,
+            input_domain: require_non_empty_str(input_domain, "input_domain")?,
+            output_domain: require_non_empty_str(output_domain, "output_domain")?,
         })
     }
 }
 
 fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
     let name = &args.name;
-    let source = &args.source;
-    let target = &args.target;
+    let input_domain = &args.input_domain;
+    let output_domain = &args.output_domain;
 
     let meta = match collect_method_metadata(&input) {
         Ok(meta) => meta,
@@ -803,8 +818,8 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
             fn handler_config() -> ::angzarr_client::router::HandlerConfig {
                 ::angzarr_client::router::HandlerConfig::Saga {
                     name: #name.to_string(),
-                    source: #source.to_string(),
-                    target: #target.to_string(),
+                    input_domain: #input_domain.to_string(),
+                    output_domain: #output_domain.to_string(),
                     handled: ::std::vec![#(#handled_exprs),*],
                 }
             }
@@ -814,7 +829,7 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
             ) -> ::angzarr_client::router::component::Component {
                 use ::angzarr_client::router::component as __p;
                 let mut table =
-                    ::angzarr_client::router::binding::saga::SagaDispatch::new(#name, #source, [#target])
+                    ::angzarr_client::router::binding::saga::SagaDispatch::new(#name, #input_domain, #output_domain)
                         .with_rules_version(rules_version);
                 #(#regs)*
                 let _ = &factory;

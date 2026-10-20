@@ -57,7 +57,7 @@ Handler classes are declared with attribute macros. No trait is implemented by h
 | Kind | Macro | Purpose |
 |------|-------|---------|
 | Command handler | `#[command_handler(domain, state)]` | Validate commands, emit events |
-| Saga | `#[saga(name, source, target)]` | Translate source-domain events into target-domain commands |
+| Saga | `#[saga(name, input_domain, output_domain)]` | Translate one source domain's events into commands for its one destination domain (several destinations make a process manager) |
 | Process manager | `#[process_manager(name, pm_domain, sources, targets, state)]` | Stateful multi-domain orchestrator |
 | Projector | `#[projector(name, domains)]` | Side-effect fan-out over event books |
 | Upcaster chain | `#[upcaster(name, domain)]` | Transform legacy event versions in place; part of its component (`Router::with_upcaster`), whose host serves `UpcasterService` |
