@@ -1,43 +1,37 @@
-//! RED design tests for the sender and registration surface proposed in
-//! `docs/design/sender-and-registration.md`. Built only with the
-//! `proposal-tests` feature, and expected NOT to compile until the owner
-//! signs the proposal off and it is implemented:
+//! Sender delivery modes, Handling and the component description, as
+//! signed off in `docs/design/sender-and-registration.md`.
 //!
-//! ```bash
-//! cargo test --features proposal-tests --test proposal
-//! ```
+//! A test still gated by the `proposal-tests` feature is RED: its surface is
+//! not implemented yet. The gate comes off each test as it turns green.
 //!
-//! Spec: angzarr-project c0a00b9 — features/client/aggregate_client.feature
+//! Spec: angzarr-project — features/client/aggregate_client.feature
 //! (C-0194..C-0198), features/client/query_client.feature (C-0241),
-//! features/handler-contract/handling.feature (C-0533..C-0535), types.proto
-//! (Handling, ComponentDescriptor) and command_handler.proto (the
-//! DECISION / ASYNC / SIMPLE coordinator RPCs).
+//! features/handler-contract/handling.feature (C-0533, C-0535, C-0565),
+//! types.proto (Handling, ComponentDescriptor), command_handler.proto (the
+//! DECISION / ASYNC / SIMPLE coordinator RPCs) and component.proto
+//! (ComponentService.Describe).
 
-#[allow(dead_code)]
 mod common;
 
-use std::time::Duration;
-
-use angzarr_client::proto::{
-    CommandHandlerResponse, ComponentKind, ConflictResolution, ContextualCommand, EventBook,
-};
 #[allow(unused_imports)]
-use angzarr_client::router::{applies, command_handler, handles, Built, Router};
-use angzarr_client::{
-    CommandBuilderExt, CommandHandlerClient, CommandResult, ComponentHost, QueryClient,
-};
-
 use common::backend::{GenericCommand, TestBackend, TYPE_PREFIX};
 
-async fn connected() -> (TestBackend, CommandHandlerClient) {
+#[allow(dead_code)]
+async fn connected() -> (TestBackend, angzarr_client::CommandHandlerClient) {
     let backend = TestBackend::start_tcp().await;
     backend.add_projector("orders");
-    let client = CommandHandlerClient::connect(backend.endpoint())
+    let client = angzarr_client::CommandHandlerClient::connect(backend.endpoint())
         .await
         .expect("connect");
     (backend, client)
 }
 
+#[allow(dead_code)]
+fn add_item_url() -> String {
+    format!("{TYPE_PREFIX}AddItem")
+}
+
+#[allow(dead_code)]
 fn add_item() -> GenericCommand {
     GenericCommand {
         data: "apple".into(),
@@ -49,15 +43,17 @@ fn add_item() -> GenericCommand {
 // Delivery modes (C-0197, C-0198; command_handler.proto).
 // ---------------------------------------------------------------------------
 
-/// C-0197: fire-and-forget sends HandleAsync and returns before any
-/// decision or projector ran; it answers nothing but acceptance.
+/// C-0197: ASYNC sends HandleAsync and answers nothing but acceptance,
+/// before any decision or projector ran.
+#[cfg(feature = "proposal-tests")]
 #[tokio::test]
-async fn enqueue_is_fire_and_forget_over_handle_async() {
+async fn execute_async_is_fire_and_forget_over_handle_async() {
+    use angzarr_client::CommandBuilderExt;
     let (backend, client) = connected().await;
     let accepted: () = client
         .command_new("orders")
-        .with_command(format!("{TYPE_PREFIX}AddItem"), &add_item())
-        .enqueue()
+        .with_command(add_item_url(), &add_item())
+        .execute_async()
         .await
         .expect("accepted for processing");
     let _ = accepted;
@@ -65,85 +61,113 @@ async fn enqueue_is_fire_and_forget_over_handle_async() {
     assert!(backend.projector_runs().is_empty());
 }
 
-/// C-0198: waiting for projectors sends HandleSync and returns their
-/// projections in the outcome.
+/// C-0198: SIMPLE sends HandleSync and answers the events plus the
+/// synchronous projectors' projections.
+#[cfg(feature = "proposal-tests")]
 #[tokio::test]
-async fn execute_projected_waits_for_the_synchronous_projectors() {
+async fn execute_sync_waits_for_the_synchronous_projectors() {
+    use angzarr_client::CommandBuilderExt;
     let (backend, client) = connected().await;
     let response = client
         .command_new("orders")
-        .with_command(format!("{TYPE_PREFIX}AddItem"), &add_item())
-        .execute_projected()
+        .with_command(add_item_url(), &add_item())
+        .execute_sync()
         .await
         .expect("decided and projected");
     assert_eq!(backend.rpcs(), vec!["HandleSync"]);
+    assert_eq!(response.events.map(|e| e.pages.len()), Some(1));
     let outcome = response.outcome.expect("outcome");
     assert_eq!(outcome.projections.len(), 1);
     assert_eq!(outcome.projections[0].projector, "orders-projector");
 }
 
-/// The default stays DECISION (Handle): the decision, no projections.
+/// DECISION (Handle) answers the decision's events and no projections.
+#[cfg(feature = "proposal-tests")]
 #[tokio::test]
-async fn execute_stays_the_decision() {
+async fn execute_is_the_decision() {
+    use angzarr_client::CommandBuilderExt;
     let (backend, client) = connected().await;
-    client
+    let response = client
         .command_new("orders")
-        .with_command(format!("{TYPE_PREFIX}AddItem"), &add_item())
+        .with_command(add_item_url(), &add_item())
         .execute()
         .await
         .expect("decided");
     assert_eq!(backend.rpcs(), vec!["Handle"]);
+    assert_eq!(response.events.map(|e| e.pages.len()), Some(1));
+    assert!(response.outcome.is_none_or(|o| o.projections.is_empty()));
 }
 
-/// The trait carries all three modes, so fakes and alternative transports
-/// implement them too.
+/// The client and the GatewayClient trait carry the three RPCs by name.
+#[cfg(feature = "proposal-tests")]
 #[tokio::test]
-async fn the_gateway_trait_carries_every_mode() {
-    #[allow(unused_imports)]
+async fn the_gateway_trait_names_the_three_rpcs() {
     use angzarr_client::traits::GatewayClient;
+    use angzarr_client::CommandBuilderExt;
     let fake = angzarr_client::testing::RecordingGatewayClient::new();
     let book = fake
         .command_new("orders")
-        .with_command(format!("{TYPE_PREFIX}AddItem"), &add_item())
+        .with_command(add_item_url(), &add_item())
         .build()
         .unwrap();
-    fake.enqueue(book.clone()).await.unwrap();
-    fake.execute_projected(book).await.unwrap();
-    assert_eq!(fake.call_count("enqueue"), 1);
-    assert_eq!(fake.call_count("execute_projected"), 1);
+    fake.handle_async(book.clone()).await.unwrap();
+    fake.handle(book.clone()).await.unwrap();
+    fake.handle_sync(book).await.unwrap();
+    assert_eq!(fake.call_count("handle_async"), 1);
+    assert_eq!(fake.call_count("handle"), 1);
+    assert_eq!(fake.call_count("handle_sync"), 1);
 }
 
 // ---------------------------------------------------------------------------
 // Handling (types.proto, Handling; C-0194..C-0196).
 // ---------------------------------------------------------------------------
 
-/// A sender that does not know the head asks the coordinator to stamp it:
-/// no expected_sequence on the wire.
+/// No default: an unset expected sequence sends no Handling, so the
+/// coordinator stamps the head.
+#[cfg(feature = "proposal-tests")]
 #[test]
-fn at_head_sends_no_expected_sequence() {
+fn an_unset_expected_sequence_is_not_sent() {
+    use angzarr_client::CommandBuilderExt;
     let fake = angzarr_client::testing::RecordingGatewayClient::new();
     let book = fake
         .command_new("orders")
-        .at_head()
+        .with_command(add_item_url(), &add_item())
+        .build()
+        .unwrap();
+    assert_eq!(book.handling, None);
+}
+
+/// `with_expected_sequence` and `with_conflict_resolution` set the
+/// Handling fields of the same names.
+#[cfg(feature = "proposal-tests")]
+#[test]
+fn handling_setters_are_named_after_its_fields() {
+    use angzarr_client::proto::ConflictResolution;
+    use angzarr_client::CommandBuilderExt;
+    let fake = angzarr_client::testing::RecordingGatewayClient::new();
+    let book = fake
+        .command_new("orders")
+        .with_expected_sequence(7)
         .with_conflict_resolution(ConflictResolution::Strict)
-        .with_command(format!("{TYPE_PREFIX}AddItem"), &add_item())
+        .with_command(add_item_url(), &add_item())
         .build()
         .unwrap();
     let handling = book.handling.expect("handling");
-    assert_eq!(handling.expected_sequence, None);
+    assert_eq!(handling.expected_sequence, Some(7));
     assert_eq!(handling.conflict_resolution(), ConflictResolution::Strict);
 }
 
 /// C-0194: a stale expected sequence is ABORTED, classified by a
-/// predicate like the other status classes. The setter is named after
-/// `Handling.expected_sequence`.
+/// predicate like the other status classes.
+#[cfg(feature = "proposal-tests")]
 #[tokio::test]
 async fn a_stale_sequence_is_classified_as_aborted() {
+    use angzarr_client::CommandBuilderExt;
     let (_backend, client) = connected().await;
     let err = client
         .command_new("orders")
         .with_expected_sequence(3)
-        .with_command(format!("{TYPE_PREFIX}AddItem"), &add_item())
+        .with_command(add_item_url(), &add_item())
         .execute()
         .await
         .expect_err("stale");
@@ -155,6 +179,7 @@ async fn a_stale_sequence_is_classified_as_aborted() {
 // Correlated reads across domains (C-0241; query.proto GetCorrelatedEvents).
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "proposal-tests")]
 #[tokio::test]
 async fn correlated_events_cross_domains() {
     let backend = TestBackend::start_tcp().await;
@@ -168,117 +193,191 @@ async fn correlated_events_cross_domains() {
             Some(&proto),
         );
     }
-    let client = QueryClient::connect(backend.endpoint()).await.unwrap();
-    let books: Vec<EventBook> = client.get_correlated_events(corr, None).await.unwrap();
+    let client = angzarr_client::QueryClient::connect(backend.endpoint())
+        .await
+        .unwrap();
+    let books = client.get_correlated_events(corr, None).await.unwrap();
     assert_eq!(books.len(), 2);
 }
 
 // ---------------------------------------------------------------------------
-// Rules version and the registration hello (C-0533..C-0535, RV-2).
+// The rules version and the component description (C-0533, C-0535, C-0565;
+// component.proto; RV-2).
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct OrderState {
-    #[prost(uint32, tag = "1")]
-    items: u32,
-}
-impl ::prost::Name for OrderState {
-    const NAME: &'static str = "OrderState";
-    const PACKAGE: &'static str = "orders.v1";
-}
+#[cfg(feature = "proposal-tests")]
+mod describe {
+    use angzarr_client::proto::component_service_client::ComponentServiceClient;
+    use angzarr_client::proto::{ComponentKind, DescribeRequest, EventBook, SagaResponse};
+    use angzarr_client::router::{command_handler, saga};
+    use angzarr_client::{CommandResult, ComponentHost, HostAddress, ServerConfig};
 
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct AddItem {}
-impl ::prost::Name for AddItem {
-    const NAME: &'static str = "AddItem";
-    const PACKAGE: &'static str = "orders.v1";
-}
-
-struct Order;
-
-#[command_handler(domain = "order", state = OrderState)]
-impl Order {
-    #[handles(AddItem)]
-    fn add(&self, _cmd: AddItem, _state: &OrderState, _seq: u64) -> CommandResult<EventBook> {
-        Ok(EventBook::default())
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct OrderState {
+        #[prost(uint32, tag = "1")]
+        items: u32,
     }
-}
+    impl ::prost::Name for OrderState {
+        const NAME: &'static str = "OrderState";
+        const PACKAGE: &'static str = "orders.v1";
+    }
 
-fn order_router(version: &str) -> angzarr_client::router::CommandHandlerRouter {
-    let Ok(Built::CommandHandler(router)) = Router::new("order")
-        .with_rules_version(version)
-        .with_handler(|| Order)
-        .build()
-    else {
-        panic!("command-handler router");
-    };
-    router
-}
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct AddItem {}
+    impl ::prost::Name for AddItem {
+        const NAME: &'static str = "AddItem";
+        const PACKAGE: &'static str = "orders.v1";
+    }
 
-/// C-0533: every answer reports the build version.
-#[test]
-fn every_answer_reports_the_rules_version() {
-    let router = order_router("1.4.2+build.7");
-    let command = angzarr_client::testing::make_command_book(
-        angzarr_client::testing::make_cover("order", [1; 16]),
-        angzarr_client::testing::pack_event(&AddItem {}),
-        None,
-    );
-    let response: CommandHandlerResponse = router
-        .dispatch(ContextualCommand {
-            command: Some(command),
-            ..Default::default()
-        })
-        .expect("handled");
-    assert_eq!(response.rules_version, "1.4.2+build.7");
-}
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct ItemAdded {}
+    impl ::prost::Name for ItemAdded {
+        const NAME: &'static str = "ItemAdded";
+        const PACKAGE: &'static str = "orders.v1";
+    }
 
-/// C-0535: the registration hello carries the version and the state type
-/// generated from the state message.
-#[test]
-fn the_registration_hello_carries_version_and_state_type() {
-    let router = order_router("1.4.2+build.7");
-    let hellos = router.component_descriptors().expect("hello");
-    assert_eq!(hellos.len(), 1);
-    assert_eq!(hellos[0].kind(), ComponentKind::Aggregate);
-    assert_eq!(hellos[0].rules_version, "1.4.2+build.7");
-    assert_eq!(
-        hellos[0].state.as_ref().map(|s| s.type_url.as_str()),
-        Some("/orders.v1.OrderState")
-    );
-}
+    pub struct Order;
 
-/// The version is baked at build time from the binary's build version
-/// (versionator writes VERSION; the client's build helper exports it).
-#[test]
-fn the_build_version_is_baked_in() {
-    let version: &'static str = angzarr_client::rules_version!();
-    assert!(!version.is_empty());
-}
+    #[command_handler(domain = "order", state = OrderState)]
+    impl Order {
+        #[handles(AddItem)]
+        fn add(&self, _cmd: AddItem, _state: &OrderState, _seq: u64) -> CommandResult<EventBook> {
+            Ok(EventBook::default())
+        }
+    }
 
-/// RV-2: a binary without a version cannot start (MISSING_RULES_VERSION).
-#[tokio::test]
-async fn a_host_without_a_rules_version_refuses_to_start() {
-    let err = ComponentHost::new()
-        .with_handler(|| Order)
-        .with_drain_period(Duration::ZERO)
-        .start()
-        .await
-        .err()
-        .expect("refused");
-    assert!(err.is_invalid_argument(), "got {err:?}");
-}
+    pub struct OrderFulfillment;
 
-/// The hello is sent to the coordinator when the host starts; the host
-/// exposes what it announced.
-#[tokio::test]
-async fn a_running_host_announces_its_components() {
-    let running = ComponentHost::new()
-        .with_router(Built::CommandHandler(order_router("2.0.1")))
-        .start()
-        .await
-        .expect("starts");
-    let hellos = running.component_descriptors();
-    assert_eq!(hellos[0].name, "order");
-    running.shutdown().await.unwrap();
+    #[saga(name = "OrderFulfillment", source = "order", target = "shipping")]
+    impl OrderFulfillment {
+        #[handles(ItemAdded)]
+        fn on_added(&self, _evt: ItemAdded) -> CommandResult<SagaResponse> {
+            Ok(SagaResponse::default())
+        }
+    }
+
+    fn ephemeral() -> ServerConfig {
+        ServerConfig {
+            port: 0,
+            uds_path: None,
+        }
+    }
+
+    async fn channel(address: &HostAddress) -> tonic::transport::Channel {
+        let HostAddress::Tcp(addr) = address else {
+            panic!("tcp host");
+        };
+        tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{}", addr.port()))
+            .unwrap()
+            .connect()
+            .await
+            .unwrap()
+    }
+
+    /// RV-2: the version is baked at build time from the binary's
+    /// versionator-maintained VERSION file.
+    #[test]
+    fn the_build_version_is_baked_in() {
+        let version: &'static str = angzarr_client::rules_version!();
+        assert_eq!(version, include_str!("../VERSION").trim());
+    }
+
+    /// RV-2: a host without a version refuses to start
+    /// (MISSING_RULES_VERSION).
+    #[tokio::test]
+    async fn a_host_without_a_rules_version_refuses_to_start() {
+        let err = ComponentHost::new("")
+            .with_handler(|| Order)
+            .with_transport(ephemeral())
+            .start()
+            .await
+            .err()
+            .expect("refused");
+        assert!(err.is_invalid_argument(), "got {err:?}");
+        assert_eq!(err.code(), "MISSING_RULES_VERSION");
+    }
+
+    /// C-0533: every answer reports the host's version.
+    #[tokio::test]
+    async fn every_answer_reports_the_hosts_rules_version() {
+        use angzarr_client::proto::command_handler_service_client::CommandHandlerServiceClient;
+        use angzarr_client::proto::ContextualCommand;
+        let running = ComponentHost::new("1.4.2+build.7")
+            .with_handler(|| Order)
+            .with_transport(ephemeral())
+            .start()
+            .await
+            .expect("starts");
+        let command = angzarr_client::testing::make_command_book(
+            angzarr_client::testing::make_cover("order", [1; 16]),
+            angzarr_client::testing::pack_event(&AddItem {}),
+            None,
+        );
+        let response = CommandHandlerServiceClient::new(channel(running.address()).await)
+            .handle(ContextualCommand {
+                command: Some(command),
+                ..Default::default()
+            })
+            .await
+            .expect("handled")
+            .into_inner();
+        assert_eq!(response.rules_version, "1.4.2+build.7");
+        running.shutdown().await.unwrap();
+    }
+
+    /// C-0535, C-0565: the coordinator pulls the description; it lists
+    /// every hosted component with the host's version and, for an
+    /// aggregate, the state type of its state message.
+    #[tokio::test]
+    async fn describe_lists_every_hosted_component() {
+        let running = ComponentHost::new("1.4.2+build.7")
+            .with_handler(|| Order)
+            .with_handler(|| OrderFulfillment)
+            .with_transport(ephemeral())
+            .start()
+            .await
+            .expect("starts");
+        assert!(running
+            .services()
+            .contains(&"io.angzarr.v1.ComponentService".to_string()));
+        let described = ComponentServiceClient::new(channel(running.address()).await)
+            .describe(DescribeRequest {})
+            .await
+            .expect("described")
+            .into_inner();
+        let mut rows: Vec<(String, ComponentKind, String, String)> = described
+            .components
+            .iter()
+            .map(|c| {
+                (
+                    c.name.clone(),
+                    c.kind(),
+                    c.rules_version.clone(),
+                    c.state
+                        .as_ref()
+                        .map(|s| s.type_url.clone())
+                        .unwrap_or_default(),
+                )
+            })
+            .collect();
+        rows.sort();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "OrderFulfillment".to_string(),
+                    ComponentKind::Saga,
+                    "1.4.2+build.7".to_string(),
+                    String::new(),
+                ),
+                (
+                    "order".to_string(),
+                    ComponentKind::Aggregate,
+                    "1.4.2+build.7".to_string(),
+                    "/orders.v1.OrderState".to_string(),
+                ),
+            ]
+        );
+        running.shutdown().await.unwrap();
+    }
 }
