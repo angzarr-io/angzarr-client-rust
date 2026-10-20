@@ -18,7 +18,7 @@ pub struct CommandBuilder<'a, C: traits::GatewayClient> {
     domain: String,
     root: Option<Uuid>,
     correlation_id: Option<Uuid>,
-    sequence: Option<u64>,
+    expected_sequence: Option<u64>,
     conflict_resolution: ConflictResolution,
     type_url: Option<String>,
     payload: Option<Vec<u8>>,
@@ -40,7 +40,7 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
             domain: domain.into(),
             root: Some(root),
             correlation_id: None,
-            sequence: None,
+            expected_sequence: None,
             conflict_resolution: ConflictResolution::Unspecified,
             type_url: None,
             payload: None,
@@ -48,17 +48,18 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
     }
 
     /// Set the correlation ID for request tracing
-    /// (`CommandPage.correlation_id`). If not set, a random UUID v4 is
-    /// generated.
+    /// (`CommandPage.correlation_id`). If not set, none is sent and the
+    /// coordinator assigns one.
     pub fn with_correlation_id(mut self, id: Uuid) -> Self {
         self.correlation_id = Some(id);
         self
     }
 
     /// Set the expected sequence for optimistic concurrency
-    /// (`Handling.expected_sequence`). Defaults to 0 (a new aggregate).
-    pub fn with_sequence(mut self, seq: u64) -> Self {
-        self.sequence = Some(seq);
+    /// (`Handling.expected_sequence`). If not set, none is sent and the
+    /// coordinator stamps the head it decides against.
+    pub fn with_expected_sequence(mut self, seq: u64) -> Self {
+        self.expected_sequence = Some(seq);
         self
     }
 
@@ -97,9 +98,9 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
     /// or [`with_type_url`](Self::with_type_url) plus
     /// [`with_payload`](Self::with_payload)); without either `build()`
     /// returns `COMMAND_TYPE_URL_MISSING` / `COMMAND_PAYLOAD_MISSING`.
-    /// The expected sequence defaults to 0 (a new aggregate) when
-    /// [`with_sequence`](Self::with_sequence) is not called, and
-    /// `correlation_id` to a fresh random UUID v4.
+    /// Only what was set is sent: the book carries `Handling` when an
+    /// expected sequence or a conflict resolution was set, and the page a
+    /// correlation id when one was.
     pub fn build(self) -> Result<CommandBook> {
         let type_url = self.type_url.ok_or_else(|| {
             ClientError::invalid_argument(
@@ -115,10 +116,12 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
                 std::iter::empty::<(String, String)>(),
             )
         })?;
-        let handling = Handling {
-            expected_sequence: Some(self.sequence.unwrap_or(0)),
-            conflict_resolution: self.conflict_resolution as i32,
-        };
+        let handling = (self.expected_sequence.is_some()
+            || self.conflict_resolution != ConflictResolution::Unspecified)
+            .then_some(Handling {
+                expected_sequence: self.expected_sequence,
+                conflict_resolution: self.conflict_resolution as i32,
+            });
 
         Ok(CommandBook {
             cover: Some(Cover {
@@ -133,12 +136,10 @@ impl<'a, C: traits::GatewayClient> CommandBuilder<'a, C> {
                         value: payload,
                     }),
                 })),
-                correlation_id: Some(uuid_to_proto(
-                    self.correlation_id.unwrap_or_else(Uuid::new_v4),
-                )),
+                correlation_id: self.correlation_id.map(uuid_to_proto),
                 ..Default::default()
             }),
-            handling: Some(handling),
+            handling,
         })
     }
 

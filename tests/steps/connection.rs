@@ -139,7 +139,7 @@ async fn command_ok(client: &CommandHandlerClient) {
                 count: 1,
             },
         )
-        .with_sequence(0)
+        .with_expected_sequence(0)
         .execute()
         .await
         .expect("command RPC succeeds");

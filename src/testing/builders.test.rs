@@ -40,9 +40,9 @@ fn make_command_book_carries_the_command() {
 }
 
 #[test]
-fn make_command_book_default_sequence_is_zero() {
+fn make_command_book_sends_handling_only_for_a_sequence() {
     let unset = make_command_book(make_cover("x", [0u8; 16]), any(), None);
-    assert_eq!(unset.handling.and_then(|h| h.expected_sequence), Some(0));
+    assert!(unset.handling.is_none());
     let set = make_command_book(make_cover("x", [0u8; 16]), any(), Some(4));
     assert_eq!(set.handling.and_then(|h| h.expected_sequence), Some(4));
 }

@@ -57,6 +57,12 @@ async fn when_uuid_obj_for(world: &mut TestingWorld, name: String) {
     world.last_obj = Some(uuid_obj_for(&name, DEFAULT_TEST_NAMESPACE));
 }
 
+#[when(expr = "I call make_cover with domain {string}")]
+async fn when_make_cover(world: &mut TestingWorld, domain: String) {
+    let root = world.derived_root.expect("no derived root");
+    world.cover = Some(make_cover(domain, root));
+}
+
 #[when("I call make_event_book with that cover, no pages, and no explicit next_sequence")]
 async fn when_make_event_book_empty(world: &mut TestingWorld) {
     let cover = world.cover.clone().expect("no cover");

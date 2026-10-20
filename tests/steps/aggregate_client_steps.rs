@@ -79,7 +79,7 @@ impl AggregateClientWorld {
                     count,
                 },
             )
-            .with_sequence(sequence);
+            .with_expected_sequence(sequence);
         if let Some(label) = correlation {
             builder = builder.with_correlation_id(correlation_for(label));
         }
@@ -101,7 +101,7 @@ impl AggregateClientWorld {
                     items: vec![],
                 },
             )
-            .with_sequence(sequence)
+            .with_expected_sequence(sequence)
             .execute()
             .await
     }
@@ -135,8 +135,7 @@ fn seqs(book: &EventBook) -> Vec<u64> {
 /// A refusal for a stale expected sequence: ABORTED (types.proto,
 /// Handling; STRICT).
 fn is_stale(err: &ClientError) -> bool {
-    err.status()
-        .is_some_and(|s| s.code() == tonic::Code::Aborted)
+    err.is_aborted()
 }
 
 // --------------------------------------------------------------------------
@@ -269,7 +268,7 @@ async fn when_retry(world: &mut AggregateClientWorld) {
     world.result = Some(world.send_generic("AddItem", seq, 1, None).await);
 }
 
-#[when("I send a command without waiting for downstream work")]
+#[when("I send a command with handle_async")]
 async fn when_send_async(world: &mut AggregateClientWorld) {
     let accepted = world
         .client()
@@ -286,7 +285,7 @@ async fn when_send_async(world: &mut AggregateClientWorld) {
     world.accepted = Some(accepted);
 }
 
-#[when("I send a command and wait for projectors")]
+#[when("I send a command with handle_sync")]
 async fn when_send_sync(world: &mut AggregateClientWorld) {
     let result = world
         .client()
@@ -312,7 +311,7 @@ async fn when_send_malformed(world: &mut AggregateClientWorld) {
             full_type_url::<CreateOrder>(),
             &MalformedPayload { value: 7 },
         )
-        .with_sequence(0)
+        .with_expected_sequence(0)
         .execute()
         .await;
     world.result = Some(result);
@@ -450,6 +449,13 @@ async fn then_other_refused(world: &mut AggregateClientWorld) {
         .collect();
     assert_eq!(refused.len(), 1);
     assert!(is_stale(refused[0]), "got {:?}", refused[0]);
+}
+
+#[then("the call returns without the command's events")]
+async fn then_no_events(world: &mut AggregateClientWorld) {
+    // handle_async answers nothing: the type carries no events.
+    let accepted: &Result<(), ClientError> = world.accepted.as_ref().expect("an async send");
+    assert!(accepted.is_ok(), "async send failed: {accepted:?}");
 }
 
 #[then("the response returns before any projectors have caught up")]

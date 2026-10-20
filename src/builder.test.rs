@@ -65,12 +65,12 @@ fn test_command_builder_with_correlation_id() {
 }
 
 #[test]
-fn test_command_builder_with_sequence() {
+fn test_command_builder_with_expected_sequence() {
     let client = MockGatewayClient::new(CommandResponse::default());
     let root = Uuid::new_v4();
-    let builder = CommandBuilder::new(&client, "orders", root).with_sequence(42);
+    let builder = CommandBuilder::new(&client, "orders", root).with_expected_sequence(42);
 
-    assert_eq!(builder.sequence, Some(42));
+    assert_eq!(builder.expected_sequence, Some(42));
 }
 
 #[test]
@@ -102,7 +102,7 @@ fn test_command_builder_build_success() {
     };
     let cmd = CommandBuilder::new(&client, "orders", root)
         .with_correlation_id(corr)
-        .with_sequence(5)
+        .with_expected_sequence(5)
         .with_command("type.googleapis.com/test.Command", &msg)
         .build()
         .unwrap();
@@ -125,9 +125,9 @@ fn test_command_builder_build_success() {
 }
 
 #[test]
-fn test_command_builder_build_defaults_correlation_and_sequence() {
-    // An unset correlation id is a fresh UUID v4 (parity C-0305); an
-    // unset expected sequence is 0, a new aggregate (parity C-0308).
+fn test_command_builder_build_sends_only_what_was_set() {
+    // No correlation id and no Handling unless set: the coordinator
+    // assigns the one and stamps the head for the other.
     let client = MockGatewayClient::new(CommandResponse::default());
     let msg = prost_types::Duration {
         seconds: 42,
@@ -138,15 +138,8 @@ fn test_command_builder_build_defaults_correlation_and_sequence() {
         .build()
         .unwrap();
 
-    let corr = cmd.page.unwrap().correlation_id.expect("generated");
-    let corr = Uuid::from_slice(&corr.value).expect("16 bytes");
-    assert_eq!(corr.get_version_num(), 4);
-    let handling = cmd.handling.expect("handling");
-    assert_eq!(handling.expected_sequence, Some(0));
-    assert_eq!(
-        handling.conflict_resolution(),
-        ConflictResolution::Unspecified
-    );
+    assert_eq!(cmd.page.expect("page").correlation_id, None);
+    assert_eq!(cmd.handling, None);
 }
 
 #[test]
@@ -154,7 +147,7 @@ fn test_command_builder_build_missing_type_url() {
     let client = MockGatewayClient::new(CommandResponse::default());
     let root = Uuid::new_v4();
     let result = CommandBuilder::new(&client, "orders", root)
-        .with_sequence(0)
+        .with_expected_sequence(0)
         .build();
 
     assert!(result.is_err());
@@ -168,7 +161,7 @@ fn test_command_builder_build_missing_payload() {
     let root = Uuid::new_v4();
     let mut builder = CommandBuilder::new(&client, "orders", root);
     builder.type_url = Some("type.googleapis.com/test".to_string());
-    builder.sequence = Some(0);
+    builder.expected_sequence = Some(0);
     let result = builder.build();
 
     assert!(result.is_err());
@@ -186,8 +179,8 @@ fn test_command_builder_conflict_resolution_rides_in_handling() {
         .with_command("type.googleapis.com/test.Command", &msg)
         .build()
         .unwrap();
-    let handling = book.handling.expect("handling");
-    assert_eq!(handling.expected_sequence, Some(0));
+    let handling = book.handling.expect("a resolution sets handling");
+    assert_eq!(handling.expected_sequence, None);
     assert_eq!(
         handling.conflict_resolution(),
         ConflictResolution::AggregateHandles
@@ -230,7 +223,7 @@ async fn test_command_new_auto_generates_uuid_v4_root() {
     };
     let book = client
         .command_new("orders")
-        .with_sequence(0)
+        .with_expected_sequence(0)
         .with_command("type.googleapis.com/test.Cmd", &msg)
         .build()
         .expect("build should succeed — command_new auto-fills root");
@@ -254,13 +247,13 @@ async fn test_command_new_each_call_yields_independent_root() {
     };
     let a = client
         .command_new("orders")
-        .with_sequence(0)
+        .with_expected_sequence(0)
         .with_command("type.googleapis.com/test.Cmd", &msg)
         .build()
         .unwrap();
     let b = client
         .command_new("orders")
-        .with_sequence(0)
+        .with_expected_sequence(0)
         .with_command("type.googleapis.com/test.Cmd", &msg)
         .build()
         .unwrap();
@@ -280,7 +273,7 @@ async fn test_command_builder_execute_sends_the_built_command() {
     };
     let _ = client
         .command_new("orders")
-        .with_sequence(3)
+        .with_expected_sequence(3)
         .with_command("type.googleapis.com/test.Cmd", &msg)
         .execute()
         .await

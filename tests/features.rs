@@ -45,16 +45,11 @@ const PARITY_DIR: &str = "angzarr-project/parity/client";
 const PENDING: &[(&str, &str)] = &[
     ("C-0336", "no configurable connect timeout"),
     ("C-0337", "no configurable HTTP/2 keep-alive"),
-    // Parity scenarios the current protos no longer support: a Cover has
-    // no correlation_id, an EventPage no offloaded (PayloadReference)
-    // payload, and an unspecified conflict resolution means the
-    // configured default (a builder naming COMMUTATIVE is refused for a
-    // state without it). angzarr-project must update them.
-    ("C-0118", "stale spec: Cover has no correlation_id"),
-    ("C-0315", "stale spec: default resolution is UNSPECIFIED"),
+    // Rewritten upstream: the builder sends no correlation id unless one
+    // is set (owner ruling), and the coordinator assigns it.
     (
-        "C-0371",
-        "stale spec: EventPage has no PayloadReference payload",
+        "C-0305",
+        "spec rewrite pending: no generated correlation id",
     ),
     // A Query never crosses its cover's domain (types.proto, Query); the
     // cross-domain read is GetCorrelatedEvents, which the client does not

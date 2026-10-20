@@ -17,7 +17,7 @@
 //!     let cart_id = Uuid::new_v4();
 //!     let response = client.command_handler
 //!         .command("cart", cart_id)
-//!         .with_sequence(0)
+//!         .with_expected_sequence(0)
 //!         .with_command("/examples.CreateCart", &create_cart)
 //!         .execute()
 //!         .await?;

@@ -119,7 +119,6 @@ async fn the_gateway_trait_names_the_three_rpcs() {
 
 /// No default: an unset expected sequence sends no Handling, so the
 /// coordinator stamps the head.
-#[cfg(feature = "proposal-tests")]
 #[test]
 fn an_unset_expected_sequence_is_not_sent() {
     use angzarr_client::CommandBuilderExt;
@@ -134,7 +133,6 @@ fn an_unset_expected_sequence_is_not_sent() {
 
 /// `with_expected_sequence` and `with_conflict_resolution` set the
 /// Handling fields of the same names.
-#[cfg(feature = "proposal-tests")]
 #[test]
 fn handling_setters_are_named_after_its_fields() {
     use angzarr_client::proto::ConflictResolution;
@@ -154,7 +152,6 @@ fn handling_setters_are_named_after_its_fields() {
 
 /// C-0194: a stale expected sequence is ABORTED, classified by a
 /// predicate like the other status classes.
-#[cfg(feature = "proposal-tests")]
 #[tokio::test]
 async fn a_stale_sequence_is_classified_as_aborted() {
     use angzarr_client::CommandBuilderExt;

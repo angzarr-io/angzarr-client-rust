@@ -69,7 +69,7 @@ impl DomainClientWorld {
                     count: 1,
                 },
             )
-            .with_sequence(0)
+            .with_expected_sequence(0)
             .execute()
             .await
     }

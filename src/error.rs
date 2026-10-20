@@ -320,6 +320,13 @@ impl ClientError {
             || matches!(self, ClientError::Rejected(r) if r.is_precondition_failed())
     }
 
+    /// Returns true if this is an "aborted" error: a stale expected
+    /// sequence under STRICT, or a conflict the aggregate did not resolve
+    /// (CONFLICT_UNRESOLVED) or that overlaps (CONFLICT_OVERLAP).
+    pub fn is_aborted(&self) -> bool {
+        matches!(self.grpc_code(), Some(Code::Aborted))
+    }
+
     /// Returns true if this is an "invalid argument" error.
     pub fn is_invalid_argument(&self) -> bool {
         matches!(self.grpc_code(), Some(Code::InvalidArgument))
@@ -556,6 +563,24 @@ mod tests {
     fn is_connection_error_includes_unavailable_grpc() {
         let err = ClientError::from(Status::unavailable("backend down"));
         assert!(err.is_connection_error());
+    }
+
+    #[test]
+    fn is_aborted_is_the_aborted_status_only() {
+        assert!(ClientError::from(Status::aborted("stale")).is_aborted());
+        for status in [
+            Status::failed_precondition("conflict"),
+            Status::unavailable("down"),
+            Status::invalid_argument("bad"),
+        ] {
+            assert!(!ClientError::from(status).is_aborted());
+        }
+        let rejected = CommandRejectedError::precondition_failed(
+            "STALE",
+            "stale",
+            std::iter::empty::<(String, String)>(),
+        );
+        assert!(!ClientError::Rejected(rejected).is_aborted());
     }
 
     #[test]

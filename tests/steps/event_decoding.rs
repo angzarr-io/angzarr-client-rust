@@ -139,6 +139,18 @@ async fn given_event_page_with_event_payload(world: &mut EventDecodingWorld) {
     ));
 }
 
+#[given("an EventPage read from the event store")]
+async fn given_stored_page(world: &mut EventDecodingWorld) {
+    world.current_event = Some(make_event_page(
+        4,
+        "type.googleapis.com/orders.OrderCreated",
+        OrderCreated {
+            order_id: "stored".to_string(),
+        }
+        .encode_to_vec(),
+    ));
+}
+
 #[given(expr = "an event with type_url ending in {string}")]
 async fn given_event_with_suffix(world: &mut EventDecodingWorld, suffix: String) {
     let event = OrderCreated {
@@ -540,6 +552,25 @@ async fn then_event_contains_any(world: &mut EventDecodingWorld) {
             assert!(!any.type_url.is_empty());
         }
     }
+}
+
+#[then("event.payload should be a google.protobuf.Any")]
+async fn then_payload_is_any(world: &mut EventDecodingWorld) {
+    let event = world.current_event.as_ref().expect("an event");
+    let payload: &Option<Any> = &event.payload;
+    assert!(payload.is_some());
+}
+
+/// `EventPage.payload` is an `Any`, not a oneof: there is no arm a
+/// reference could occupy.
+#[then("the page should offer no payload reference")]
+async fn then_no_reference(world: &mut EventDecodingWorld) {
+    let event = world.current_event.as_ref().expect("an event");
+    let EventPage {
+        payload: _,
+        meta: _,
+        sequence: _,
+    } = event;
 }
 
 #[then("the match should succeed")]

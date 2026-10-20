@@ -29,6 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // angzarr-router crate (`ROUTER_PROTO_FILES`).
     let proto_files = [
         "angzarr-project/proto/io/angzarr/v1/command_handler.proto",
+        "angzarr-project/proto/io/angzarr/v1/component.proto",
         "angzarr-project/proto/io/angzarr/v1/projector.proto",
         "angzarr-project/proto/io/angzarr/v1/saga.proto",
         "angzarr-project/proto/io/angzarr/v1/process_manager.proto",
@@ -54,8 +55,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // which re-exports angzarr-project's angzarr-proto crate), so the
     // router's dispatch tables and this crate's gRPC services and clients
     // share one set of Rust types. Only the service stubs and the messages
-    // the router does not provide (meta.proto's edition admin messages and
-    // cloudevents.proto) are emitted here.
+    // the router does not provide (component.proto's DescribeRequest,
+    // meta.proto's edition admin messages and cloudevents.proto) are
+    // emitted here.
     let mut builder = tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
@@ -64,6 +66,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for file in ROUTER_PROTO_FILES {
         let text = std::fs::read_to_string(file)?;
         for name in top_level_types(&text) {
+            if NOT_YET_IN_ROUTER.contains(&name.as_str()) {
+                continue;
+            }
             builder = builder.extern_path(
                 format!(".io.angzarr.v1.{name}"),
                 format!("::angzarr_router::pb::{}", name.to_upper_camel_case()),
@@ -84,6 +89,11 @@ const ROUTER_PROTO_FILES: &[&str] = &[
     "angzarr-project/proto/io/angzarr/v1/saga.proto",
     "angzarr-project/proto/io/angzarr/v1/process_manager.proto",
 ];
+
+/// Messages of the router's proto files that the pinned angzarr-router's
+/// own (older) angzarr-project pin does not have yet, so they are generated
+/// here. Empty this when the router's pin catches up.
+const NOT_YET_IN_ROUTER: &[&str] = &["ComponentDescriptors"];
 
 /// Names of the messages and enums declared at the top level of a proto
 /// file (nested types travel with their parent's extern path).

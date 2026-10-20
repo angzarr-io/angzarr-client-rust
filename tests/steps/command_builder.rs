@@ -60,7 +60,7 @@ fn apply<'a, C: GatewayClient>(client: &'a C, r: &Recipe) -> angzarr_client::Com
         b = b.with_correlation_id(correlation_for(label));
     }
     if let Some(seq) = r.sequence {
-        b = b.with_sequence(seq);
+        b = b.with_expected_sequence(seq);
     }
     if let Some(m) = r.resolution {
         b = b.with_conflict_resolution(m);
@@ -257,7 +257,7 @@ async fn when_set_correlation(world: &mut CommandBuilderWorld, id: String) {
     world.recipe.correlation_id = Some(id);
 }
 
-#[when(expr = "I set sequence to {int}")]
+#[when(expr = "I set the expected sequence to {int}")]
 async fn when_set_sequence(world: &mut CommandBuilderWorld, seq: u64) {
     world.recipe.sequence = Some(seq);
 }
@@ -278,7 +278,7 @@ async fn when_no_payload(world: &mut CommandBuilderWorld) {
     world.build();
 }
 
-#[when("I build a command without specifying merge strategy")]
+#[when("I build a command without specifying a conflict resolution")]
 async fn when_default_merge(world: &mut CommandBuilderWorld) {
     world.recipe = Recipe {
         domain: "orders".into(),
@@ -289,7 +289,7 @@ async fn when_default_merge(world: &mut CommandBuilderWorld) {
     world.build();
 }
 
-#[when("I build a command with merge strategy STRICT")]
+#[when("I build a command with conflict resolution STRICT")]
 async fn when_strict_merge(world: &mut CommandBuilderWorld) {
     world.recipe = Recipe {
         domain: "orders".into(),
@@ -422,9 +422,15 @@ async fn then_correlation(world: &mut CommandBuilderWorld, id: String) {
     assert_eq!(world.correlation(), correlation_for(&id));
 }
 
-#[then(expr = "the built command should have sequence {int}")]
+#[then(expr = "the built command should have expected sequence {int}")]
 async fn then_sequence(world: &mut CommandBuilderWorld, seq: u64) {
     assert_eq!(world.handling().expected_sequence, Some(seq));
+}
+
+#[then("the built command should have no expected sequence")]
+async fn then_no_sequence(world: &mut CommandBuilderWorld) {
+    let book = world.built();
+    assert_eq!(book.handling.and_then(|h| h.expected_sequence), None);
 }
 
 #[then("building should fail")]
@@ -486,17 +492,8 @@ async fn then_sent(world: &mut CommandBuilderWorld) {
         .last_call("handle")
         .expect("gateway received execute");
     let built = world.built();
-    // build() and execute() each mint a fresh correlation id, so compare
-    // the addressing, the handling and the command itself.
-    let sent = call.command.cover.as_ref().expect("sent cover");
-    let expected = built.cover.as_ref().expect("built cover");
-    assert_eq!(
-        (&sent.domain, &sent.root),
-        (&expected.domain, &expected.root)
-    );
-    assert!(!correlation_of(&call.command).is_nil());
-    assert_eq!(command_any(&call.command), command_any(built));
-    assert_eq!(call.command.handling, built.handling);
+    // Nothing is generated, so execute() sends exactly what build() built.
+    assert_eq!(&call.command, built);
 }
 
 #[then("the response should be returned")]
@@ -526,22 +523,17 @@ async fn then_built_and_executed(world: &mut CommandBuilderWorld) {
     );
 }
 
-/// MergeStrategy is ConflictResolution now, carried by the book's
-/// `Handling`.
-#[then("the command page should have MERGE_COMMUTATIVE strategy")]
-async fn then_commutative(world: &mut CommandBuilderWorld) {
-    assert_eq!(
-        world.handling().conflict_resolution(),
-        ConflictResolution::Commutative
-    );
-}
-
-#[then("the command page should have MERGE_STRICT strategy")]
-async fn then_strict(world: &mut CommandBuilderWorld) {
-    assert_eq!(
-        world.handling().conflict_resolution(),
-        ConflictResolution::Strict
-    );
+/// The conflict resolution the built book requests; no `Handling` is
+/// UNSPECIFIED.
+#[then(expr = "the command's handling should have conflict resolution {word}")]
+async fn then_resolution(world: &mut CommandBuilderWorld, name: String) {
+    let want = ConflictResolution::from_str_name(&name).expect("a ConflictResolution");
+    let got = world
+        .built()
+        .handling
+        .as_ref()
+        .map_or(ConflictResolution::Unspecified, |h| h.conflict_resolution());
+    assert_eq!(got, want);
 }
 
 #[then("each command should have its own root")]
@@ -562,11 +554,7 @@ async fn then_no_contamination(world: &mut CommandBuilderWorld) {
     let b = world.built_pair[1].cover.as_ref().expect("cover");
     assert_eq!(a.domain, world.recipe.domain);
     assert_eq!(b.domain, world.recipe.domain);
-    assert_ne!(
-        correlation_of(&world.built_pair[0]),
-        correlation_of(&world.built_pair[1]),
-        "each build gets its own correlation id"
-    );
+    assert_ne!(a.root, b.root, "each build keeps its own root");
 }
 
 #[then("I should receive a CommandBuilder for that domain and root")]

@@ -104,16 +104,19 @@ pub fn make_command_page(command: Any) -> CommandPage {
 
 /// Build a single-command `CommandBook`.
 ///
-/// `sequence` (`Handling.expected_sequence`) defaults to `0` when `None` —
-/// mirrors Python's `make_command_book(cover, command, sequence=0)`. Pass
-/// `Some(n)` to override.
+/// `expected_sequence` sets `Handling.expected_sequence`; `None` sends no
+/// `Handling`, so the coordinator stamps the head.
 #[must_use]
-pub fn make_command_book(cover: Cover, command: Any, sequence: Option<u64>) -> CommandBook {
+pub fn make_command_book(
+    cover: Cover,
+    command: Any,
+    expected_sequence: Option<u64>,
+) -> CommandBook {
     CommandBook {
         cover: Some(cover),
         page: Some(make_command_page(command)),
-        handling: Some(Handling {
-            expected_sequence: Some(sequence.unwrap_or(0)),
+        handling: expected_sequence.map(|seq| Handling {
+            expected_sequence: Some(seq),
             ..Default::default()
         }),
     }
