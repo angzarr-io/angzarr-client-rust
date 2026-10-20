@@ -13,7 +13,7 @@
 //!     }
 //!
 //!     #[handles(Increase)]
-//!     fn increase(&self, cmd: Increase, state: &CounterState, seq: u32)
+//!     fn increase(&self, cmd: Increase, state: &CounterState, seq: u64)
 //!         -> CommandResult<EventBook> {
 //!         // ...
 //!     }
@@ -119,7 +119,7 @@ fn reject_stacked_kinds(this_kind: &str, attrs: &[Attribute]) -> Option<TokenStr
 /// #[command_handler(domain = "counter", state = CounterState)]
 /// impl Counter {
 ///     #[handles(Increase)]
-///     fn register(&self, cmd: Increase, state: &CounterState, seq: u32)
+///     fn register(&self, cmd: Increase, state: &CounterState, seq: u64)
 ///         -> CommandResult<EventBook> {
 ///         // ...
 ///     }
@@ -403,7 +403,7 @@ struct MethodMetadata {
     upcasts_with_methods: Vec<(Ident, syn::Path, syn::Path)>,
     /// Types named in `#[handles_fact(T)]` for config emission.
     handles_fact: Vec<syn::Path>,
-    /// `(method name, fact event type)` pairs for HandleFact
+    /// `(method name, fact type)` pairs for fact-dispatch
     /// dispatch-arm generation.
     handles_fact_with_methods: Vec<(Ident, syn::Path)>,
 }
@@ -592,7 +592,7 @@ fn strip_method_markers(input: &mut ItemImpl) {
 /// # Example
 /// ```rust,ignore
 /// #[handles(Increase)]
-/// fn register(&self, cmd: Increase, state: &CounterState, seq: u32)
+/// fn register(&self, cmd: Increase, state: &CounterState, seq: u64)
 ///     -> CommandResult<EventBook> {
 ///     // ...
 /// }
@@ -607,10 +607,10 @@ pub fn handles(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Marks a method as a fact handler.
 ///
 /// Triggered when the coordinator dispatches a fact (an external
-/// reality, e.g. a payment confirmation) via the `HandleFact` RPC. The
+/// reality, e.g. a payment confirmation) in the Fact arm of a command page
+/// delivered to `CommandHandlerService.Handle`. The
 /// method receives `(self, fact, state)` after state has been rebuilt
-/// from prior events (and the facts and flags recorded before it in the
-/// same request). It returns the fact to record, optionally followed by
+/// from prior events. It returns the fact to record, optionally followed by
 /// events that flag it, as a `FactRecord`; returning the fact message
 /// itself records it with no flags. Facts cannot be refused.
 ///
@@ -673,11 +673,12 @@ pub fn applies(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Marks an impl block as a saga with event handlers.
 ///
 /// Sagas are pure translators: they receive source events and produce
-/// commands. Emitted commands are deferred: the router stamps their
-/// `angzarr_deferred` provenance and the destination assigns the sequence.
+/// commands. Emitted commands pass through as the handler built them: the
+/// coordinator stamps their identity, causation and correlation, and the
+/// destination stamps the sequence.
 ///
 /// A handler takes the event and may also declare, by name, `source_cover:
-/// Option<Cover>` (the triggering book's cover) and `source_seq: u32` (the
+/// Option<Cover>` (the triggering book's cover) and `source_seq: u64` (the
 /// triggering event's sequence). Process-manager handlers take
 /// `source_cover` after their state.
 ///
@@ -692,7 +693,7 @@ pub fn applies(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// impl OrderFulfillmentSaga {
 ///     #[handles(OrderCompleted)]
 ///     fn handle_completed(&self, event: OrderCompleted) -> CommandResult<SagaResponse> {
-///         // Build commands with cover set (framework stamps angzarr_deferred)
+///         // Build commands with the target cover set (the coordinator stamps the rest)
 ///         // ...
 ///     }
 /// }
@@ -774,12 +775,12 @@ fn expand_saga(args: SagaArgs, mut input: ItemImpl) -> TokenStream2 {
             let f = ::std::sync::Arc::clone(&factory);
             table = table.on_event_with_context(
                 &<#evt_ty as ::prost::Name>::full_name(),
-                move |any, dests, page| {
-                    let _ = (&dests, &page);
+                move |any, page| {
+                    let _ = &page;
                     let event: #evt_ty = __p::decode(any)?;
                     let handler = f();
                     let response = handler.#method(event #(, #extra)*).map_err(__p::rejected)?;
-                    ::std::result::Result::Ok((response.commands, response.events))
+                    ::std::result::Result::Ok(response.commands)
                 },
             );
         });
@@ -963,8 +964,8 @@ fn expand_process_manager(args: ProcessManagerArgs, mut input: ItemImpl) -> Toke
                 table = table.on_event(
                     #source,
                     &<#evt_ty as ::prost::Name>::full_name(),
-                    move |any, state, dests, source_cover| {
-                        let _ = (&dests, &source_cover);
+                    move |any, state, source_cover| {
+                        let _ = &source_cover;
                         let event: #evt_ty = __p::decode(any)?;
                         let handler = f();
                         handler

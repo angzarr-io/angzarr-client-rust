@@ -142,9 +142,7 @@ pub fn full_type_name<T: Name>() -> String {
 
 /// Convert a UUID to its protobuf representation.
 pub fn uuid_to_proto(uuid: Uuid) -> ProtoUuid {
-    ProtoUuid {
-        value: uuid.as_bytes().to_vec(),
-    }
+    ProtoUuid::from(uuid)
 }
 
 /// Convert a protobuf UUID to a standard UUID.

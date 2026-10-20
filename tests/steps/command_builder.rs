@@ -7,16 +7,14 @@
 
 use std::sync::Arc;
 
-use angzarr_client::proto::{
-    command_page, page_header::SequenceType, CommandBook, CommandResponse, MergeStrategy,
-};
+use angzarr_client::proto::{CommandBook, CommandResponse, ConflictResolution};
 use angzarr_client::traits::GatewayClient;
 use angzarr_client::{full_type_url, ClientError, CommandBuilderExt, CommandHandlerClient};
 use cucumber::{given, then, when, World};
 use prost::Message;
 use uuid::Uuid;
 
-use crate::common::backend::{root_for, Hidden};
+use crate::common::backend::{correlation_for, root_for, Hidden};
 use crate::common::fixtures::CreateOrder;
 use angzarr_client::testing::RecordingGatewayClient;
 
@@ -36,8 +34,8 @@ struct Recipe {
     /// `None` → `command_new` (auto-generated root).
     root: Option<Uuid>,
     correlation_id: Option<String>,
-    sequence: Option<u32>,
-    merge: Option<MergeStrategy>,
+    sequence: Option<u64>,
+    resolution: Option<ConflictResolution>,
     /// Payload passed to `with_command`.
     command: Option<Payload>,
     /// Type URL set on its own via `with_type_url`.
@@ -58,14 +56,14 @@ fn apply<'a, C: GatewayClient>(client: &'a C, r: &Recipe) -> angzarr_client::Com
         Some(root) => client.command(&r.domain, root),
         None => client.command_new(&r.domain),
     };
-    if let Some(id) = &r.correlation_id {
-        b = b.with_correlation_id(id);
+    if let Some(label) = &r.correlation_id {
+        b = b.with_correlation_id(correlation_for(label));
     }
     if let Some(seq) = r.sequence {
         b = b.with_sequence(seq);
     }
-    if let Some(m) = r.merge {
-        b = b.with_merge_strategy(m);
+    if let Some(m) = r.resolution {
+        b = b.with_conflict_resolution(m);
     }
     match &r.command {
         Some(Payload::CreateOrder(m)) => b = b.with_command(full_type_url::<CreateOrder>(), m),
@@ -126,10 +124,35 @@ impl CommandBuilderWorld {
         self.built().cover.as_ref().expect("cover")
     }
 
-    fn page(&self) -> &angzarr_client::proto::CommandPage {
-        self.built().pages.first().expect("a command page")
+    fn handling(&self) -> &angzarr_client::proto::Handling {
+        self.built().handling.as_ref().expect("handling")
+    }
+
+    /// The built command's correlation id.
+    fn correlation(&self) -> Uuid {
+        correlation_of(self.built())
     }
 }
+
+/// The correlation id a command page carries.
+fn correlation_of(book: &CommandBook) -> Uuid {
+    let id = book
+        .page
+        .as_ref()
+        .and_then(|p| p.correlation_id.as_ref())
+        .expect("correlation id");
+    Uuid::from_slice(&id.value).expect("16-byte correlation id")
+}
+
+/// The command payload a book carries.
+fn command_any(book: &CommandBook) -> &prost_types::Any {
+    book.page
+        .as_ref()
+        .and_then(angzarr_client::router::binding::command_payload)
+        .expect("command payload")
+}
+
+impl CommandBuilderWorld {}
 
 fn create_order_command() -> Payload {
     Payload::CreateOrder(CreateOrder {
@@ -151,7 +174,6 @@ fn canned_response() -> CommandResponse {
             next_sequence: 42,
             ..Default::default()
         }),
-        projections: vec![],
         ..Default::default()
     }
 }
@@ -162,7 +184,7 @@ fn root_bytes(cover: &angzarr_client::proto::Cover) -> [u8; 16] {
         .as_ref()
         .expect("root present")
         .value
-        .as_slice()
+        .as_ref()
         .try_into()
         .expect("16-byte UUID root")
 }
@@ -236,7 +258,7 @@ async fn when_set_correlation(world: &mut CommandBuilderWorld, id: String) {
 }
 
 #[when(expr = "I set sequence to {int}")]
-async fn when_set_sequence(world: &mut CommandBuilderWorld, seq: u32) {
+async fn when_set_sequence(world: &mut CommandBuilderWorld, seq: u64) {
     world.recipe.sequence = Some(seq);
 }
 
@@ -272,7 +294,7 @@ async fn when_strict_merge(world: &mut CommandBuilderWorld) {
     world.recipe = Recipe {
         domain: "orders".into(),
         root: Some(Uuid::new_v4()),
-        merge: Some(MergeStrategy::MergeStrict),
+        resolution: Some(ConflictResolution::Strict),
         command: Some(test_command()),
         ..Default::default()
     };
@@ -381,33 +403,28 @@ async fn then_auto_root_v4(world: &mut CommandBuilderWorld) {
 
 #[then(expr = "the built command should have type URL containing {string}")]
 async fn then_type_url(world: &mut CommandBuilderWorld, part: String) {
-    match &world.page().payload {
-        Some(command_page::Payload::Command(any)) => {
-            assert!(any.type_url.contains(&part), "type_url: {}", any.type_url)
-        }
-        other => panic!("expected command payload, got {other:?}"),
-    }
+    let any = command_any(world.built());
+    assert!(any.type_url.contains(&part), "type_url: {}", any.type_url);
 }
 
 #[then("the built command should have a non-empty correlation ID")]
 async fn then_nonempty_correlation(world: &mut CommandBuilderWorld) {
-    assert!(!world.cover().correlation_id.is_empty());
+    assert!(!world.correlation().is_nil());
 }
 
 #[then("the correlation ID should be a valid UUID")]
 async fn then_correlation_uuid(world: &mut CommandBuilderWorld) {
-    Uuid::parse_str(&world.cover().correlation_id).expect("correlation id is a UUID");
+    assert_eq!(world.correlation().get_version_num(), 4);
 }
 
 #[then(expr = "the built command should have correlation ID {string}")]
 async fn then_correlation(world: &mut CommandBuilderWorld, id: String) {
-    assert_eq!(world.cover().correlation_id, id);
+    assert_eq!(world.correlation(), correlation_for(&id));
 }
 
 #[then(expr = "the built command should have sequence {int}")]
-async fn then_sequence(world: &mut CommandBuilderWorld, seq: u32) {
-    let header = world.page().header.as_ref().expect("page header");
-    assert_eq!(header.sequence_type, Some(SequenceType::Sequence(seq)));
+async fn then_sequence(world: &mut CommandBuilderWorld, seq: u64) {
+    assert_eq!(world.handling().expected_sequence, Some(seq));
 }
 
 #[then("building should fail")]
@@ -454,17 +471,12 @@ async fn then_chained(world: &mut CommandBuilderWorld) {
     let cover = world.cover();
     assert_eq!(cover.domain, "orders");
     assert_eq!(root_bytes(cover), *root_for("order-chained").as_bytes());
-    assert_eq!(cover.correlation_id, "trace-456");
-    let header = world.page().header.as_ref().expect("header");
-    assert_eq!(header.sequence_type, Some(SequenceType::Sequence(3)));
-    match &world.page().payload {
-        Some(command_page::Payload::Command(any)) => {
-            assert_eq!(any.type_url, full_type_url::<CreateOrder>());
-            let cmd = CreateOrder::decode(any.value.as_slice()).expect("decodes");
-            assert_eq!(cmd.customer_id, "c-1");
-        }
-        other => panic!("expected command payload, got {other:?}"),
-    }
+    assert_eq!(world.correlation(), correlation_for("trace-456"));
+    assert_eq!(world.handling().expected_sequence, Some(3));
+    let any = command_any(world.built());
+    assert_eq!(any.type_url, full_type_url::<CreateOrder>());
+    let cmd = CreateOrder::decode(any.value.as_slice()).expect("decodes");
+    assert_eq!(cmd.customer_id, "c-1");
 }
 
 #[then("the command should be sent to the gateway")]
@@ -475,27 +487,16 @@ async fn then_sent(world: &mut CommandBuilderWorld) {
         .expect("gateway received execute");
     let built = world.built();
     // build() and execute() each mint a fresh correlation id, so compare
-    // the addressing and the command itself.
+    // the addressing, the handling and the command itself.
     let sent = call.command.cover.as_ref().expect("sent cover");
     let expected = built.cover.as_ref().expect("built cover");
     assert_eq!(
         (&sent.domain, &sent.root),
         (&expected.domain, &expected.root)
     );
-    assert!(!sent.correlation_id.is_empty());
-    // execute() additionally stamps its sync mode into the page header.
-    assert_eq!(call.command.pages.len(), 1);
-    assert_eq!(call.command.pages[0].payload, built.pages[0].payload);
-    assert_eq!(
-        call.command.pages[0]
-            .header
-            .as_ref()
-            .map(|h| h.sequence_type.clone()),
-        built.pages[0]
-            .header
-            .as_ref()
-            .map(|h| h.sequence_type.clone())
-    );
+    assert!(!correlation_of(&call.command).is_nil());
+    assert_eq!(command_any(&call.command), command_any(built));
+    assert_eq!(call.command.handling, built.handling);
 }
 
 #[then("the response should be returned")]
@@ -519,27 +520,27 @@ async fn then_built_and_executed(world: &mut CommandBuilderWorld) {
         .expect("execute succeeds");
     assert_eq!(world.mock.call_count("execute"), 1);
     let call = world.mock.last_call("execute").expect("recorded");
-    match &call.command.pages[0].payload {
-        Some(command_page::Payload::Command(any)) => {
-            assert_eq!(any.type_url, full_type_url::<CreateOrder>())
-        }
-        other => panic!("expected command payload, got {other:?}"),
-    }
+    assert_eq!(
+        command_any(&call.command).type_url,
+        full_type_url::<CreateOrder>()
+    );
 }
 
+/// MergeStrategy is ConflictResolution now, carried by the book's
+/// `Handling`.
 #[then("the command page should have MERGE_COMMUTATIVE strategy")]
 async fn then_commutative(world: &mut CommandBuilderWorld) {
     assert_eq!(
-        world.page().merge_strategy,
-        MergeStrategy::MergeCommutative as i32
+        world.handling().conflict_resolution(),
+        ConflictResolution::Commutative
     );
 }
 
 #[then("the command page should have MERGE_STRICT strategy")]
 async fn then_strict(world: &mut CommandBuilderWorld) {
     assert_eq!(
-        world.page().merge_strategy,
-        MergeStrategy::MergeStrict as i32
+        world.handling().conflict_resolution(),
+        ConflictResolution::Strict
     );
 }
 
@@ -562,7 +563,8 @@ async fn then_no_contamination(world: &mut CommandBuilderWorld) {
     assert_eq!(a.domain, world.recipe.domain);
     assert_eq!(b.domain, world.recipe.domain);
     assert_ne!(
-        a.correlation_id, b.correlation_id,
+        correlation_of(&world.built_pair[0]),
+        correlation_of(&world.built_pair[1]),
         "each build gets its own correlation id"
     );
 }

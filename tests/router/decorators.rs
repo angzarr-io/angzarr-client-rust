@@ -64,7 +64,7 @@ impl Player {
         &self,
         cmd: RegisterPlayer,
         state: &PlayerState,
-        seq: u32,
+        seq: u64,
     ) -> CommandResult<EventBook> {
         Ok(EventBook::default())
     }
@@ -75,7 +75,7 @@ impl Player {
         &self,
         cmd: DepositFunds,
         state: &PlayerState,
-        seq: u32,
+        seq: u64,
     ) -> CommandResult<EventBook> {
         Ok(EventBook::default())
     }
@@ -159,7 +159,7 @@ impl PlayerNoFactory {
         &self,
         cmd: RegisterPlayer,
         state: &PlayerState,
-        seq: u32,
+        seq: u64,
     ) -> CommandResult<EventBook> {
         Ok(EventBook::default())
     }

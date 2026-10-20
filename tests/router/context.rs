@@ -6,9 +6,8 @@
 use std::sync::{Arc, Mutex};
 
 use angzarr_client::proto::{
-    command_page, event_page, page_header::SequenceType, CommandBook, CommandPage,
-    ContextualCommand, Cover, EventBook, EventPage, PageHeader, ProcessManagerHandleRequest,
-    ProcessManagerHandleResponse, SagaHandleRequest, SagaResponse, Snapshot,
+    command_page, Command, CommandBook, CommandPage, ContextualCommand, Cover, EventBook,
+    EventPage, ProcessManagerHandleRequest, ProcessManagerHandleResponse, SagaResponse, Snapshot,
 };
 #[allow(unused_imports)]
 use angzarr_client::router::{applies, command_handler, handles, process_manager, saga};
@@ -19,8 +18,8 @@ use prost_types::Any;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 struct Tick {
-    #[prost(uint32, tag = "1")]
-    n: u32,
+    #[prost(uint64, tag = "1")]
+    n: u64,
 }
 impl ::prost::Name for Tick {
     const NAME: &'static str = "Tick";
@@ -52,7 +51,7 @@ impl ContextSaga {
         &self,
         tick: Tick,
         source_cover: Option<Cover>,
-        source_seq: u32,
+        source_seq: u64,
     ) -> CommandResult<SagaResponse> {
         assert_eq!(
             source_seq, tick.n,
@@ -88,16 +87,13 @@ impl ContextPm {
     }
 }
 
-fn tick_page(seq: u32) -> EventPage {
+fn tick_page(seq: u64) -> EventPage {
     EventPage {
-        header: Some(PageHeader {
-            sequence_type: Some(SequenceType::Sequence(seq)),
-            sync_mode: None,
-        }),
-        payload: Some(event_page::Payload::Event(Any {
+        sequence: seq,
+        payload: Some(Any {
             type_url: full_type_url::<Tick>(),
             value: ::prost::Message::encode_to_vec(&Tick { n: seq }),
-        })),
+        }),
         ..Default::default()
     }
 }
@@ -105,7 +101,6 @@ fn tick_page(seq: u32) -> EventPage {
 fn clock_cover() -> Cover {
     Cover {
         domain: "clock".into(),
-        correlation_id: "corr-ctx".into(),
         ..Default::default()
     }
 }
@@ -121,13 +116,10 @@ fn saga_handler_receives_source_cover_and_seq() {
         panic!("expected a saga router");
     };
     router
-        .dispatch(SagaHandleRequest {
-            source: Some(EventBook {
-                cover: Some(clock_cover()),
-                pages: vec![tick_page(3)],
-                next_sequence: 4,
-                ..Default::default()
-            }),
+        .dispatch(EventBook {
+            cover: Some(clock_cover()),
+            pages: vec![tick_page(3)],
+            next_sequence: 4,
             ..Default::default()
         })
         .expect("saga dispatch");
@@ -168,7 +160,7 @@ impl Counter {
     }
 
     #[handles(Tick)]
-    fn observe(&self, _cmd: Tick, state: &Count, _seq: u32) -> CommandResult<EventBook> {
+    fn observe(&self, _cmd: Tick, state: &Count, _seq: u64) -> CommandResult<EventBook> {
         *self.0.lock().unwrap() = Some(state.count);
         Ok(EventBook::default())
     }
@@ -209,15 +201,19 @@ fn aggregate_state_starts_from_the_snapshot() {
                     domain: "counter".into(),
                     ..Default::default()
                 }),
-                pages: vec![CommandPage {
-                    payload: Some(command_page::Payload::Command(Any {
-                        type_url: full_type_url::<Tick>(),
-                        value: ::prost::Message::encode_to_vec(&Tick { n: 9 }),
+                page: Some(CommandPage {
+                    body: Some(command_page::Body::Command(Command {
+                        payload: Some(Any {
+                            type_url: full_type_url::<Tick>(),
+                            value: ::prost::Message::encode_to_vec(&Tick { n: 9 }),
+                        }),
                     })),
                     ..Default::default()
-                }],
+                }),
+                ..Default::default()
             }),
             events: Some(prior),
+            ..Default::default()
         })
         .expect("dispatch");
     assert_eq!(*observed.lock().unwrap(), Some(6));

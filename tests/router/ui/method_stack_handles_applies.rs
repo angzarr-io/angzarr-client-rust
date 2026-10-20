@@ -21,7 +21,7 @@ struct T;
 impl T {
     #[handles(Cmd)]
     #[applies(Cmd)]
-    fn handle_create(&self, _cmd: Cmd, _state: &State, _seq: u32) -> CommandResult<EventBook> {
+    fn handle_create(&self, _cmd: Cmd, _state: &State, _seq: u64) -> CommandResult<EventBook> {
         Ok(EventBook::default())
     }
 }

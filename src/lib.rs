@@ -81,7 +81,7 @@ pub mod transport;
 pub mod validation;
 
 // Re-export main types at crate root
-pub use client::{CommandHandlerClient, DomainClient, QueryClient, SpeculativeClient};
+pub use client::{CommandHandlerClient, DomainClient, QueryClient};
 pub use error::{ClientError, CommandRejectedError, CommandResult, Result};
 pub use identity::{compute_root, to_proto_bytes, ANGZARR_ROOT_NAMESPACE};
 pub use retry::{default_retry_policy, ExponentialBackoffRetry, RetryPolicy};
@@ -102,8 +102,8 @@ pub use convert::{
 // Re-export extension traits
 pub use proto_ext::constants::CORRELATION_ID_HEADER;
 pub use proto_ext::{
-    correlated_request, CommandBookExt, CommandPageExt, CoverExt, EditionExt, EventBookExt,
-    EventPageExt, ProtoUuidExt, UuidExt,
+    correlated_request, CommandBookExt, CommandPageExt, CoverExt, EventBookExt, EventPageExt,
+    ProtoUuidExt, UuidExt,
 };
 
 // Component host and transport configuration

@@ -101,10 +101,10 @@ async fn given_handler(world: &mut DomainClientWorld, domain: String) {
 }
 
 #[given(expr = "an aggregate {string} with root {string} has {int} events")]
-async fn given_events(world: &mut DomainClientWorld, domain: String, root: String, n: u32) {
+async fn given_events(world: &mut DomainClientWorld, domain: String, root: String, n: u64) {
     world
         .backend()
-        .seed(&cover(&domain, &root, None, ""), "ItemAdded", n);
+        .seed(&cover(&domain, &root, None), "ItemAdded", n);
     world.root = Some(root_for(&root));
 }
 

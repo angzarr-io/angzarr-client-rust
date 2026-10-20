@@ -1,13 +1,12 @@
 //! Extension traits for proto types.
 //!
 //! Provides convenient accessor methods for common patterns like extracting
-//! domain, correlation_id, and root_id from Cover-bearing types.
+//! domain, edition, and root_id from Cover-bearing types.
 //!
 //! ## Module Organization
 //!
 //! - [`constants`] - Shared constants (domain names, type URLs, headers)
 //! - [`cover`] - CoverExt trait for accessing cover fields
-//! - [`edition`] - EditionExt trait and Edition constructors
 //! - [`uuid`] - UUID conversion traits
 //! - [`pages`] - EventPageExt and CommandPageExt traits
 //! - [`books`] - EventBookExt, CommandBookExt, and sequence helpers
@@ -16,7 +15,6 @@
 pub mod books;
 pub mod constants;
 pub mod cover;
-pub mod edition;
 pub mod grpc;
 pub mod pages;
 pub mod uuid;
@@ -28,7 +26,6 @@ pub use constants::{
     PROJECTION_TYPE_URL, UNKNOWN_DOMAIN, WILDCARD_DOMAIN,
 };
 pub use cover::CoverExt;
-pub use edition::{EditionExt, EditionNew};
 pub use grpc::correlated_request;
 pub use pages::{CommandPageExt, EventPageExt};
 pub use uuid::{ProtoUuidExt, UuidExt};

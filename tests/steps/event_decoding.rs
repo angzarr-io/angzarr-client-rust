@@ -1,8 +1,6 @@
 //! Event decoding step definitions.
 
-use angzarr_client::proto::{
-    event_page, page_header, CommandResponse, Cover, EventBook, EventPage, PageHeader,
-};
+use angzarr_client::proto::{CommandResponse, Cover, EventBook, EventMeta, EventPage};
 use angzarr_client::proto_ext::EventPageExt;
 use angzarr_client::{decode_event, events_from_response, type_url_matches_exact};
 use cucumber::{given, then, when, World};
@@ -29,34 +27,30 @@ pub struct ItemAdded {
     pub item_id: String,
 }
 
-fn make_event_page(seq: u32, type_url: &str, value: Vec<u8>) -> EventPage {
+fn make_event_page(seq: u64, type_url: &str, value: Vec<u8>) -> EventPage {
     EventPage {
-        header: Some(PageHeader {
-            sequence_type: Some(page_header::SequenceType::Sequence(seq)),
-            sync_mode: None,
-        }),
-        created_at: Some(prost_types::Timestamp {
-            seconds: 1704067200, // 2024-01-01
-            nanos: 0,
-        }),
-        payload: Some(event_page::Payload::Event(Any {
+        payload: Some(Any {
             type_url: type_url.to_string(),
             value,
-        })),
+        }),
+        meta: Some(EventMeta {
+            recorded_at: Some(prost_types::Timestamp {
+                seconds: 1704067200, // 2024-01-01
+                nanos: 0,
+            }),
+            ..Default::default()
+        }),
+        sequence: seq,
     }
 }
 
 fn make_event_book(events: Vec<EventPage>) -> EventBook {
-    let next_seq = events.len() as u32;
+    let next_seq = events.len() as u64;
     EventBook {
         cover: Some(Cover {
             domain: "orders".to_string(),
-            root: Some(angzarr_client::proto::Uuid {
-                value: Uuid::new_v4().as_bytes().to_vec(),
-            }),
-            correlation_id: String::new(),
+            root: Some(Uuid::new_v4().into()),
             edition: None,
-            ..Default::default()
         }),
         pages: events,
         snapshot: None,
@@ -110,7 +104,7 @@ async fn given_valid_protobuf_bytes(world: &mut EventDecodingWorld) {
 }
 
 #[given(expr = "an EventPage at sequence {int}")]
-async fn given_event_page_at_sequence(world: &mut EventDecodingWorld, seq: u32) {
+async fn given_event_page_at_sequence(world: &mut EventDecodingWorld, seq: u64) {
     let event = OrderCreated {
         order_id: "test".to_string(),
     };
@@ -143,27 +137,6 @@ async fn given_event_page_with_event_payload(world: &mut EventDecodingWorld) {
         "type.googleapis.com/orders.OrderCreated",
         event.encode_to_vec(),
     ));
-}
-
-#[given("an EventPage with offloaded payload")]
-async fn given_event_page_with_offloaded(world: &mut EventDecodingWorld) {
-    // PayloadReference variant (External in the oneof)
-    world.current_event = Some(EventPage {
-        header: Some(PageHeader {
-            sequence_type: Some(page_header::SequenceType::Sequence(0)),
-            sync_mode: None,
-        }),
-        created_at: None,
-        payload: Some(event_page::Payload::External(
-            angzarr_client::proto::PayloadReference {
-                storage_type: 2, // S3
-                uri: "s3://bucket/key".to_string(),
-                content_hash: b"abc123".to_vec(),
-                original_size: 1024,
-                stored_at: None,
-            },
-        )),
-    });
 }
 
 #[given(expr = "an event with type_url ending in {string}")]
@@ -229,14 +202,7 @@ async fn given_corrupted_payload(world: &mut EventDecodingWorld) {
 
 #[given("an EventPage with payload = None")]
 async fn given_event_page_no_payload(world: &mut EventDecodingWorld) {
-    world.current_event = Some(EventPage {
-        header: Some(PageHeader {
-            sequence_type: Some(page_header::SequenceType::Sequence(0)),
-            sync_mode: None,
-        }),
-        created_at: None,
-        payload: None,
-    });
+    world.current_event = Some(EventPage::default());
 }
 
 #[given("an Event Any with empty value")]
@@ -283,7 +249,6 @@ async fn given_command_response_with_events(world: &mut EventDecodingWorld) {
     ]);
     world.command_response = Some(CommandResponse {
         events: Some(event_book),
-        projections: vec![],
         ..Default::default()
     });
 }
@@ -292,7 +257,6 @@ async fn given_command_response_with_events(world: &mut EventDecodingWorld) {
 async fn given_command_response_no_events(world: &mut EventDecodingWorld) {
     world.command_response = Some(CommandResponse {
         events: Some(make_event_book(vec![])),
-        projections: vec![],
         ..Default::default()
     });
 }
@@ -305,7 +269,7 @@ async fn given_n_events_of_type(world: &mut EventDecodingWorld, count: u32, even
             item_id: format!("item{}", i),
         };
         events.push(make_event_page(
-            i,
+            u64::from(i),
             &format!("type.googleapis.com/orders.{}", event_type),
             item.encode_to_vec(),
         ));
@@ -383,7 +347,7 @@ async fn when_decode_with_full_name(world: &mut EventDecodingWorld, full_name: S
 #[when(expr = "I match against {string}")]
 async fn when_match_against(world: &mut EventDecodingWorld, pattern: String) {
     if let Some(ref event) = world.current_event {
-        if let Some(event_page::Payload::Event(any)) = &event.payload {
+        if let Some(any) = &event.payload {
             // If pattern is a full type URL, compare directly; otherwise use type_url_matches_exact
             if pattern.starts_with("type.googleapis.com/") {
                 world.match_result = any.type_url == pattern;
@@ -397,7 +361,7 @@ async fn when_match_against(world: &mut EventDecodingWorld, pattern: String) {
 #[when(expr = "I match against suffix {string}")]
 async fn when_match_suffix(world: &mut EventDecodingWorld, suffix: String) {
     if let Some(ref event) = world.current_event {
-        if let Some(event_page::Payload::Event(any)) = &event.payload {
+        if let Some(any) = &event.payload {
             world.match_result = any.type_url.ends_with(&suffix);
         }
     }
@@ -406,7 +370,7 @@ async fn when_match_suffix(world: &mut EventDecodingWorld, suffix: String) {
 #[when("I decode the payload bytes")]
 async fn when_decode_payload_bytes(world: &mut EventDecodingWorld) {
     if let Some(ref event) = world.current_event {
-        if let Some(event_page::Payload::Event(any)) = &event.payload {
+        if let Some(any) = &event.payload {
             match OrderCreated::decode(any.value.as_slice()) {
                 Ok(decoded) => world.decode_result = Some(decoded),
                 Err(e) => world.last_error = Some(e.to_string()),
@@ -418,7 +382,7 @@ async fn when_decode_payload_bytes(world: &mut EventDecodingWorld) {
 #[when("I decode the payload")]
 async fn when_decode_payload(world: &mut EventDecodingWorld) {
     if let Some(ref event) = world.current_event {
-        if let Some(event_page::Payload::Event(any)) = &event.payload {
+        if let Some(any) = &event.payload {
             match OrderCreated::decode(any.value.as_slice()) {
                 Ok(decoded) => world.decode_result = Some(decoded),
                 Err(e) => world.last_error = Some(e.to_string()),
@@ -430,7 +394,7 @@ async fn when_decode_payload(world: &mut EventDecodingWorld) {
 #[when("I attempt to decode")]
 async fn when_attempt_decode(world: &mut EventDecodingWorld) {
     if let Some(ref event) = world.current_event {
-        if let Some(event_page::Payload::Event(any)) = &event.payload {
+        if let Some(any) = &event.payload {
             match OrderCreated::decode(any.value.as_slice()) {
                 Ok(decoded) => world.decode_result = Some(decoded),
                 Err(e) => world.last_error = Some(e.to_string()),
@@ -446,7 +410,7 @@ async fn when_attempt_decode(world: &mut EventDecodingWorld) {
 #[when("I decode")]
 async fn when_decode(world: &mut EventDecodingWorld) {
     if let Some(ref event) = world.current_event {
-        if let Some(event_page::Payload::Event(any)) = &event.payload {
+        if let Some(any) = &event.payload {
             if any.value.is_empty() {
                 world.decode_result = Some(OrderCreated::default());
             } else {
@@ -499,7 +463,7 @@ async fn when_filter_for_type(world: &mut EventDecodingWorld, event_type: String
         .events_list
         .iter()
         .filter(|e| {
-            if let Some(event_page::Payload::Event(any)) = &e.payload {
+            if let Some(any) = &e.payload {
                 any.type_url.ends_with(&event_type)
             } else {
                 false
@@ -537,58 +501,43 @@ async fn then_no_error_raised(world: &mut EventDecodingWorld) {
 }
 
 #[then(expr = "event.sequence should be {int}")]
-async fn then_event_sequence(world: &mut EventDecodingWorld, expected: u32) {
+async fn then_event_sequence(world: &mut EventDecodingWorld, expected: u64) {
     if let Some(ref event) = world.current_event {
         assert_eq!(event.sequence_num(), expected);
     }
 }
 
+/// `EventPage.created_at` is `EventPage.meta.recorded_at` now.
+fn recorded_at(event: &EventPage) -> Option<&prost_types::Timestamp> {
+    event.meta.as_ref()?.recorded_at.as_ref()
+}
+
 #[then("event.created_at should be a valid timestamp")]
 async fn then_event_has_timestamp(world: &mut EventDecodingWorld) {
     if let Some(ref event) = world.current_event {
-        assert!(event.created_at.is_some());
+        assert!(recorded_at(event).is_some());
     }
 }
 
 #[then("the timestamp should be parseable")]
 async fn then_timestamp_parseable(world: &mut EventDecodingWorld) {
     if let Some(ref event) = world.current_event {
-        assert!(event.created_at.is_some());
+        assert!(recorded_at(event).is_some_and(|t| t.seconds > 0));
     }
 }
 
 #[then("event.payload should be Event variant")]
 async fn then_payload_is_event(world: &mut EventDecodingWorld) {
     if let Some(ref event) = world.current_event {
-        assert!(matches!(event.payload, Some(event_page::Payload::Event(_))));
+        assert!(event.payload.is_some());
     }
 }
 
 #[then("the Event should contain the Any wrapper")]
 async fn then_event_contains_any(world: &mut EventDecodingWorld) {
     if let Some(ref event) = world.current_event {
-        if let Some(event_page::Payload::Event(any)) = &event.payload {
+        if let Some(any) = &event.payload {
             assert!(!any.type_url.is_empty());
-        }
-    }
-}
-
-#[then("event.payload should be PayloadReference variant")]
-async fn then_payload_is_reference(world: &mut EventDecodingWorld) {
-    if let Some(ref event) = world.current_event {
-        assert!(matches!(
-            event.payload,
-            Some(event_page::Payload::External(_))
-        ));
-    }
-}
-
-#[then("the reference should contain storage details")]
-async fn then_reference_has_details(world: &mut EventDecodingWorld) {
-    if let Some(ref event) = world.current_event {
-        if let Some(event_page::Payload::External(ref_)) = &event.payload {
-            assert!(ref_.storage_type > 0);
-            assert!(!ref_.uri.is_empty());
         }
     }
 }
@@ -607,7 +556,7 @@ async fn then_match_fails(world: &mut EventDecodingWorld) {
 async fn then_only_v1_matches(world: &mut EventDecodingWorld) {
     // v1 event has "v1.OrderCreated" suffix
     let v1_event = &world.events_list[0];
-    if let Some(event_page::Payload::Event(any)) = &v1_event.payload {
+    if let Some(any) = &v1_event.payload {
         assert!(any.type_url.contains("v1"));
     }
 }
@@ -701,7 +650,7 @@ async fn then_all_decode_successfully(world: &mut EventDecodingWorld, count: u32
 #[then("each should have correct data")]
 async fn then_each_has_correct_data(world: &mut EventDecodingWorld) {
     for event in &world.events_list {
-        if let Some(event_page::Payload::Event(any)) = &event.payload {
+        if let Some(any) = &event.payload {
             assert!(!any.value.is_empty());
         }
     }
@@ -717,7 +666,7 @@ async fn then_order_created_decodes(world: &mut EventDecodingWorld) {
 #[then("ItemAdded events should decode as ItemAdded")]
 async fn then_item_added_decodes(world: &mut EventDecodingWorld) {
     for event in &world.events_list {
-        if let Some(event_page::Payload::Event(any)) = &event.payload {
+        if let Some(any) = &event.payload {
             if any.type_url.ends_with("ItemAdded") {
                 let result: Option<ItemAdded> = decode_event(event, "orders.ItemAdded");
                 assert!(result.is_some());
@@ -729,7 +678,7 @@ async fn then_item_added_decodes(world: &mut EventDecodingWorld) {
 #[then("OrderShipped should decode as OrderShipped")]
 async fn then_order_shipped_decodes(world: &mut EventDecodingWorld) {
     let event = &world.events_list[3];
-    if let Some(event_page::Payload::Event(any)) = &event.payload {
+    if let Some(any) = &event.payload {
         assert!(any.type_url.ends_with("OrderShipped"));
     }
 }
@@ -742,7 +691,7 @@ async fn then_get_n_events(world: &mut EventDecodingWorld, count: u32) {
 #[then("both should be ItemAdded type")]
 async fn then_both_item_added(world: &mut EventDecodingWorld) {
     for event in &world.events_list {
-        if let Some(event_page::Payload::Event(any)) = &event.payload {
+        if let Some(any) = &event.payload {
             assert!(any.type_url.ends_with("ItemAdded"));
         }
     }

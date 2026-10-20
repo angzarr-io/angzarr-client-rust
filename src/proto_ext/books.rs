@@ -2,10 +2,9 @@
 //!
 //! Provides convenience methods for working with pages and sequence numbers.
 
-use crate::proto::{CommandBook, CommandPage, EventBook, EventPage, MergeStrategy, Snapshot};
+use crate::proto::{CommandBook, CommandPage, ConflictResolution, EventBook, EventPage, Snapshot};
 
 use super::cover::CoverExt;
-use super::pages::{CommandPageExt, EventPageExt};
 
 /// Extension trait for EventBook proto type (beyond CoverExt).
 ///
@@ -14,7 +13,7 @@ pub trait EventBookExt: CoverExt {
     /// Get the next sequence number from the pre-computed field.
     ///
     /// The framework sets this on load. Returns 0 if not set.
-    fn next_sequence(&self) -> u32;
+    fn next_sequence(&self) -> u64;
 
     /// Check if the event book has no pages.
     fn is_empty(&self) -> bool;
@@ -30,9 +29,9 @@ pub trait EventBookExt: CoverExt {
 ///
 /// Returns (last page sequence + 1) OR (snapshot sequence + 1) if no pages, OR 0 if neither.
 /// Use this when manually constructing EventBooks or when the framework hasn't set next_sequence.
-pub fn calculate_next_sequence(pages: &[EventPage], snapshot: Option<&Snapshot>) -> u32 {
+pub fn calculate_next_sequence(pages: &[EventPage], snapshot: Option<&Snapshot>) -> u64 {
     if let Some(last_page) = pages.last() {
-        last_page.sequence_num() + 1
+        last_page.sequence + 1
     } else {
         snapshot.map(|s| s.sequence + 1).unwrap_or(0)
     }
@@ -44,7 +43,7 @@ pub fn calculate_set_next_seq(book: &mut EventBook) {
 }
 
 impl EventBookExt for EventBook {
-    fn next_sequence(&self) -> u32 {
+    fn next_sequence(&self) -> u64 {
         self.next_sequence
     }
 
@@ -63,53 +62,38 @@ impl EventBookExt for EventBook {
 
 /// Extension trait for CommandBook proto type (beyond CoverExt).
 ///
-/// Provides convenience methods for working with command pages.
+/// A CommandBook carries one command page and the command's `Handling`.
 pub trait CommandBookExt: CoverExt {
-    /// Get the sequence number from the first command page.
-    fn command_sequence(&self) -> u32;
+    /// The expected sequence the command was issued against
+    /// (`Handling.expected_sequence`); `None` when the framework is to
+    /// stamp the stream's head.
+    fn expected_sequence(&self) -> Option<u64>;
 
-    /// Get the first command page, if any.
-    fn first_command(&self) -> Option<&CommandPage>;
+    /// The command page, if any.
+    fn command_page(&self) -> Option<&CommandPage>;
 
-    /// Get the merge strategy from the first command page.
-    ///
-    /// Returns the MergeStrategy enum value. Defaults to Commutative if no pages.
-    fn merge_strategy(&self) -> MergeStrategy;
+    /// The requested conflict resolution (`Handling.conflict_resolution`);
+    /// `Unspecified` (the configured default applies) when unset.
+    fn conflict_resolution(&self) -> ConflictResolution;
 }
 
 impl CommandBookExt for CommandBook {
-    fn command_sequence(&self) -> u32 {
-        self.pages.first().map(|p| p.sequence_num()).unwrap_or(0)
+    fn expected_sequence(&self) -> Option<u64> {
+        self.handling.as_ref().and_then(|h| h.expected_sequence)
     }
 
-    fn first_command(&self) -> Option<&CommandPage> {
-        self.pages.first()
+    fn command_page(&self) -> Option<&CommandPage> {
+        self.page.as_ref()
     }
 
-    fn merge_strategy(&self) -> MergeStrategy {
-        self.pages
-            .first()
-            // Fully qualified: prost's inherent `CommandPage::merge_strategy`
-            // getter would return MERGE_UNSPECIFIED for an unset field.
-            .map(super::pages::CommandPageExt::merge_strategy)
-            .unwrap_or(MergeStrategy::MergeCommutative)
+    fn conflict_resolution(&self) -> ConflictResolution {
+        self.handling
+            .as_ref()
+            .map(|h| h.conflict_resolution())
+            .unwrap_or(ConflictResolution::Unspecified)
     }
 }
 
 #[cfg(test)]
-mod merge_strategy_tests {
-    use super::*;
-    use crate::proto::{CommandBook, CommandPage};
-
-    #[test]
-    fn unset_merge_strategy_reads_as_commutative() {
-        let book = CommandBook {
-            pages: vec![CommandPage::default()],
-            ..Default::default()
-        };
-        assert_eq!(
-            CommandBookExt::merge_strategy(&book),
-            MergeStrategy::MergeCommutative
-        );
-    }
-}
+#[path = "books.test.rs"]
+mod tests;

@@ -33,7 +33,7 @@ struct StubCh;
 #[command_handler(domain = "stub", state = NoState)]
 impl StubCh {
     #[handles(Ping)]
-    fn on_ping(&self, _cmd: Ping, _state: &NoState, _seq: u32) -> CommandResult<EventBook> {
+    fn on_ping(&self, _cmd: Ping, _state: &NoState, _seq: u64) -> CommandResult<EventBook> {
         Ok(EventBook::default())
     }
 }

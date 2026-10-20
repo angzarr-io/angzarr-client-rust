@@ -49,7 +49,7 @@ struct Ledger;
 #[command_handler(domain = "ledger", state = S)]
 impl Ledger {
     #[handles(Tick)]
-    fn on_tick(&self, _cmd: Tick, _state: &S, _seq: u32) -> CommandResult<EventBook> {
+    fn on_tick(&self, _cmd: Tick, _state: &S, _seq: u64) -> CommandResult<EventBook> {
         Ok(EventBook::default())
     }
 }

@@ -20,6 +20,9 @@
 #[doc(hidden)]
 pub mod io {
     pub mod angzarr {
+        // The spec's proto comments are prose, not rustdoc lists (as in the
+        // angzarr-router crate's generated module).
+        #[allow(clippy::doc_overindented_list_items, clippy::doc_lazy_continuation)]
         pub mod v1 {
             include!("proto/io.angzarr.v1.rs");
         }

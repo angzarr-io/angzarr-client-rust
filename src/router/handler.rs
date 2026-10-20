@@ -54,10 +54,9 @@ pub enum HandlerConfig {
         /// Method name of the `#[state_factory]` if one was declared.
         /// `None` → runtime rebuild uses `Default::default()`.
         state_factory: Option<String>,
-        /// Audit #45: proto type URLs for fact events declared in
-        /// `#[handles_fact]` methods. Empty → aggregate did not opt
-        /// into the `HandleFact` RPC; the gRPC adapter returns
-        /// UNIMPLEMENTED based on this metadata.
+        /// Audit #45: proto type URLs of the facts declared in
+        /// `#[handles_fact]` methods. A fact of any other type is refused
+        /// INVALID_ARGUMENT / NO_FACT_HANDLER.
         handles_fact: Vec<String>,
     },
     Saga {

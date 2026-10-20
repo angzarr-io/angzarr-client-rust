@@ -1,3 +1,5 @@
+use heck::ToUpperCamelCase;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Version injection (always runs)
     let version = std::fs::read_to_string("VERSION")
@@ -21,8 +23,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Only the service protos: every message in types.proto, upcaster.proto
+    // and options.proto, and the request/response messages of the
+    // command-handler, saga and process-manager protos, come from the
+    // angzarr-router crate (`ROUTER_PROTO_FILES`).
     let proto_files = [
-        "angzarr-project/proto/io/angzarr/v1/types.proto",
         "angzarr-project/proto/io/angzarr/v1/command_handler.proto",
         "angzarr-project/proto/io/angzarr/v1/projector.proto",
         "angzarr-project/proto/io/angzarr/v1/saga.proto",
@@ -45,11 +50,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut prost_config = prost_build::Config::new();
     prost_config.enable_type_names();
 
-    // Framework messages are the angzarr-router crate's types, so the
+    // Framework messages are the angzarr-router crate's types (its `pb`,
+    // which re-exports angzarr-project's angzarr-proto crate), so the
     // router's dispatch tables and this crate's gRPC services and clients
-    // share one set of Rust types. Only messages the router does not
-    // generate (query, projector, stream, meta, cloudevents) and the
-    // service stubs are emitted here.
+    // share one set of Rust types. Only the service stubs and the messages
+    // the router does not provide (meta.proto's edition admin messages and
+    // cloudevents.proto) are emitted here.
     let mut builder = tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
@@ -60,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for name in top_level_types(&text) {
             builder = builder.extern_path(
                 format!(".io.angzarr.v1.{name}"),
-                format!("::angzarr_router::pb::{name}"),
+                format!("::angzarr_router::pb::{}", name.to_upper_camel_case()),
             );
         }
     }
@@ -68,13 +74,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// The proto files whose messages the angzarr-router crate generates.
+/// The proto files whose messages the angzarr-router crate provides (its
+/// `pb`): angzarr-proto compiles the first three, the router the rest.
 const ROUTER_PROTO_FILES: &[&str] = &[
     "angzarr-project/proto/io/angzarr/v1/types.proto",
+    "angzarr-project/proto/io/angzarr/v1/upcaster.proto",
+    "angzarr-project/proto/io/angzarr/v1/options.proto",
     "angzarr-project/proto/io/angzarr/v1/command_handler.proto",
     "angzarr-project/proto/io/angzarr/v1/saga.proto",
     "angzarr-project/proto/io/angzarr/v1/process_manager.proto",
-    "angzarr-project/proto/io/angzarr/v1/upcaster.proto",
 ];
 
 /// Names of the messages and enums declared at the top level of a proto

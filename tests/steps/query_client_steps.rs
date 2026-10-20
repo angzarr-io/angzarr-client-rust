@@ -3,14 +3,14 @@
 //! Drives a real [`QueryClient`] (through [`QueryBuilderExt`]) against the
 //! in-process test backend (`tests/common/backend.rs`).
 
-use angzarr_client::proto::{event_page, EventBook, EventPage};
+use angzarr_client::proto::{EventBook, EventPage};
 use angzarr_client::{ClientError, QueryBuilderExt, QueryClient};
 use cucumber::{given, then, when, World};
 use prost::Message;
 
 use crate::common::backend::{
-    cover, page_seq, root_for, short_type, single_attempt, ts, unavailable_endpoint, GenericEvent,
-    Hidden, TestBackend,
+    correlation_for, cover, page_seq, root_for, short_type, single_attempt, ts,
+    unavailable_endpoint, GenericEvent, Hidden, TestBackend,
 };
 
 #[derive(Debug, Default, World)]
@@ -45,16 +45,13 @@ impl QueryClientWorld {
     }
 }
 
-fn seqs(pages: &[EventPage]) -> Vec<u32> {
-    pages
-        .iter()
-        .map(|p| page_seq(p).expect("sequence"))
-        .collect()
+fn seqs(pages: &[EventPage]) -> Vec<u64> {
+    pages.iter().map(page_seq).collect()
 }
 
 fn event_of(page: &EventPage) -> &prost_types::Any {
     match &page.payload {
-        Some(event_page::Payload::Event(a)) => a,
+        Some(a) => a,
         other => panic!("expected event payload, got {other:?}"),
     }
 }
@@ -79,15 +76,15 @@ async fn given_surface(world: &mut QueryClientWorld) {
 async fn given_unknown(world: &mut QueryClientWorld, domain: String, root: String) {
     assert!(world
         .backend()
-        .stored_pages(&cover(&domain, &root, None, ""))
+        .stored_pages(&cover(&domain, &root, None))
         .is_empty());
 }
 
 #[given(expr = "an aggregate {string} with root {string} has {int} events")]
-async fn given_n_events(world: &mut QueryClientWorld, domain: String, root: String, n: u32) {
+async fn given_n_events(world: &mut QueryClientWorld, domain: String, root: String, n: u64) {
     world
         .backend()
-        .seed(&cover(&domain, &root, None, ""), "ItemAdded", n);
+        .seed(&cover(&domain, &root, None), "ItemAdded", n);
 }
 
 #[given(expr = "an aggregate {string} with root {string} has event {string} with data {string}")]
@@ -100,12 +97,12 @@ async fn given_event_with_data(
 ) {
     world
         .backend()
-        .seed_event(&cover(&domain, &root, None, ""), &name, &data, None);
+        .seed_event(&cover(&domain, &root, None), &name, &data, None);
 }
 
 #[given(expr = "an aggregate {string} with root {string} has events at known timestamps")]
 async fn given_timestamps(world: &mut QueryClientWorld, domain: String, root: String) {
-    let c = cover(&domain, &root, None, "");
+    let c = cover(&domain, &root, None);
     for (i, at) in [
         "2024-01-15T10:00:00Z",
         "2024-01-15T10:15:00Z",
@@ -129,14 +126,11 @@ async fn given_in_edition(
     root: String,
     edition: String,
 ) {
+    world
+        .backend()
+        .seed_event(&cover(&domain, &root, None), "ItemAdded", "main-0", None);
     world.backend().seed_event(
-        &cover(&domain, &root, None, ""),
-        "ItemAdded",
-        "main-0",
-        None,
-    );
-    world.backend().seed_event(
-        &cover(&domain, &root, Some(&edition), ""),
+        &cover(&domain, &root, Some(&edition)),
         "ItemAdded",
         "edition-0",
         None,
@@ -145,10 +139,10 @@ async fn given_in_edition(
 }
 
 #[given(expr = "an aggregate {string} with root {string} has {int} events in main")]
-async fn given_main(world: &mut QueryClientWorld, domain: String, root: String, n: u32) {
+async fn given_main(world: &mut QueryClientWorld, domain: String, root: String, n: u64) {
     world
         .backend()
-        .seed(&cover(&domain, &root, None, ""), "ItemAdded", n);
+        .seed(&cover(&domain, &root, None), "ItemAdded", n);
 }
 
 #[given(expr = "an aggregate {string} with root {string} has {int} events in edition {string}")]
@@ -156,32 +150,42 @@ async fn given_edition_n(
     world: &mut QueryClientWorld,
     domain: String,
     root: String,
-    n: u32,
+    n: u64,
     edition: String,
 ) {
     world
         .backend()
-        .seed(&cover(&domain, &root, Some(&edition), ""), "ItemAdded", n);
+        .seed(&cover(&domain, &root, Some(&edition)), "ItemAdded", n);
 }
 
 #[given(expr = "events with correlation ID {string} exist in multiple aggregates")]
 async fn given_correlated(world: &mut QueryClientWorld, id: String) {
     let b = world.backend();
-    b.seed(&cover("orders", "corr-order", None, &id), "OrderCreated", 1);
-    b.seed(
-        &cover("inventory", "corr-stock", None, &id),
-        "StockReserved",
-        1,
-    );
-    b.seed(
-        &cover("shipping", "corr-ship", None, &id),
-        "ShipmentCreated",
-        1,
-    );
-    b.seed(
-        &cover("orders", "unrelated", None, "other-flow"),
+    let corr = angzarr_client::uuid_to_proto(correlation_for(&id));
+    let other = angzarr_client::uuid_to_proto(correlation_for("other-flow"));
+    b.seed_correlated(
+        &cover("orders", "corr-order", None),
         "OrderCreated",
         1,
+        Some(&corr),
+    );
+    b.seed_correlated(
+        &cover("inventory", "corr-stock", None),
+        "StockReserved",
+        1,
+        Some(&corr),
+    );
+    b.seed_correlated(
+        &cover("shipping", "corr-ship", None),
+        "ShipmentCreated",
+        1,
+        Some(&corr),
+    );
+    b.seed_correlated(
+        &cover("orders", "unrelated", None),
+        "OrderCreated",
+        1,
+        Some(&other),
     );
     world.correlated_roots = 3;
 }
@@ -193,10 +197,10 @@ async fn given_snapshot(
     world: &mut QueryClientWorld,
     domain: String,
     root: String,
-    snap: u32,
-    n: u32,
+    snap: u64,
+    n: u64,
 ) {
-    let c = cover(&domain, &root, None, "");
+    let c = cover(&domain, &root, None);
     world.backend().seed(&c, "ItemAdded", n);
     world.backend().seed_snapshot(&c, snap);
 }
@@ -227,8 +231,8 @@ async fn when_query_range(
     world: &mut QueryClientWorld,
     domain: String,
     root: String,
-    lo: u32,
-    hi: u32,
+    lo: u64,
+    hi: u64,
 ) {
     world.book = Some(
         world
@@ -242,7 +246,7 @@ async fn when_query_range(
 }
 
 #[when(expr = "I query events for {string} root {string} from sequence {int}")]
-async fn when_query_from(world: &mut QueryClientWorld, domain: String, root: String, lo: u32) {
+async fn when_query_from(world: &mut QueryClientWorld, domain: String, root: String, lo: u64) {
     world.book = Some(
         world
             .client
@@ -259,7 +263,7 @@ async fn when_query_as_of_seq(
     world: &mut QueryClientWorld,
     domain: String,
     root: String,
-    seq: u32,
+    seq: u64,
 ) {
     world.book = Some(
         world
@@ -314,7 +318,7 @@ async fn when_query_correlation(world: &mut QueryClientWorld, id: String) {
             .client
             .get()
             .query_domain("orders")
-            .by_correlation_id(id)
+            .by_correlation_id(correlation_for(&id))
             .get_events()
             .await,
     );
@@ -351,7 +355,7 @@ async fn when_attempt(world: &mut QueryClientWorld) {
 // --------------------------------------------------------------------------
 
 #[then(expr = "the history is empty and the next sequence is {int}")]
-async fn then_empty(world: &mut QueryClientWorld, next: u32) {
+async fn then_empty(world: &mut QueryClientWorld, next: u64) {
     let book = world.book();
     assert!(book.pages.is_empty());
     assert_eq!(book.next_sequence, next);
@@ -363,7 +367,7 @@ async fn then_n_events(world: &mut QueryClientWorld, n: usize) {
 }
 
 #[then(expr = "the events are in sequence order {int} to {int}")]
-async fn then_order(world: &mut QueryClientWorld, lo: u32, hi: u32) {
+async fn then_order(world: &mut QueryClientWorld, lo: u64, hi: u64) {
     assert_eq!(seqs(&world.book().pages), (lo..=hi).collect::<Vec<_>>());
 }
 
@@ -381,12 +385,12 @@ async fn then_first_payload(world: &mut QueryClientWorld, data: String) {
 }
 
 #[then(expr = "the first event has sequence {int}")]
-async fn then_first_seq(world: &mut QueryClientWorld, seq: u32) {
+async fn then_first_seq(world: &mut QueryClientWorld, seq: u64) {
     assert_eq!(seqs(&world.book().pages).first().copied(), Some(seq));
 }
 
 #[then(expr = "the last event has sequence {int}")]
-async fn then_last_seq(world: &mut QueryClientWorld, seq: u32) {
+async fn then_last_seq(world: &mut QueryClientWorld, seq: u64) {
     assert_eq!(seqs(&world.book().pages).last().copied(), Some(seq));
 }
 
@@ -406,7 +410,11 @@ async fn then_up_to_time(world: &mut QueryClientWorld) {
     let pages = &world.book().pages;
     assert_eq!(pages.len(), 3, "events at 10:00, 10:15 and 10:30 qualify");
     for p in pages {
-        let at = p.created_at.expect("timestamp");
+        let at = p
+            .meta
+            .as_ref()
+            .and_then(|m| m.recorded_at)
+            .expect("timestamp");
         assert!((at.seconds, at.nanos) <= (cutoff.seconds, cutoff.nanos));
     }
 }
@@ -444,7 +452,7 @@ async fn then_correlated(world: &mut QueryClientWorld) {
 }
 
 #[then(expr = "the result carries a snapshot taken at sequence {int}")]
-async fn then_snapshot(world: &mut QueryClientWorld, seq: u32) {
+async fn then_snapshot(world: &mut QueryClientWorld, seq: u64) {
     let snap = world.book().snapshot.as_ref().expect("snapshot present");
     assert_eq!(snap.sequence, seq);
 }

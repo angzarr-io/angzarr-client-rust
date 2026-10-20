@@ -14,11 +14,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use angzarr_client::error_codes::{codes, keys};
-use angzarr_client::proto::{EventBook, SpeculateProjectorRequest};
-use angzarr_client::traits::SpeculativeClient as SpeculativeOps;
+use angzarr_client::proto::EventBook;
 use angzarr_client::{
     ClientError, CommandBuilderExt, CommandHandlerClient, DomainClient, QueryBuilderExt,
-    QueryClient, SpeculativeClient,
+    QueryClient,
 };
 use cucumber::{given, then, when, World};
 use tonic::transport::Channel;
@@ -36,7 +35,6 @@ pub struct ConnectionWorld {
     sockets: HashMap<String, PathBuf>,
     query: Hidden<QueryClient>,
     command: Hidden<CommandHandlerClient>,
-    speculative: Hidden<SpeculativeClient>,
     domain: Hidden<DomainClient>,
     channel: Hidden<Channel>,
     error: Option<ClientError>,
@@ -346,10 +344,7 @@ async fn when_command_from_channel(world: &mut ConnectionWorld) {
 async fn then_share(world: &mut ConnectionWorld) {
     query_ok(world.query.get()).await;
     command_ok(world.command.get()).await;
-    assert_eq!(
-        world.backend().await.rpcs(),
-        vec!["GetEventBook", "HandleCommand"]
-    );
+    assert_eq!(world.backend().await.rpcs(), vec!["GetEventBook", "Handle"]);
 }
 
 #[then("the connection should only be established once")]
@@ -385,28 +380,6 @@ async fn then_can_execute(world: &mut ConnectionWorld) {
     command_ok(world.command.get()).await;
 }
 
-#[when(expr = "I create a SpeculativeClient connected to {string}")]
-async fn when_speculative_client(world: &mut ConnectionWorld, endpoint: String) {
-    let endpoint = world.resolve(&endpoint).await;
-    let client = SpeculativeClient::connect_with_retry(&endpoint, &single_attempt())
-        .await
-        .expect("speculative client connects");
-    world.speculative.set(client);
-}
-
-#[then("the client should be able to perform speculative operations")]
-async fn then_can_speculate(world: &mut ConnectionWorld) {
-    let projection = world
-        .speculative
-        .get()
-        .projector(SpeculateProjectorRequest {
-            events: Some(EventBook::default()),
-        })
-        .await
-        .expect("speculative RPC succeeds");
-    assert_eq!(projection.projector, "order-summary");
-}
-
 #[when(expr = "I create a DomainClient connected to {string}")]
 async fn when_domain_client(world: &mut ConnectionWorld, endpoint: String) {
     let endpoint = world.resolve(&endpoint).await;
@@ -426,7 +399,7 @@ async fn then_sub_clients(world: &mut ConnectionWorld) {
 #[then("both should share the same connection")]
 async fn then_domain_shares(world: &mut ConnectionWorld) {
     let rpcs = world.backend().await.rpcs();
-    assert_eq!(rpcs, vec!["HandleCommand", "GetEventBook"]);
+    assert_eq!(rpcs, vec!["Handle", "GetEventBook"]);
     assert_eq!(world.backend().await.accepted_connections(), 1);
 }
 

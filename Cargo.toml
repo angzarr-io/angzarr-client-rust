@@ -30,7 +30,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 # The shared dispatch/rebuild engine. Its framework message types are this
 # crate's proto types (build.rs extern_path).
-angzarr-router = { git = "https://github.com/angzarr-io/angzarr-router.git", rev = "32540ce3c076956cfbf99a4e3072ba6e30fbc2c1" }
+angzarr-router = { git = "https://github.com/angzarr-io/angzarr-router.git", rev = "ce5853f6ab803b221799f5d84c986bf5d7a4f85b" }
 
 # Macros (re-exported for convenience)
 angzarr-macros = { version = "0.1.0", path = "angzarr-macros" }
@@ -76,6 +76,8 @@ tonic-prost = "0.14.5"
 tonic-health = "0.14"
 
 [build-dependencies]
+# prost names `UUID` as `Uuid`: extern paths must use the generated names.
+heck = "0.5"
 tonic-prost-build = "0.14"
 prost-build = "0.14"
 

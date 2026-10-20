@@ -1,9 +1,8 @@
 //! Components: each registered handler type becomes an angzarr-router
 //! dispatch table, and the helpers the kind macros' generated thunks use.
 //!
-//! Dispatch semantics (rebuild, fill-only stamping, deferred commands,
-//! compensation routing, fan-out and merging) live in the `angzarr-router`
-//! crate. This module only adapts typed Rust handlers to its tables and
+//! Dispatch semantics (rebuild, conflicts, upcasting, fan-out and merging)
+//! live in the `angzarr-router` crate. This module only adapts typed Rust handlers to its tables and
 //! translates its coded errors into [`ClientError`].
 
 use std::cell::RefCell;
@@ -11,12 +10,12 @@ use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use angzarr_router::error::{CodedError, GrpcCode, HandlerError};
+use angzarr_router::error::{CodedError, HandlerError};
 use angzarr_router::rebuild::Rebuilder;
 use prost::{Message, Name};
 use prost_types::Any;
 
-use crate::error::{ClientError, CommandRejectedError, ErrorDetail};
+use crate::error::{build_status_details, ClientError, CommandRejectedError, ErrorDetail};
 use crate::error_codes::{codes, keys, messages};
 
 /// Produces a fresh handler instance; called once per dispatch.
@@ -117,30 +116,21 @@ fn intern(s: &str, fallback: &'static str) -> &'static str {
 }
 
 /// The router's coded error as a [`ClientError`]: the handler's own
-/// rejection when it raised one, otherwise an `InvalidArgument` detail
-/// carrying the router's code, message and extras.
+/// rejection when it raised one, otherwise the gRPC status the router's
+/// error table assigns (its code, message, and a canonical ErrorInfo
+/// carrying the router's code and extras).
 pub(crate) fn from_coded(err: CodedError) -> ClientError {
     let rejection = REJECTION.with(|r| r.borrow_mut().take());
     if let Some(rej) = rejection.filter(|r| r.code == err.code) {
         return ClientError::Rejected(rej);
     }
-    ClientError::InvalidArgument(ErrorDetail {
-        code: intern(&err.code, codes::UNHANDLED_HANDLER_ERROR),
-        message: intern(&err.message, messages::UNHANDLED_HANDLER_ERROR),
-        details: err.extras,
-    })
-}
-
-/// The gRPC status code the router's error table assigns to a code; codes
-/// it does not classify are `INVALID_ARGUMENT`.
-pub(crate) fn grpc_code_for(code: &str) -> tonic::Code {
-    let probe = CodedError::invalid_argument(code, "", []);
-    match (code, probe.grpc) {
-        (codes::UNHANDLED_HANDLER_ERROR, _) => tonic::Code::Internal,
-        (_, GrpcCode::Unimplemented) => tonic::Code::Unimplemented,
-        (_, GrpcCode::DataLoss) => tonic::Code::DataLoss,
-        _ => tonic::Code::InvalidArgument,
-    }
+    let code = tonic::Code::from(err.grpc as i32);
+    let details = build_status_details(code, &err.message, &err.code, Some(&err.extras), None);
+    ClientError::Grpc(Box::new(tonic::Status::with_details(
+        code,
+        err.message,
+        bytes::Bytes::from(details),
+    )))
 }
 
 /// A router build error as a [`crate::router::BuildError`].
@@ -153,7 +143,7 @@ pub(crate) fn build_error(err: CodedError) -> crate::router::BuildError {
 }
 
 // ---------------------------------------------------------------------------
-// Snapshots and replay.
+// Snapshots.
 // ---------------------------------------------------------------------------
 
 /// Snapshot loading for a state type, chosen at macro expansion:
@@ -229,6 +219,8 @@ pub fn with_snapshot<S: 'static>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     fn rejection(code: &'static str) -> CommandRejectedError {
@@ -252,23 +244,55 @@ mod tests {
         }
     }
 
+    /// The coded error's code, message and extras, read back from a status.
+    fn coded_parts(err: &ClientError) -> (tonic::Code, String, String, BTreeMap<String, String>) {
+        let status = err.status().expect("a framework error is a status");
+        let (code, extras, _cover) =
+            crate::error::unpack_status_details(status.details()).expect("canonical details");
+        (status.code(), status.message().to_string(), code, extras)
+    }
+
     #[test]
-    fn a_framework_error_is_an_invalid_argument_detail() {
+    fn a_framework_error_is_the_status_the_router_assigns() {
         begin_dispatch();
-        let err = from_coded(CodedError::invalid_argument(
+        let err = from_coded(CodedError::unknown_type(
             codes::NO_HANDLER_REGISTERED,
-            "Unknown command type",
+            "/orders.Unknown",
+            "/orders.Unknown",
             [("domain".to_string(), "order".to_string())],
         ));
-        let ClientError::InvalidArgument(detail) = err else {
-            panic!("expected InvalidArgument, got {err:?}");
-        };
-        assert_eq!(detail.code, codes::NO_HANDLER_REGISTERED);
-        assert_eq!(detail.message, "Unknown command type");
-        assert_eq!(
-            detail.details.get("domain").map(String::as_str),
-            Some("order")
-        );
+        let (grpc, message, code, extras) = coded_parts(&err);
+        assert_eq!(grpc, tonic::Code::InvalidArgument);
+        assert_eq!(message, "no handler for type URL /orders.Unknown");
+        assert_eq!(code, codes::NO_HANDLER_REGISTERED);
+        assert_eq!(extras.get("domain").map(String::as_str), Some("order"));
+        assert!(err.is_invalid_argument());
+    }
+
+    #[test]
+    fn router_grpc_codes_survive() {
+        let cases = [
+            (
+                CodedError::invalid_argument(codes::NO_HANDLER_REGISTERED, "none", []),
+                tonic::Code::Unimplemented,
+            ),
+            (CodedError::persisted_corrupt("/a.B"), tonic::Code::DataLoss),
+            (CodedError::unhandled("bug"), tonic::Code::Internal),
+            (
+                CodedError::stale("CONFLICT_OVERLAP", "overlap", []),
+                tonic::Code::Aborted,
+            ),
+            (
+                CodedError::invalid_argument(codes::ANY_DECODE_FAILED, "bad", []),
+                tonic::Code::InvalidArgument,
+            ),
+        ];
+        for (coded, want) in cases {
+            begin_dispatch();
+            let code = coded.code.clone();
+            let (grpc, _message, got, _extras) = coded_parts(&from_coded(coded));
+            assert_eq!((grpc, got), (want, code));
+        }
     }
 
     #[test]
@@ -277,17 +301,11 @@ mod tests {
         let _ = rejected(rejection("ORDER_GONE"));
         begin_dispatch();
         let err = from_coded(CodedError::invalid_argument("ORDER_GONE", "framework", []));
-        assert!(
-            matches!(err, ClientError::InvalidArgument(_)),
-            "got {err:?}"
-        );
+        assert!(matches!(err, ClientError::Grpc(_)), "got {err:?}");
 
         let _ = rejected(rejection("ORDER_GONE"));
         let err = from_coded(CodedError::invalid_argument("OTHER", "framework", []));
-        assert!(
-            matches!(err, ClientError::InvalidArgument(_)),
-            "got {err:?}"
-        );
+        assert!(matches!(err, ClientError::Grpc(_)), "got {err:?}");
     }
 
     #[test]
@@ -296,27 +314,6 @@ mod tests {
         let b = intern(&String::from("INTERN_TEST_CODE"), "fallback");
         assert_eq!(a, "INTERN_TEST_CODE");
         assert!(std::ptr::eq(a, b));
-    }
-
-    #[test]
-    fn grpc_codes_follow_the_router_table() {
-        assert_eq!(
-            grpc_code_for(codes::NO_HANDLER_REGISTERED),
-            tonic::Code::Unimplemented
-        );
-        assert_eq!(grpc_code_for("NO_UNDO_HANDLER"), tonic::Code::Unimplemented);
-        assert_eq!(
-            grpc_code_for("PERSISTED_EVENT_CORRUPT"),
-            tonic::Code::DataLoss
-        );
-        assert_eq!(
-            grpc_code_for(codes::UNHANDLED_HANDLER_ERROR),
-            tonic::Code::Internal
-        );
-        assert_eq!(
-            grpc_code_for(codes::ANY_DECODE_FAILED),
-            tonic::Code::InvalidArgument
-        );
     }
 
     #[test]

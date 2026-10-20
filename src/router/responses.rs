@@ -3,8 +3,8 @@
 //! These types mirror the Python client's saga/process-manager handler
 //! returns. They are intentionally small plain structs — the
 //! framework wraps their contents into the underlying `SagaResponse` /
-//! `ProcessManagerHandleResponse` / `BusinessResponse` proto responses
-//! during dispatch.
+//! `ProcessManagerHandleResponse` / `CommandHandlerResponse` proto
+//! responses during dispatch.
 
 use prost::{Message, Name};
 use prost_types::Any;
@@ -13,26 +13,22 @@ use crate::proto::{CommandBook, EventBook};
 
 /// Return shape of a saga handler method.
 ///
-/// `commands` are dispatched outbound; `events` are retained locally by
-/// the saga runtime (for audit / replay). Mirrors Python's
+/// `commands` are dispatched outbound. Mirrors Python's
 /// `SagaHandlerResponse`.
 #[derive(Debug, Clone, Default)]
 pub struct SagaHandlerResponse {
     pub commands: Vec<CommandBook>,
-    pub events: Vec<EventBook>,
 }
 
 /// Return shape of a process-manager handler method.
 ///
 /// `commands` orchestrate downstream aggregates; `process_events` are
-/// persisted on the PM aggregate itself; `facts` are informational
-/// events emitted into the meta domain. Mirrors Python's
+/// persisted on the PM aggregate itself. Mirrors Python's
 /// `ProcessManagerResponse`.
 #[derive(Debug, Clone, Default)]
 pub struct ProcessManagerResponse {
     pub commands: Vec<CommandBook>,
     pub process_events: Vec<EventBook>,
-    pub facts: Vec<EventBook>,
 }
 
 /// Return shape of a `#[handles_fact]` method: the fact to record, then

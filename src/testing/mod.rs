@@ -20,9 +20,7 @@ pub use builders::{
     make_event_page_at, make_timestamp, pack_event,
 };
 pub use context::ScenarioContext;
-pub use fakes::{
-    stub_rpc_error, RecordingGatewayClient, RecordingQueryClient, RecordingSpeculativeClient,
-};
+pub use fakes::{stub_rpc_error, RecordingGatewayClient, RecordingQueryClient};
 pub use uuid::{
     uuid_for, uuid_for_default, uuid_obj_for, uuid_obj_for_default, uuid_str_for,
     uuid_str_for_default, DEFAULT_TEST_NAMESPACE,

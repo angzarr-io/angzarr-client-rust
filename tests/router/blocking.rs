@@ -20,9 +20,9 @@ use angzarr_client::proto::projector_service_server::ProjectorService;
 use angzarr_client::proto::saga_service_server::SagaService;
 use angzarr_client::proto::upcaster_service_server::UpcasterService;
 use angzarr_client::proto::{
-    command_page, event_page, CommandBook, CommandPage, ContextualCommand, Cover, EventBook,
-    EventPage, ProcessManagerHandleRequest, ProcessManagerHandleResponse, SagaHandleRequest,
-    SagaResponse, UpcastRequest,
+    command_page, Command, CommandBook, CommandPage, ContextualCommand, Cover, EventBook,
+    EventPage, ProcessManagerHandleRequest, ProcessManagerHandleResponse, SagaResponse,
+    UpcastRequest,
 };
 #[allow(unused_imports)]
 use angzarr_client::router::{
@@ -81,11 +81,11 @@ struct BlockingAggregate(Arc<AtomicBool>);
 #[command_handler(domain = "blocking", state = S)]
 impl BlockingAggregate {
     #[handles(Ping)]
-    fn on_ping(&self, _cmd: Ping, _state: &S, _seq: u32) -> CommandResult<EventBook> {
+    fn on_ping(&self, _cmd: Ping, _state: &S, _seq: u64) -> CommandResult<EventBook> {
         wait_for(&self.0)?;
         Ok(EventBook {
             pages: vec![EventPage {
-                payload: Some(event_page::Payload::Event(ping_any())),
+                payload: Some(ping_any()),
                 ..Default::default()
             }],
             ..Default::default()
@@ -102,7 +102,6 @@ impl BlockingSaga {
         wait_for(&self.0)?;
         Ok(SagaResponse {
             commands: vec![other_command()],
-            ..Default::default()
         })
     }
 }
@@ -158,10 +157,13 @@ fn other_command() -> CommandBook {
             domain: "other".into(),
             ..Default::default()
         }),
-        pages: vec![CommandPage {
-            payload: Some(command_page::Payload::Command(ping_any())),
+        page: Some(CommandPage {
+            body: Some(command_page::Body::Command(Command {
+                payload: Some(ping_any()),
+            })),
             ..Default::default()
-        }],
+        }),
+        ..Default::default()
     }
 }
 
@@ -179,7 +181,7 @@ fn ping_book() -> EventBook {
             ..Default::default()
         }),
         pages: vec![EventPage {
-            payload: Some(event_page::Payload::Event(ping_any())),
+            payload: Some(ping_any()),
             ..Default::default()
         }],
         next_sequence: 1,
@@ -214,30 +216,23 @@ async fn command_handler_dispatch_does_not_block_the_runtime() {
                 domain: "blocking".into(),
                 ..Default::default()
             }),
-            pages: vec![CommandPage {
-                payload: Some(command_page::Payload::Command(ping_any())),
+            page: Some(CommandPage {
+                body: Some(command_page::Body::Command(Command {
+                    payload: Some(ping_any()),
+                })),
                 ..Default::default()
-            }],
+            }),
+            ..Default::default()
         }),
         events: None,
+        ..Default::default()
     };
     let response = svc
         .handle(tonic::Request::new(cmd))
         .await
         .expect("handled")
         .into_inner();
-    match response.result {
-        Some(angzarr_client::proto::business_response::Result::Events(book)) => {
-            assert_eq!(book.pages.len(), 1)
-        }
-        other => panic!("expected events, got {other:?}"),
-    }
-
-    let status = svc
-        .replay(tonic::Request::new(Default::default()))
-        .await
-        .expect_err("replay is not supported");
-    assert_eq!(status.code(), tonic::Code::Unimplemented);
+    assert_eq!(response.events.map(|book| book.pages.len()), Some(1));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -253,12 +248,8 @@ async fn saga_dispatch_does_not_block_the_runtime() {
     };
     let svc = SagaGrpc::new(router);
     release_later(Arc::clone(&flag));
-    let req = SagaHandleRequest {
-        source: Some(ping_book()),
-        ..Default::default()
-    };
     let response = svc
-        .handle(tonic::Request::new(req))
+        .handle(tonic::Request::new(ping_book()))
         .await
         .expect("handled")
         .into_inner();
@@ -326,14 +317,7 @@ async fn projector_dispatch_does_not_block_the_runtime() {
         projection.cover.as_ref().map(|c| c.domain.as_str()),
         Some("blocking")
     );
-    flag.store(false, Ordering::SeqCst);
-    release_later(Arc::clone(&flag));
-    let speculative = svc
-        .handle_speculative(tonic::Request::new(ping_book()))
-        .await
-        .expect("handled speculatively")
-        .into_inner();
-    assert_eq!(speculative, projection);
+    assert_eq!(projection.projector, "blocking-projector");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -357,7 +341,7 @@ async fn upcaster_dispatch_does_not_block_the_runtime() {
         .await
         .expect("upcast")
         .into_inner();
-    let Some(event_page::Payload::Event(any)) = &resp.events[0].payload else {
+    let Some(any) = &resp.events[0].payload else {
         panic!("expected an event");
     };
     let pong: Pong = ::prost::Message::decode(any.value.as_slice()).expect("decode");

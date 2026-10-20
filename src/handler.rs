@@ -16,9 +16,9 @@ use crate::proto::{
     command_handler_service_server::CommandHandlerService,
     process_manager_service_server::ProcessManagerService,
     projector_service_server::ProjectorService, saga_service_server::SagaService,
-    upcaster_service_server::UpcasterService, BusinessResponse, ContextualCommand, EventBook,
-    ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, SagaHandleRequest,
-    SagaResponse, UpcastRequest, UpcastResponse,
+    upcaster_service_server::UpcasterService, CommandHandlerResponse, ContextualCommand, EventBook,
+    ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, SagaResponse,
+    UpcastRequest, UpcastResponse,
 };
 use crate::router::routers::{
     CommandHandlerRouter, ProcessManagerRouter, ProjectorRouter, SagaRouter,
@@ -51,32 +51,12 @@ impl CommandHandlerService for CommandHandlerGrpc {
     async fn handle(
         &self,
         request: Request<ContextualCommand>,
-    ) -> Result<Response<BusinessResponse>, Status> {
+    ) -> Result<Response<CommandHandlerResponse>, Status> {
+        // A command or a fact (the page's body arm); a type no handler
+        // claims is refused by the router with INVALID_ARGUMENT.
         let cmd = request.into_inner();
         let response = on_blocking_pool(&self.router, move |r| r.dispatch(cmd)).await?;
         Ok(Response::new(response))
-    }
-
-    async fn handle_fact(
-        &self,
-        request: Request<crate::proto::FactRequest>,
-    ) -> Result<Response<EventBook>, Status> {
-        // A fact type no `#[handles_fact]` declares (including every type,
-        // for an aggregate that declares none) is refused by the router
-        // with INVALID_ARGUMENT / NO_FACT_HANDLER.
-        let req = request.into_inner();
-        let book = on_blocking_pool(&self.router, move |r| r.dispatch_fact(req)).await?;
-        Ok(Response::new(book))
-    }
-
-    async fn replay(
-        &self,
-        request: Request<crate::proto::ReplayRequest>,
-    ) -> Result<Response<crate::proto::ReplayResponse>, Status> {
-        // The protocol has no Replay RPC; the generated service of the
-        // pinned spec still declares it, so answer UNIMPLEMENTED.
-        let _ = request;
-        Err(Status::unimplemented("replay is not supported"))
     }
 }
 
@@ -103,10 +83,7 @@ impl Clone for SagaGrpc {
 
 #[tonic::async_trait]
 impl SagaService for SagaGrpc {
-    async fn handle(
-        &self,
-        request: Request<SagaHandleRequest>,
-    ) -> Result<Response<SagaResponse>, Status> {
+    async fn handle(&self, request: Request<EventBook>) -> Result<Response<SagaResponse>, Status> {
         let req = request.into_inner();
         let response = on_blocking_pool(&self.router, move |r| r.dispatch(req)).await?;
         Ok(Response::new(response))
@@ -174,13 +151,6 @@ impl ProjectorService for ProjectorGrpc {
         let projection = on_blocking_pool(&self.router, move |r| r.dispatch(book)).await?;
         Ok(Response::new(projection))
     }
-
-    async fn handle_speculative(
-        &self,
-        request: Request<EventBook>,
-    ) -> Result<Response<Projection>, Status> {
-        self.handle(request).await
-    }
 }
 
 /// Run synchronous router dispatch on tokio's blocking pool and map its
@@ -218,12 +188,9 @@ fn client_error_to_status(err: ClientError) -> Status {
     // identical wire output.
     let code = err.code();
     match err {
-        ClientError::InvalidArgument(d) => with_canonical_details(
-            crate::router::component::grpc_code_for(d.code),
-            d.message,
-            code,
-            Some(&d.details),
-        ),
+        ClientError::InvalidArgument(d) => {
+            with_canonical_details(Code::InvalidArgument, d.message, code, Some(&d.details))
+        }
         ClientError::Connection(d) => {
             with_canonical_details(Code::Unavailable, d.message, code, Some(&d.details))
         }

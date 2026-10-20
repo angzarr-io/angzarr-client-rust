@@ -40,9 +40,9 @@ impl ScenarioContext {
             .events
             .iter()
             .enumerate()
-            .map(|(i, ev)| make_event_page(i as u32, ev.clone()))
+            .map(|(i, ev)| make_event_page(i as u64, ev.clone()))
             .collect::<Vec<_>>();
-        let cover = make_cover(self.domain.clone(), self.root, "");
+        let cover = make_cover(self.domain.clone(), self.root);
         make_event_book(cover, pages, None)
     }
 

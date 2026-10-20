@@ -5,7 +5,7 @@
 //! `INVENTORY_PRODUCT_NAMESPACE` belong to the applications that own those
 //! domains, so their steps are not defined here.
 
-use angzarr_client::{compute_root, to_proto_bytes};
+use angzarr_client::{compute_root, to_proto_bytes, ClientError};
 use cucumber::{then, when, World};
 use uuid::Uuid;
 
@@ -13,15 +13,17 @@ use uuid::Uuid;
 pub struct IdentityWorld {
     calls: Vec<Uuid>,
     proto_bytes: Option<[u8; 16]>,
+    error: Option<ClientError>,
 }
 
 // --- compute_root direct calls --------------------------------------------
 
 #[when(expr = "I call compute_root with domain {string} and key {string}")]
 async fn when_compute_root(world: &mut IdentityWorld, domain: String, key: String) {
-    world
-        .calls
-        .push(compute_root(&domain, &key).expect("compute_root refused the domain"));
+    match compute_root(&domain, &key) {
+        Ok(root) => world.calls.push(root),
+        Err(err) => world.error = Some(err),
+    }
 }
 
 #[when(expr = "I call compute_root with domain {string} and key {string} a second time")]
@@ -83,4 +85,10 @@ async fn then_byte_length(world: &mut IdentityWorld, expected: usize) {
 async fn then_bytes_match_hex(world: &mut IdentityWorld, expected: String) {
     let bytes = world.proto_bytes.expect("no bytes captured");
     assert_eq!(hex::encode(bytes), expected);
+}
+
+#[then("the error should be an invalid argument error")]
+async fn then_invalid_argument(world: &mut IdentityWorld) {
+    let err = world.error.as_ref().expect("compute_root refused");
+    assert!(err.is_invalid_argument(), "got {err:?}");
 }

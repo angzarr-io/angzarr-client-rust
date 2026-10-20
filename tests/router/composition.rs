@@ -4,9 +4,8 @@
 use std::sync::{Arc, Mutex};
 
 use angzarr_client::proto::{
-    command_page, event_page, page_header::SequenceType, CommandBook, CommandPage,
-    ContextualCommand, Cover, EventBook, EventPage, PageHeader, ProcessManagerHandleRequest,
-    ProcessManagerHandleResponse,
+    command_page, Command, CommandBook, CommandPage, ContextualCommand, Cover, EventBook,
+    EventPage, ProcessManagerHandleRequest, ProcessManagerHandleResponse,
 };
 #[allow(unused_imports)]
 use angzarr_client::router::{command_handler, handles, process_manager};
@@ -44,7 +43,7 @@ struct PaymentComp;
 #[command_handler(domain = "payment", state = NoState)]
 impl PaymentComp {
     #[handles(Charge)]
-    fn charge(&self, _c: Charge, _s: &NoState, _seq: u32) -> CommandResult<EventBook> {
+    fn charge(&self, _c: Charge, _s: &NoState, _seq: u64) -> CommandResult<EventBook> {
         Err(CommandRejectedError::precondition_failed(
             "CARD_DECLINED",
             "card declined",
@@ -70,19 +69,23 @@ fn rejections_carry_the_request_cover() {
     assert_eq!(router.handler_count(), 1);
     let cover = Cover {
         domain: "payment".into(),
-        correlation_id: "corr-9".into(),
+        edition: Some("trial".into()),
         ..Default::default()
     };
     let err = router
         .dispatch(ContextualCommand {
             command: Some(CommandBook {
                 cover: Some(cover.clone()),
-                pages: vec![CommandPage {
-                    payload: Some(command_page::Payload::Command(pack(&Charge {}))),
+                page: Some(CommandPage {
+                    body: Some(command_page::Body::Command(Command {
+                        payload: Some(pack(&Charge {})),
+                    })),
                     ..Default::default()
-                }],
+                }),
+                ..Default::default()
             }),
             events: None,
+            ..Default::default()
         })
         .expect_err("card declined");
     let ClientError::Rejected(rej) = err else {
@@ -97,7 +100,7 @@ struct SelfAddressed;
 #[command_handler(domain = "payment", state = NoState)]
 impl SelfAddressed {
     #[handles(Charge)]
-    fn charge(&self, _c: Charge, _s: &NoState, _seq: u32) -> CommandResult<EventBook> {
+    fn charge(&self, _c: Charge, _s: &NoState, _seq: u64) -> CommandResult<EventBook> {
         Err(CommandRejectedError::precondition_failed(
             "CARD_DECLINED",
             "card declined",
@@ -125,12 +128,16 @@ fn a_handler_set_rejection_cover_is_kept() {
                     domain: "payment".into(),
                     ..Default::default()
                 }),
-                pages: vec![CommandPage {
-                    payload: Some(command_page::Payload::Command(pack(&Charge {}))),
+                page: Some(CommandPage {
+                    body: Some(command_page::Body::Command(Command {
+                        payload: Some(pack(&Charge {})),
+                    })),
                     ..Default::default()
-                }],
+                }),
+                ..Default::default()
             }),
             events: None,
+            ..Default::default()
         })
         .expect_err("declined");
     let ClientError::Rejected(rej) = err else {
@@ -186,11 +193,8 @@ fn order_trigger(any: Any) -> EventBook {
             ..Default::default()
         }),
         pages: vec![EventPage {
-            header: Some(PageHeader {
-                sequence_type: Some(SequenceType::Sequence(0)),
-                sync_mode: None,
-            }),
-            payload: Some(event_page::Payload::Event(any)),
+            sequence: 0,
+            payload: Some(any),
             ..Default::default()
         }],
         next_sequence: 1,

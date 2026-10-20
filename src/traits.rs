@@ -1,4 +1,4 @@
-//! Client traits for gateway, query, and speculative operations.
+//! Client traits for gateway and query operations.
 //!
 //! These traits define the client API for interacting with angzarr services.
 //! Both standalone (in-process) and distributed (gRPC) modes implement
@@ -7,11 +7,7 @@
 use async_trait::async_trait;
 
 use crate::error::Result;
-use crate::proto::{
-    CommandBook, CommandResponse, EventBook, ProcessManagerHandleResponse, Projection, Query,
-    SagaResponse, SpeculateCommandHandlerRequest, SpeculatePmRequest, SpeculateProjectorRequest,
-    SpeculateSagaRequest, SyncMode,
-};
+use crate::proto::{CommandBook, CommandResponse, EventBook, Query};
 
 /// Trait for gateway client operations (command execution).
 ///
@@ -19,49 +15,9 @@ use crate::proto::{
 /// alternative transport implementations.
 #[async_trait]
 pub trait GatewayClient: Send + Sync {
-    /// Execute a command asynchronously (fire and forget).
+    /// Execute a command and return the coordinator's decision
+    /// (`CommandHandlerCoordinatorService.Handle`).
     async fn execute(&self, command: CommandBook) -> Result<CommandResponse>;
-
-    /// Execute a command with the given sync mode.
-    ///
-    /// Default implementation discards `_sync_mode` and falls back to
-    /// [`GatewayClient::execute`], which is safe for mock impls that
-    /// don't differentiate. Real transport-backed impls (e.g.
-    /// `CommandHandlerClient`) override this to send a `CommandRequest`
-    /// with the chosen mode. Mirrors Python's
-    /// `CommandBuilder.execute(sync_mode=...)` (`builder.py:104`).
-    async fn execute_with_sync_mode(
-        &self,
-        command: CommandBook,
-        _sync_mode: SyncMode,
-    ) -> Result<CommandResponse> {
-        self.execute(command).await
-    }
-}
-
-/// Trait for speculative execution operations.
-///
-/// Supports "what-if" scenarios: executing commands, projectors, sagas,
-/// and process managers without persisting side effects.
-#[async_trait]
-pub trait SpeculativeClient: Send + Sync {
-    /// Execute a command speculatively (no persistence).
-    async fn command_handler(
-        &self,
-        request: SpeculateCommandHandlerRequest,
-    ) -> Result<CommandResponse>;
-
-    /// Speculatively execute a projector against events.
-    async fn projector(&self, request: SpeculateProjectorRequest) -> Result<Projection>;
-
-    /// Speculatively execute a saga against events.
-    async fn saga(&self, request: SpeculateSagaRequest) -> Result<SagaResponse>;
-
-    /// Speculatively execute a process manager against events.
-    async fn process_manager(
-        &self,
-        request: SpeculatePmRequest,
-    ) -> Result<ProcessManagerHandleResponse>;
 }
 
 /// Trait for event query client operations.

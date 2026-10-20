@@ -29,7 +29,6 @@ const EXPORTED: &[&str] = &[
     // Clients
     "CommandHandlerClient",
     "QueryClient",
-    "SpeculativeClient",
     "DomainClient",
     // Errors
     "ClientError",
@@ -334,7 +333,7 @@ async fn then_host_serves_only(_world: &mut ParityWorld) {
     // A framework service with no registered component is not served.
     let channel = connect(running.address()).await;
     let status = angzarr_client::proto::saga_service_client::SagaServiceClient::new(channel)
-        .handle(angzarr_client::proto::SagaHandleRequest::default())
+        .handle(angzarr_client::proto::EventBook::default())
         .await
         .expect_err("no saga is registered");
     assert_eq!(status.code(), tonic::Code::Unimplemented);
@@ -356,9 +355,8 @@ mod compile_probe {
         compute_root, configure_logging, default_retry_policy, get_transport_config,
         to_proto_bytes, ClientError, CommandBuilder, CommandHandlerClient, CommandRejectedError,
         ComponentHost, DomainClient, ExponentialBackoffRetry, QueryBuilder, QueryClient,
-        RetryPolicy, SpeculativeClient, DEFAULT_EDITION, META_ANGZARR_DOMAIN,
-        PROJECTION_DOMAIN_PREFIX, PROJECTION_TYPE_URL, TYPE_URL_PREFIX, UNKNOWN_DOMAIN,
-        WILDCARD_DOMAIN,
+        RetryPolicy, DEFAULT_EDITION, META_ANGZARR_DOMAIN, PROJECTION_DOMAIN_PREFIX,
+        PROJECTION_TYPE_URL, TYPE_URL_PREFIX, UNKNOWN_DOMAIN, WILDCARD_DOMAIN,
     };
 }
 

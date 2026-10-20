@@ -28,7 +28,7 @@ async fn given_derived_root(world: &mut TestingWorld, name: String) {
 #[given(expr = "a cover with domain {string} for that root")]
 async fn given_cover_for_root(world: &mut TestingWorld, domain: String) {
     let root = world.derived_root.expect("no derived root");
-    world.cover = Some(make_cover(domain, root, ""));
+    world.cover = Some(make_cover(domain, root));
 }
 
 #[given(expr = "a ScenarioContext with domain {string} and root bytes for {string}")]
@@ -55,12 +55,6 @@ async fn when_uuid_str_for(world: &mut TestingWorld, name: String) {
 #[when(expr = "I call uuid_obj_for with the name {string}")]
 async fn when_uuid_obj_for(world: &mut TestingWorld, name: String) {
     world.last_obj = Some(uuid_obj_for(&name, DEFAULT_TEST_NAMESPACE));
-}
-
-#[when(expr = "I call make_cover with domain {string} and correlation_id {string}")]
-async fn when_make_cover(world: &mut TestingWorld, domain: String, correlation_id: String) {
-    let root = world.derived_root.expect("no derived root");
-    world.cover = Some(make_cover(domain, root, correlation_id));
 }
 
 #[when("I call make_event_book with that cover, no pages, and no explicit next_sequence")]
@@ -102,21 +96,18 @@ async fn then_cover_domain(world: &mut TestingWorld, expected: String) {
     assert_eq!(cover.domain, expected);
 }
 
-#[then(expr = "the cover's correlation_id is {string}")]
-async fn then_cover_correlation_id(world: &mut TestingWorld, expected: String) {
-    let cover = world.cover.as_ref().expect("no cover");
-    assert_eq!(cover.correlation_id, expected);
-}
-
 #[then("the cover's root bytes match the derived root")]
 async fn then_cover_root_matches(world: &mut TestingWorld) {
     let cover = world.cover.as_ref().expect("no cover");
     let root = world.derived_root.expect("no derived root");
-    assert_eq!(cover.root.as_ref().expect("no root").value, root.to_vec());
+    assert_eq!(
+        cover.root.as_ref().expect("no root").value.as_ref(),
+        &root[..]
+    );
 }
 
 #[then(expr = "the resulting event book has next_sequence equal to {int}")]
-async fn then_event_book_next_sequence(world: &mut TestingWorld, expected: u32) {
+async fn then_event_book_next_sequence(world: &mut TestingWorld, expected: u64) {
     let book = world.event_book.as_ref().expect("no event book");
     assert_eq!(book.next_sequence, expected);
 }

@@ -68,7 +68,7 @@ Method markers inside the impl block:
 |--------|-----------|------|
 | `#[handles(MessageType)]` | Any kind | Register a handler for an incoming message |
 | `#[handles_fact(EventType)]` | command_handler | Record a fact (optionally with flag events) |
-| `#[applies(EventType)]` | command_handler, process_manager | Mutate state during replay |
+| `#[applies(EventType)]` | command_handler, process_manager | Mutate state during rebuild |
 | `#[state_factory]` | command_handler, process_manager | Override `Default::default()` for initial state |
 | `#[upcasts(from, to)]` | upcaster | Transform one event type into another |
 
@@ -99,7 +99,7 @@ impl Counter {
     }
 
     #[handles(Increase)]
-    fn increase(&self, cmd: Increase, state: &CounterState, seq: u32) -> CommandResult<EventBook> {
+    fn increase(&self, cmd: Increase, state: &CounterState, seq: u64) -> CommandResult<EventBook> {
         if cmd.by == 0 {
             return Err(CommandRejectedError::invalid_argument(
                 "ZERO_INCREASE",
@@ -149,10 +149,9 @@ async fn main() -> angzarr_client::Result<()> {
 |--------|---------|
 | `CommandHandlerClient` | Send commands to a coordinator |
 | `QueryClient` | Fetch event books |
-| `SpeculativeClient` | Dry-run commands without persisting |
-| `DomainClient` | Bundle of all three, scoped to a domain |
+| `DomainClient` | Bundle of both, scoped to a domain |
 
-All four carry a `connect(endpoint, retry)` constructor, a `from_channel` for caller-managed channels, and a `from_env(env_var, default)` helper.
+All three carry a `connect(endpoint, retry)` constructor, a `from_channel` for caller-managed channels, and a `from_env(env_var, default)` helper.
 
 ## Error handling
 
@@ -161,8 +160,8 @@ use angzarr_client::ClientError;
 
 match client.command_handler.handle(cmd).await {
     Ok(resp) => { /* ... */ }
-    Err(ClientError::Grpc(status)) if status.code() == tonic::Code::FailedPrecondition => {
-        // Sequence mismatch (optimistic locking)
+    Err(ClientError::Grpc(status)) if status.code() == tonic::Code::Aborted => {
+        // Stale expected sequence (optimistic locking)
     }
     Err(e) if e.is_not_found() => { /* aggregate missing */ }
     Err(e) if e.is_invalid_argument() => { /* bad input */ }
@@ -200,7 +199,7 @@ Everything maps. The shape differs; the names and semantics don't.
 | Router | `Router("x").with_handler(cls, factory)` | `Router::new("x").with_handler::<H, _>(factory)` (type inferred from the closure's return) |
 | Factory | `lambda: Player(db)` | `\|\| Player::new(db.clone())` |
 | Handler state | Class instance | Struct instance from factory closure |
-| Cover accessors | Free functions: `domain(cover)`, `correlation_id(cover)`, … | Extension trait methods: `cover.domain()`, `cover.correlation_id()`, … (via `CoverExt`) |
+| Cover accessors | Free functions: `domain(cover)`, `edition(cover)`, … | Extension trait methods: `cover.domain()`, `cover.edition()`, … (via `CoverExt`) |
 | Event book helpers | Free functions: `next_sequence(book)` | Extension trait methods: `book.next_sequence()` (via `EventBookExt`) |
 | Wrapper objects | `CoverW(cover).domain()` | Call extension trait method directly: `cover.domain()` |
 | Error surface | Exception hierarchy: `ClientError → GRPCError / ConnectionError / …` | `thiserror` enum `ClientError { Connection, Transport, Grpc, InvalidArgument, InvalidTimestamp }` with `is_*` predicate methods |
@@ -222,25 +221,10 @@ Key principles:
 
 1. **Don't rebuild destination state** — a saga gets only the triggering EventBook; the coordinator stamps sequences.
 2. **Let aggregates decide** — business logic in aggregates, not coordinators.
-3. **Prefer commands with sync mode** — use `SyncMode::Simple` for immediate feedback.
-4. **Use facts sparingly** — only for external data injection.
+3. **Use facts sparingly** — only for external data injection.
 
-## Speculative execution
-
-Test commands without persisting to the event store.
-
-```rust,ignore
-use angzarr_client::SpeculativeClient;
-use angzarr_client::proto::SpeculateCommandHandlerRequest;
-
-let client = SpeculativeClient::connect("http://localhost:1310").await?;
-let request = SpeculateCommandHandlerRequest {
-    command: Some(command_book),
-    events: prior_events,
-    ..Default::default()
-};
-let response = client.command_handler(request, None).await?;
-```
+A what-if run is an ordinary command sent to a named edition
+(`Cover.edition`); there is no separate speculative client.
 
 ## License
 

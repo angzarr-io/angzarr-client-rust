@@ -5,8 +5,7 @@
 use std::sync::{Arc, Mutex};
 
 use angzarr_client::proto::{
-    event_page, Cover, EventBook, EventPage, ProcessManagerHandleResponse, SagaResponse,
-    UpcastRequest,
+    Cover, EventBook, EventPage, ProcessManagerHandleResponse, SagaResponse, UpcastRequest,
 };
 #[allow(unused_imports)]
 use angzarr_client::router::{handles, process_manager, projector, saga, upcaster, upcasts};
@@ -161,19 +160,33 @@ fn projector_router_runs_projectors_and_echoes_the_book() {
         .dispatch(EventBook {
             cover: Some(cover.clone()),
             pages: vec![EventPage {
-                payload: Some(event_page::Payload::Event(Any {
+                payload: Some(Any {
                     type_url: full_type_url::<Ping>(),
                     value: vec![],
-                })),
+                }),
+                sequence: 6,
                 ..Default::default()
             }],
             next_sequence: 7,
             ..Default::default()
         })
         .expect("projector dispatch");
-    assert_eq!(projection.cover, Some(cover));
-    assert_eq!(projection.sequence, 7);
+    assert_eq!(projection.cover, Some(cover.clone()));
+    assert_eq!(projection.projector, "proj");
+    assert_eq!(projection.next_sequence, 7);
     assert_eq!(*count.lock().unwrap(), 1);
+
+    // A book with no pages answers its own next_sequence; several
+    // projectors answer one unnamed projection of the book.
+    let empty = EventBook {
+        cover: Some(cover.clone()),
+        next_sequence: 4,
+        ..Default::default()
+    };
+    let projection = two.dispatch(empty).expect("projector dispatch");
+    assert_eq!(projection.cover, Some(cover));
+    assert_eq!(projection.projector, "");
+    assert_eq!(projection.next_sequence, 4);
 }
 
 struct Up;
@@ -205,15 +218,15 @@ fn upcaster_router_metadata_and_dispatch() {
         .dispatch(UpcastRequest {
             domain: "a".into(),
             events: vec![EventPage {
-                payload: Some(event_page::Payload::Event(Any {
+                payload: Some(Any {
                     type_url: full_type_url::<Ping>(),
                     value: vec![],
-                })),
+                }),
                 ..Default::default()
             }],
         })
         .expect("upcast");
-    let Some(event_page::Payload::Event(any)) = &out.events[0].payload else {
+    let Some(any) = &out.events[0].payload else {
         panic!("event");
     };
     assert_eq!(any.type_url, full_type_url::<PingV2>());
@@ -246,10 +259,10 @@ fn a_wildcard_projector_consumes_every_domain() {
                 ..Default::default()
             }),
             pages: vec![EventPage {
-                payload: Some(event_page::Payload::Event(Any {
+                payload: Some(Any {
                     type_url: full_type_url::<Ping>(),
                     value: vec![],
-                })),
+                }),
                 ..Default::default()
             }],
             ..Default::default()

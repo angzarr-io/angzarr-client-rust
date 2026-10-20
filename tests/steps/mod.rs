@@ -12,5 +12,4 @@ pub mod parity;
 pub mod query_builder;
 pub mod query_client_steps;
 pub mod retry;
-pub mod speculative_client_steps;
 pub mod testing;

@@ -1,6 +1,6 @@
 //! Cover extension trait and implementations.
 //!
-//! Provides convenient accessors for domain, correlation_id, and root_id
+//! Provides convenient accessors for domain, edition, and root_id
 //! from Cover-bearing types.
 
 use crate::proto::{CommandBook, Cover, EventBook, Query};
@@ -9,7 +9,7 @@ use super::constants::{DEFAULT_EDITION, UNKNOWN_DOMAIN};
 
 /// Extension trait for types with an optional Cover.
 ///
-/// Provides convenient accessors for domain, correlation_id, and root_id
+/// Provides convenient accessors for domain, edition, and root_id
 /// without verbose `.cover.as_ref().map(...)` chains.
 pub trait CoverExt {
     /// Get the cover, if present.
@@ -30,13 +30,6 @@ pub trait CoverExt {
             .unwrap_or(UNKNOWN_DOMAIN)
     }
 
-    /// Get the correlation_id from the cover, or empty string if missing.
-    fn correlation_id(&self) -> &str {
-        self.cover()
-            .map(|c| c.correlation_id.as_str())
-            .unwrap_or("")
-    }
-
     /// Get the root UUID as a hex-encoded string, if present.
     fn root_id_hex(&self) -> Option<String> {
         self.cover()
@@ -51,11 +44,6 @@ pub trait CoverExt {
             .and_then(|u| uuid::Uuid::from_slice(&u.value).ok())
     }
 
-    /// Check if correlation_id is present and non-empty.
-    fn has_correlation_id(&self) -> bool {
-        !self.correlation_id().is_empty()
-    }
-
     /// Get the edition name from the cover.
     ///
     /// Returns the explicit edition name if set and non-empty, otherwise
@@ -64,8 +52,7 @@ pub trait CoverExt {
     /// `edition or ''` formula).
     fn edition(&self) -> &str {
         self.cover()
-            .and_then(|c| c.edition.as_ref())
-            .map(|e| e.name.as_str())
+            .and_then(|c| c.edition.as_deref())
             .filter(|e| !e.is_empty())
             .unwrap_or(DEFAULT_EDITION)
     }

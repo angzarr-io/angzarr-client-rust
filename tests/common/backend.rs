@@ -1,13 +1,12 @@
 //! In-process test backend for the client-surface feature tier.
 //!
 //! `features/client/README.md` defines the "test backend" for
-//! `aggregate_client`, `domain-client`, `query_client` and
-//! `speculative_client`: an in-process fake of the coordinator gRPC
-//! services owned by each client repo. This module is that fake. It serves
-//! the real generated tonic services (`CommandHandlerCoordinatorService`,
-//! `EventQueryService` and the projector / saga / process-manager
-//! coordinator services) over a real TCP or Unix socket, so every step
-//! drives the library's actual client objects over the wire.
+//! `aggregate_client`, `domain-client` and `query_client`: an in-process
+//! fake of the coordinator gRPC services owned by each client repo. This
+//! module is that fake. It serves the real generated tonic services
+//! (`CommandHandlerCoordinatorService` and `EventQueryService`) over a real
+//! TCP or Unix socket, so every step drives the library's actual client
+//! objects over the wire.
 //!
 //! The backend keeps an in-memory event store and a tiny scripted
 //! aggregate:
@@ -17,14 +16,16 @@
 //!   [`event_name_for`];
 //! - `CreateOrder` requires `customer_id`;
 //! - `CancelOrder` is refused once the history holds an `OrderShipped`;
-//! - every non-deferred page must carry the aggregate's next sequence.
+//! - a command whose `Handling.expected_sequence` is set must carry the
+//!   aggregate's next sequence (STRICT: a stale one is ABORTED).
 //!
-//! Sync modes: `ASYNC` returns immediately and runs downstream work on a
-//! delayed task, `SIMPLE` runs the configured projectors before replying,
-//! `CASCADE` also runs the configured sagas (which write to their target
-//! aggregate) before replying.
+//! Coordinator RPC modes (command_handler.proto): `Handle` (DECISION)
+//! answers the decision and runs the projectors on a delayed task,
+//! `HandleSync` (SIMPLE) runs the configured projectors before replying and
+//! reports them in `outcome.projections`, `HandleAsync` (ASYNC) enqueues the
+//! command and answers at once.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -38,24 +39,11 @@ use angzarr_client::proto::{
     command_handler_coordinator_service_server::{
         CommandHandlerCoordinatorService, CommandHandlerCoordinatorServiceServer,
     },
-    command_page, event_page,
     event_query_service_server::{EventQueryService, EventQueryServiceServer},
-    page_header::SequenceType,
-    process_manager_coordinator_service_server::{
-        ProcessManagerCoordinatorService, ProcessManagerCoordinatorServiceServer,
-    },
-    projector_coordinator_service_server::{
-        ProjectorCoordinatorService, ProjectorCoordinatorServiceServer,
-    },
     query::Selection,
-    saga_coordinator_service_server::{SagaCoordinatorService, SagaCoordinatorServiceServer},
     temporal_query::PointInTime,
-    AggregateRoot, AngzarrDeferredSequence, BusinessResponse, CommandBook, CommandPage,
-    CommandRequest, CommandResponse, Cover, Edition, EventBook, EventPage, EventRequest,
-    FactInjectionResponse, PageHeader, ProcessManagerCoordinatorRequest,
-    ProcessManagerHandleResponse, Projection, Query, SagaHandleRequest, SagaResponse, Snapshot,
-    SpeculateCommandHandlerRequest, SpeculatePmRequest, SpeculateProjectorRequest,
-    SpeculateSagaRequest, SyncMode, Uuid as ProtoUuid,
+    CommandBook, CommandPage, CommandResponse, CorrelationQuery, Cover, DeliveryOutcome, EventBook,
+    EventMeta, EventPage, Outcome, Projection, Query, Snapshot, Uuid as ProtoUuid,
 };
 use prost::Message;
 use prost_types::{Any, Timestamp};
@@ -106,6 +94,12 @@ pub fn root_for(label: &str) -> uuid::Uuid {
         .unwrap_or_else(|_| uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, label.as_bytes()))
 }
 
+/// Correlation id for a scenario label (correlation ids are UUIDs on the
+/// wire); the same mapping as [`root_for`].
+pub fn correlation_for(label: &str) -> uuid::Uuid {
+    root_for(label)
+}
+
 /// `Any` for a generic event of type `name` carrying `data`.
 pub fn event_any(name: &str, data: &str) -> Any {
     Any {
@@ -131,11 +125,32 @@ pub fn short_type(any: &Any) -> &str {
     any.type_url.rsplit(['/', '.']).next().unwrap_or("")
 }
 
-/// Explicit sequence of a page header, if any.
-pub fn page_seq(page: &EventPage) -> Option<u32> {
-    match page.header.as_ref()?.sequence_type.as_ref()? {
-        SequenceType::Sequence(n) => Some(*n),
-        _ => None,
+/// Sequence of a page.
+pub fn page_seq(page: &EventPage) -> u64 {
+    page.sequence
+}
+
+/// The time a page was recorded, if stamped.
+fn recorded_at(page: &EventPage) -> Option<&Timestamp> {
+    page.meta.as_ref()?.recorded_at.as_ref()
+}
+
+/// A stored page: `any` at `sequence`, recorded at `at` under
+/// `correlation`.
+fn stored_page(
+    sequence: u64,
+    any: Any,
+    at: Timestamp,
+    correlation: Option<&ProtoUuid>,
+) -> EventPage {
+    EventPage {
+        payload: Some(any),
+        meta: Some(EventMeta {
+            recorded_at: Some(at),
+            correlation_id: correlation.cloned(),
+            ..Default::default()
+        }),
+        sequence,
     }
 }
 
@@ -148,7 +163,7 @@ pub fn env_lock() -> Arc<tokio::sync::Mutex<()>> {
 }
 
 fn edition_key(cover: &Cover) -> String {
-    match cover.edition.as_ref().map(|e| e.name.as_str()) {
+    match cover.edition.as_deref() {
         None | Some("") | Some("angzarr") => String::new(),
         Some(name) => name.to_string(),
     }
@@ -163,7 +178,7 @@ fn key_of(cover: &Cover) -> Key {
         cover
             .root
             .as_ref()
-            .map(|r| r.value.clone())
+            .map(|r| r.value.to_vec())
             .unwrap_or_default(),
     )
 }
@@ -173,17 +188,29 @@ struct Aggregate {
     cover: Cover,
     pages: Vec<EventPage>,
     snapshot: Option<Snapshot>,
-    correlations: HashSet<String>,
 }
 
 impl Aggregate {
-    fn next_sequence(&self) -> u32 {
+    fn next_sequence(&self) -> u64 {
         self.pages
             .last()
-            .and_then(page_seq)
-            .map(|s| s + 1)
+            .map(|p| p.sequence + 1)
             .or_else(|| self.snapshot.as_ref().map(|s| s.sequence + 1))
             .unwrap_or(0)
+    }
+
+    /// Pages recorded under `correlation`.
+    fn correlated(&self, correlation: &ProtoUuid) -> Vec<EventPage> {
+        self.pages
+            .iter()
+            .filter(|p| {
+                p.meta
+                    .as_ref()
+                    .and_then(|m| m.correlation_id.as_ref())
+                    .is_some_and(|c| c == correlation)
+            })
+            .cloned()
+            .collect()
     }
 }
 
@@ -192,19 +219,16 @@ struct Config {
     known_domains: Option<HashSet<String>>,
     response_delay: Option<Duration>,
     projector_domains: HashSet<String>,
-    /// source domain → target domain.
-    sagas: HashMap<String, String>,
 }
 
 /// One downstream projector run: `(projector, domain, sequence)`.
-pub type ProjectorRun = (String, String, u32);
+pub type ProjectorRun = (String, String, u64);
 
 #[derive(Debug, Default)]
 struct Inner {
     store: Mutex<BTreeMap<Key, Aggregate>>,
     config: Mutex<Config>,
     projector_runs: Mutex<Vec<ProjectorRun>>,
-    sync_modes: Mutex<Vec<i32>>,
     rpcs: Mutex<Vec<&'static str>>,
     accepted: AtomicUsize,
     active: Arc<AtomicUsize>,
@@ -367,10 +391,7 @@ impl TestBackend {
         let task = tokio::spawn(async move {
             let _ = tonic::transport::Server::builder()
                 .add_service(CommandHandlerCoordinatorServiceServer::new(svc.clone()))
-                .add_service(EventQueryServiceServer::new(svc.clone()))
-                .add_service(ProjectorCoordinatorServiceServer::new(svc.clone()))
-                .add_service(SagaCoordinatorServiceServer::new(svc.clone()))
-                .add_service(ProcessManagerCoordinatorServiceServer::new(svc))
+                .add_service(EventQueryServiceServer::new(svc))
                 .serve_with_incoming_shutdown(incoming, async {
                     let _ = rx.await;
                 })
@@ -424,24 +445,9 @@ impl TestBackend {
             .insert(domain.into());
     }
 
-    /// Configure a saga from `source` to `target`.
-    pub fn add_saga(&self, source: &str, target: &str) {
-        self.inner
-            .config
-            .lock()
-            .unwrap()
-            .sagas
-            .insert(source.into(), target.into());
-    }
-
     /// Projector runs recorded so far.
     pub fn projector_runs(&self) -> Vec<ProjectorRun> {
         self.inner.projector_runs.lock().unwrap().clone()
-    }
-
-    /// Sync modes received on `HandleCommand`, in arrival order.
-    pub fn sync_modes(&self) -> Vec<i32> {
-        self.inner.sync_modes.lock().unwrap().clone()
     }
 
     /// RPC method names received, in arrival order.
@@ -461,7 +467,18 @@ impl TestBackend {
 
     /// Seed `count` events onto an aggregate, continuing its history.
     /// Each event is `<name>` with data `"<name>-<seq>"`.
-    pub fn seed(&self, cover: &Cover, name: &str, count: u32) {
+    pub fn seed(&self, cover: &Cover, name: &str, count: u64) {
+        self.seed_correlated(cover, name, count, None);
+    }
+
+    /// [`Self::seed`], recording the events under `correlation`.
+    pub fn seed_correlated(
+        &self,
+        cover: &Cover,
+        name: &str,
+        count: u64,
+        correlation: Option<&ProtoUuid>,
+    ) {
         let mut store = self.inner.store.lock().unwrap();
         let agg = store.entry(key_of(cover)).or_insert_with(|| Aggregate {
             cover: cover.clone(),
@@ -469,20 +486,12 @@ impl TestBackend {
         });
         for _ in 0..count {
             let seq = agg.next_sequence();
-            agg.pages.push(EventPage {
-                header: Some(PageHeader {
-                    sequence_type: Some(SequenceType::Sequence(seq)),
-                    sync_mode: None,
-                }),
-                created_at: Some(now()),
-                payload: Some(event_page::Payload::Event(event_any(
-                    name,
-                    &format!("{name}-{seq}"),
-                ))),
-            });
-        }
-        if !cover.correlation_id.is_empty() {
-            agg.correlations.insert(cover.correlation_id.clone());
+            agg.pages.push(stored_page(
+                seq,
+                event_any(name, &format!("{name}-{seq}")),
+                now(),
+                correlation,
+            ));
         }
     }
 
@@ -494,21 +503,16 @@ impl TestBackend {
             ..Default::default()
         });
         let seq = agg.next_sequence();
-        agg.pages.push(EventPage {
-            header: Some(PageHeader {
-                sequence_type: Some(SequenceType::Sequence(seq)),
-                sync_mode: None,
-            }),
-            created_at: Some(at.unwrap_or_else(now)),
-            payload: Some(event_page::Payload::Event(event_any(name, data))),
-        });
-        if !cover.correlation_id.is_empty() {
-            agg.correlations.insert(cover.correlation_id.clone());
-        }
+        agg.pages.push(stored_page(
+            seq,
+            event_any(name, data),
+            at.unwrap_or_else(now),
+            None,
+        ));
     }
 
     /// Record a snapshot at `sequence` and continue history after it.
-    pub fn seed_snapshot(&self, cover: &Cover, sequence: u32) {
+    pub fn seed_snapshot(&self, cover: &Cover, sequence: u64) {
         let mut store = self.inner.store.lock().unwrap();
         let agg = store.entry(key_of(cover)).or_insert_with(|| Aggregate {
             cover: cover.clone(),
@@ -544,20 +548,12 @@ impl TestBackend {
     }
 }
 
-/// Build a cover for `(domain, root label)` with optional edition and
-/// correlation id.
-pub fn cover(domain: &str, root_label: &str, edition: Option<&str>, correlation: &str) -> Cover {
+/// Build a cover for `(domain, root label)` with an optional edition.
+pub fn cover(domain: &str, root_label: &str, edition: Option<&str>) -> Cover {
     Cover {
         domain: domain.into(),
-        root: Some(ProtoUuid {
-            value: root_for(root_label).as_bytes().to_vec(),
-        }),
-        correlation_id: correlation.into(),
-        edition: edition.map(|e| Edition {
-            name: e.into(),
-            ..Default::default()
-        }),
-        ..Default::default()
+        root: Some(ProtoUuid::from(root_for(root_label))),
+        edition: edition.map(Into::into),
     }
 }
 
@@ -582,10 +578,8 @@ struct Decided {
 
 /// Run the scripted aggregate for one command page against `history`.
 fn decide(page: &CommandPage, history: &[EventPage]) -> Result<Decided, Status> {
-    let any = match &page.payload {
-        Some(command_page::Payload::Command(a)) => a,
-        _ => return Err(Status::invalid_argument("missing command payload")),
-    };
+    let any = angzarr_client::router::binding::command_payload(page)
+        .ok_or_else(|| Status::invalid_argument("missing command payload"))?;
     let name = short_type(any).to_string();
     if name.is_empty() {
         return Err(Status::invalid_argument("missing command type"));
@@ -606,7 +600,9 @@ fn decide(page: &CommandPage, history: &[EventPage]) -> Result<Decided, Status> 
         .map_err(|e| Status::invalid_argument(format!("malformed payload: {e}")))?;
     if name == "CancelOrder"
         && history.iter().any(|p| {
-            matches!(&p.payload, Some(event_page::Payload::Event(e)) if short_type(e) == "OrderShipped")
+            p.payload
+                .as_ref()
+                .is_some_and(|e| short_type(e) == "OrderShipped")
         })
     {
         return Err(Status::failed_precondition("cannot cancel shipped order"));
@@ -619,24 +615,27 @@ fn decide(page: &CommandPage, history: &[EventPage]) -> Result<Decided, Status> 
     })
 }
 
-fn build_pages(decided: &Decided, first_seq: u32) -> Vec<EventPage> {
+fn build_pages(
+    decided: &Decided,
+    first_seq: u64,
+    correlation: Option<&ProtoUuid>,
+) -> Vec<EventPage> {
     decided
         .events
         .iter()
         .enumerate()
-        .map(|(i, (name, data))| EventPage {
-            header: Some(PageHeader {
-                sequence_type: Some(SequenceType::Sequence(first_seq + i as u32)),
-                sync_mode: None,
-            }),
-            created_at: Some(now()),
-            payload: Some(event_page::Payload::Event(event_any(name, data))),
+        .map(|(i, (name, data))| {
+            stored_page(
+                first_seq + i as u64,
+                event_any(name, data),
+                now(),
+                correlation,
+            )
         })
         .collect()
 }
 
-fn command_parts(book: Option<&CommandBook>) -> Result<(&Cover, &CommandPage), Status> {
-    let book = book.ok_or_else(|| Status::invalid_argument("missing command book"))?;
+fn command_parts(book: &CommandBook) -> Result<(&Cover, &CommandPage), Status> {
     let cover = book
         .cover
         .as_ref()
@@ -645,8 +644,8 @@ fn command_parts(book: Option<&CommandBook>) -> Result<(&Cover, &CommandPage), S
         return Err(Status::invalid_argument("domain is required"));
     }
     let page = book
-        .pages
-        .first()
+        .page
+        .as_ref()
         .ok_or_else(|| Status::invalid_argument("missing command page"))?;
     Ok((cover, page))
 }
@@ -667,7 +666,8 @@ impl Svc {
     }
 
     /// Validate, decide and persist one command; returns the stored book.
-    fn apply(&self, book: Option<&CommandBook>) -> Result<EventBook, Status> {
+    /// A stale `Handling.expected_sequence` is ABORTED (STRICT).
+    fn apply(&self, book: &CommandBook) -> Result<EventBook, Status> {
         let (cover, page) = command_parts(book)?;
         self.check_domain(&cover.domain)?;
         let mut store = self.0.store.lock().unwrap();
@@ -676,27 +676,39 @@ impl Svc {
             ..Default::default()
         });
         let next = agg.next_sequence();
-        if let Some(SequenceType::Sequence(n)) =
-            page.header.as_ref().and_then(|h| h.sequence_type.as_ref())
-        {
-            if *n != next {
-                return Err(Status::failed_precondition(format!(
+        if let Some(n) = book.handling.as_ref().and_then(|h| h.expected_sequence) {
+            if n != next {
+                return Err(Status::aborted(format!(
                     "sequence mismatch: expected {next}, got {n}"
                 )));
             }
         }
         let decided = decide(page, &agg.pages)?;
-        let pages = build_pages(&decided, next);
+        let pages = build_pages(&decided, next, page.correlation_id.as_ref());
         agg.pages.extend(pages.iter().cloned());
-        if !cover.correlation_id.is_empty() {
-            agg.correlations.insert(cover.correlation_id.clone());
-        }
         Ok(EventBook {
             cover: Some(cover.clone()),
             next_sequence: agg.next_sequence(),
             pages,
             ..Default::default()
         })
+    }
+
+    /// Wait out the configured response delay.
+    async fn delay(&self) {
+        let delay = self.0.config.lock().unwrap().response_delay;
+        if let Some(d) = delay {
+            tokio::time::sleep(d).await;
+        }
+    }
+
+    /// Run the projectors on a delayed task, as downstream work does.
+    fn project_later(&self, events: EventBook) {
+        let svc = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            svc.run_projectors(&events);
+        });
     }
 
     fn run_projectors(&self, events: &EventBook) -> Vec<Projection> {
@@ -717,7 +729,7 @@ impl Svc {
         }
         let mut out = Vec::new();
         for page in &events.pages {
-            let seq = page_seq(page).unwrap_or(0);
+            let seq = page_seq(page);
             self.0.projector_runs.lock().unwrap().push((
                 format!("{domain}-projector"),
                 domain.clone(),
@@ -726,166 +738,73 @@ impl Svc {
             out.push(Projection {
                 cover: events.cover.clone(),
                 projector: format!("{domain}-projector"),
-                sequence: seq,
+                next_sequence: seq + 1,
                 projection: None,
             });
         }
         out
     }
-
-    fn run_sagas(&self, events: &EventBook) -> Result<(), Status> {
-        let Some(source) = events.cover.as_ref() else {
-            return Ok(());
-        };
-        let target = self
-            .0
-            .config
-            .lock()
-            .unwrap()
-            .sagas
-            .get(&source.domain)
-            .cloned();
-        let Some(target) = target else {
-            return Ok(());
-        };
-        for page in &events.pages {
-            let cmd = saga_command(source, page, &target);
-            self.apply(Some(&cmd))?;
-        }
-        Ok(())
-    }
-}
-
-/// The command a backend saga emits for one source event.
-fn saga_command(source: &Cover, page: &EventPage, target: &str) -> CommandBook {
-    CommandBook {
-        cover: Some(Cover {
-            domain: target.into(),
-            root: source.root.clone(),
-            correlation_id: source.correlation_id.clone(),
-            ..Default::default()
-        }),
-        pages: vec![CommandPage {
-            header: Some(PageHeader {
-                sequence_type: Some(SequenceType::AngzarrDeferred(AngzarrDeferredSequence {
-                    source: Some(source.clone()),
-                    source_seq: page_seq(page).unwrap_or(0),
-                    ..Default::default()
-                })),
-                sync_mode: None,
-            }),
-            payload: Some(command_page::Payload::Command(command_any(
-                "ReserveStock",
-                &source.domain,
-                1,
-            ))),
-            ..Default::default()
-        }],
-    }
 }
 
 #[tonic::async_trait]
 impl CommandHandlerCoordinatorService for Svc {
-    async fn handle_command(
+    /// DECISION: the decision now, projectors later.
+    async fn handle(
         &self,
-        request: Request<CommandRequest>,
+        request: Request<CommandBook>,
     ) -> Result<Response<CommandResponse>, Status> {
-        self.rpc("HandleCommand");
-        let req = request.into_inner();
-        self.0.sync_modes.lock().unwrap().push(req.sync_mode);
-        let delay = self.0.config.lock().unwrap().response_delay;
-        if let Some(d) = delay {
-            tokio::time::sleep(d).await;
-        }
-        let events = self.apply(req.command.as_ref())?;
-        let mode = SyncMode::try_from(req.sync_mode).unwrap_or(SyncMode::Async);
-        let projections = match mode {
-            SyncMode::Simple => self.run_projectors(&events),
-            SyncMode::Cascade => {
-                let p = self.run_projectors(&events);
-                self.run_sagas(&events)?;
-                p
-            }
-            _ => {
-                let svc = self.clone();
-                let book = events.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    svc.run_projectors(&book);
-                    let _ = svc.run_sagas(&book);
-                });
-                Vec::new()
-            }
-        };
+        self.rpc("Handle");
+        self.delay().await;
+        let events = self.apply(request.get_ref())?;
+        self.project_later(events.clone());
         Ok(Response::new(CommandResponse {
             events: Some(events),
-            projections,
-            ..Default::default()
+            outcome: Some(applied(Vec::new())),
         }))
     }
 
-    async fn handle_event(
-        &self,
-        _request: Request<EventRequest>,
-    ) -> Result<Response<FactInjectionResponse>, Status> {
-        Err(Status::unimplemented("test backend does not inject facts"))
+    /// ASYNC: validate and enqueue; the decision and projectors run later.
+    async fn handle_async(&self, request: Request<CommandBook>) -> Result<Response<()>, Status> {
+        self.rpc("HandleAsync");
+        let book = request.into_inner();
+        command_parts(&book)?;
+        let svc = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            if let Ok(events) = svc.apply(&book) {
+                svc.run_projectors(&events);
+            }
+        });
+        Ok(Response::new(()))
     }
 
-    async fn handle_sync_speculative(
+    /// SIMPLE: the decision after the synchronous projectors ran.
+    async fn handle_sync(
         &self,
-        request: Request<SpeculateCommandHandlerRequest>,
+        request: Request<CommandBook>,
     ) -> Result<Response<CommandResponse>, Status> {
-        self.rpc("HandleSyncSpeculative");
-        let req = request.into_inner();
-        let (cover, page) = command_parts(req.command.as_ref())?;
-        self.check_domain(&cover.domain)?;
-        let history: Vec<EventPage> = {
-            let store = self.0.store.lock().unwrap();
-            store
-                .get(&key_of(cover))
-                .map(|a| a.pages.clone())
-                .unwrap_or_default()
-        };
-        let visible: Vec<EventPage> = match req
-            .point_in_time
-            .as_ref()
-            .and_then(|t| t.point_in_time.as_ref())
-        {
-            Some(PointInTime::AsOfSequence(s)) => history
-                .into_iter()
-                .filter(|p| page_seq(p).is_some_and(|q| q <= *s))
-                .collect(),
-            Some(PointInTime::AsOfTime(t)) => history
-                .into_iter()
-                .filter(|p| p.created_at.as_ref().is_some_and(|c| ts_le(c, t)))
-                .collect(),
-            None => history,
-        };
-        let next = visible.last().and_then(page_seq).map_or(0, |s| s + 1);
-        let decided = decide(page, &visible)?;
-        let pages = build_pages(&decided, next);
+        self.rpc("HandleSync");
+        self.delay().await;
+        let events = self.apply(request.get_ref())?;
+        let projections = self.run_projectors(&events);
         Ok(Response::new(CommandResponse {
-            events: Some(EventBook {
-                cover: Some(cover.clone()),
-                next_sequence: next + pages.len() as u32,
-                pages,
-                ..Default::default()
-            }),
-            projections: Vec::new(),
-            ..Default::default()
+            events: Some(events),
+            outcome: Some(applied(projections)),
         }))
     }
+}
 
-    async fn handle_compensation(
-        &self,
-        _request: Request<CommandRequest>,
-    ) -> Result<Response<BusinessResponse>, Status> {
-        Err(Status::unimplemented("test backend does not compensate"))
+/// An APPLIED outcome carrying `projections`.
+fn applied(projections: Vec<Projection>) -> Outcome {
+    Outcome {
+        delivery: DeliveryOutcome::Applied as i32,
+        projections,
+        ..Default::default()
     }
 }
 
 type BookStream = Pin<Box<dyn tokio_stream::Stream<Item = Result<EventBook, Status>> + Send>>;
-type RootStream = Pin<Box<dyn tokio_stream::Stream<Item = Result<AggregateRoot, Status>> + Send>>;
+type RootStream = Pin<Box<dyn tokio_stream::Stream<Item = Result<Cover, Status>> + Send>>;
 
 impl Svc {
     fn select(&self, query: &Query) -> Result<Vec<EventBook>, Status> {
@@ -894,15 +813,18 @@ impl Svc {
             .as_ref()
             .ok_or_else(|| Status::invalid_argument("missing cover"))?;
         let store = self.0.store.lock().unwrap();
-        if cover.root.is_none() && !cover.correlation_id.is_empty() {
+        if let (None, Some(correlation)) = (cover.root.as_ref(), query.correlation_id.as_ref()) {
             return Ok(store
                 .values()
-                .filter(|a| a.correlations.contains(&cover.correlation_id))
-                .map(|a| EventBook {
-                    cover: Some(a.cover.clone()),
-                    pages: a.pages.clone(),
-                    snapshot: a.snapshot.clone(),
-                    next_sequence: a.next_sequence(),
+                .filter(|a| a.cover.domain == cover.domain)
+                .filter_map(|a| {
+                    let pages = a.correlated(correlation);
+                    (!pages.is_empty()).then(|| EventBook {
+                        cover: Some(a.cover.clone()),
+                        pages,
+                        snapshot: None,
+                        next_sequence: a.next_sequence(),
+                    })
                 })
                 .collect());
         }
@@ -914,7 +836,7 @@ impl Svc {
             .pages
             .iter()
             .filter(|p| {
-                let seq = page_seq(p).unwrap_or(0);
+                let seq = page_seq(p);
                 match &query.selection {
                     None => true,
                     Some(Selection::Range(r)) => seq >= r.lower && r.upper.is_none_or(|u| seq <= u),
@@ -922,7 +844,7 @@ impl Svc {
                     Some(Selection::Temporal(t)) => match &t.point_in_time {
                         Some(PointInTime::AsOfSequence(s)) => seq <= *s,
                         Some(PointInTime::AsOfTime(at)) => {
-                            p.created_at.as_ref().is_some_and(|c| ts_le(c, at))
+                            recorded_at(p).is_some_and(|c| ts_le(c, at))
                         }
                         None => true,
                     },
@@ -960,13 +882,13 @@ impl EventQueryService for Svc {
         ))))
     }
 
-    type SynchronizeStream = BookStream;
+    type GetCorrelatedEventsStream = BookStream;
 
-    async fn synchronize(
+    async fn get_correlated_events(
         &self,
-        _request: Request<tonic::Streaming<Query>>,
-    ) -> Result<Response<Self::SynchronizeStream>, Status> {
-        Err(Status::unimplemented("test backend does not synchronize"))
+        _request: Request<CorrelationQuery>,
+    ) -> Result<Response<Self::GetCorrelatedEventsStream>, Status> {
+        Err(Status::unimplemented("test backend: GetCorrelatedEvents"))
     }
 
     type GetAggregateRootsStream = RootStream;
@@ -976,128 +898,6 @@ impl EventQueryService for Svc {
         _request: Request<()>,
     ) -> Result<Response<Self::GetAggregateRootsStream>, Status> {
         Err(Status::unimplemented("test backend does not list roots"))
-    }
-}
-
-#[tonic::async_trait]
-impl ProjectorCoordinatorService for Svc {
-    async fn handle_sync(
-        &self,
-        _request: Request<EventRequest>,
-    ) -> Result<Response<Projection>, Status> {
-        Err(Status::unimplemented("test backend: HandleSync"))
-    }
-
-    async fn handle(&self, _request: Request<EventBook>) -> Result<Response<()>, Status> {
-        Err(Status::unimplemented("test backend: Handle"))
-    }
-
-    /// The `order-summary` projector: projects the sequences it saw, in
-    /// order, without recording a projector run.
-    async fn handle_speculative(
-        &self,
-        request: Request<SpeculateProjectorRequest>,
-    ) -> Result<Response<Projection>, Status> {
-        self.rpc("ProjectorHandleSpeculative");
-        let events = request
-            .into_inner()
-            .events
-            .ok_or_else(|| Status::invalid_argument("missing events"))?;
-        let seqs: Vec<String> = events
-            .pages
-            .iter()
-            .filter_map(page_seq)
-            .map(|s| s.to_string())
-            .collect();
-        Ok(Response::new(Projection {
-            cover: events.cover.clone(),
-            projector: "order-summary".into(),
-            sequence: events.pages.last().and_then(page_seq).unwrap_or(0),
-            projection: Some(event_any("OrderSummary", &seqs.join(","))),
-        }))
-    }
-}
-
-#[tonic::async_trait]
-impl SagaCoordinatorService for Svc {
-    async fn execute(
-        &self,
-        _request: Request<SagaHandleRequest>,
-    ) -> Result<Response<SagaResponse>, Status> {
-        Err(Status::unimplemented("test backend: Execute"))
-    }
-
-    /// Sagas translate every source event into a `ReserveStock` for the
-    /// configured target (default: `inventory` for `orders`, `orders` for
-    /// anything else) without delivering it.
-    async fn execute_speculative(
-        &self,
-        request: Request<SpeculateSagaRequest>,
-    ) -> Result<Response<SagaResponse>, Status> {
-        self.rpc("SagaExecuteSpeculative");
-        let source = request
-            .into_inner()
-            .request
-            .and_then(|r| r.source)
-            .ok_or_else(|| Status::invalid_argument("missing saga source"))?;
-        let cover = source
-            .cover
-            .clone()
-            .ok_or_else(|| Status::invalid_argument("missing source cover"))?;
-        let target = if cover.domain == "orders" {
-            "inventory"
-        } else {
-            "orders"
-        };
-        let commands = source
-            .pages
-            .iter()
-            .map(|p| saga_command(&cover, p, target))
-            .collect();
-        Ok(Response::new(SagaResponse {
-            commands,
-            events: Vec::new(),
-        }))
-    }
-}
-
-#[tonic::async_trait]
-impl ProcessManagerCoordinatorService for Svc {
-    async fn handle(
-        &self,
-        _request: Request<ProcessManagerCoordinatorRequest>,
-    ) -> Result<Response<ProcessManagerHandleResponse>, Status> {
-        Err(Status::unimplemented("test backend: Handle"))
-    }
-
-    /// The `order-workflow` PM: requires a correlation id and emits one
-    /// command per trigger event.
-    async fn handle_speculative(
-        &self,
-        request: Request<SpeculatePmRequest>,
-    ) -> Result<Response<ProcessManagerHandleResponse>, Status> {
-        self.rpc("PmHandleSpeculative");
-        let trigger = request
-            .into_inner()
-            .request
-            .and_then(|r| r.trigger)
-            .ok_or_else(|| Status::invalid_argument("missing trigger"))?;
-        let cover = trigger
-            .cover
-            .clone()
-            .ok_or_else(|| Status::invalid_argument("missing trigger cover"))?;
-        if cover.correlation_id.is_empty() {
-            return Err(Status::invalid_argument("correlation_id is required"));
-        }
-        let commands = trigger
-            .pages
-            .iter()
-            .map(|p| saga_command(&cover, p, "shipping"))
-            .collect();
-        Ok(Response::new(ProcessManagerHandleResponse {
-            commands,
-            ..Default::default()
-        }))
     }
 }
 

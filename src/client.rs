@@ -6,13 +6,8 @@ use crate::error::{ClientError, Result};
 use crate::error_codes::{codes, keys, messages};
 use crate::proto::{
     command_handler_coordinator_service_client::CommandHandlerCoordinatorServiceClient as TonicCommandHandlerClient,
-    event_query_service_client::EventQueryServiceClient as TonicQueryClient,
-    process_manager_coordinator_service_client::ProcessManagerCoordinatorServiceClient as TonicPmClient,
-    projector_coordinator_service_client::ProjectorCoordinatorServiceClient as TonicProjectorClient,
-    saga_coordinator_service_client::SagaCoordinatorServiceClient as TonicSagaClient,
-    CascadeErrorMode, CommandBook, CommandRequest, CommandResponse, EventBook,
-    ProcessManagerHandleResponse, Projection, Query, SagaResponse, SpeculateCommandHandlerRequest,
-    SpeculatePmRequest, SpeculateProjectorRequest, SpeculateSagaRequest, SyncMode,
+    event_query_service_client::EventQueryServiceClient as TonicQueryClient, CommandBook,
+    CommandResponse, EventBook, Query, Uuid as ProtoUuid,
 };
 use crate::retry::RetryPolicy;
 use crate::traits;
@@ -140,6 +135,11 @@ fn error_chain(err: &dyn std::error::Error) -> String {
         source = e.source();
     }
     out
+}
+
+/// The canonical text of a wire correlation id, empty when unset.
+fn correlation_text(id: Option<&ProtoUuid>) -> String {
+    id.map(|u| u.to_string()).unwrap_or_default()
 }
 
 /// Retries connection with the provided `RetryPolicy` on failure.
@@ -324,16 +324,12 @@ impl QueryClient {
     /// - Python: `timeout: float | None` kwarg
     pub async fn get_event_book(&self, query: Query) -> Result<EventBook> {
         // Audit #69 stage (b): attach `x-correlation-id` from the
-        // canonical Cover.correlation_id field on every outbound RPC,
-        // so OTel exporters / mesh sidecars can filter on it without
-        // decoding the body. Send-only — the server side does not read
-        // the metadata header (data structures are canonical, body
-        // wins for in-framework dispatch).
-        let corr_id = query
-            .cover
-            .as_ref()
-            .map(|c| c.correlation_id.clone())
-            .unwrap_or_default();
+        // query's correlation selector on every outbound RPC, so OTel
+        // exporters / mesh sidecars can filter on it without decoding the
+        // body. Send-only — the server side does not read the metadata
+        // header (data structures are canonical, body wins for
+        // in-framework dispatch).
+        let corr_id = correlation_text(query.correlation_id.as_ref());
         let req = crate::proto_ext::correlated_request(query, &corr_id);
         let response = self.inner.clone().get_event_book(req).await?;
         Ok(response.into_inner())
@@ -359,11 +355,7 @@ impl QueryClient {
         query: Query,
         max_books: usize,
     ) -> Result<Vec<EventBook>> {
-        let corr_id = query
-            .cover
-            .as_ref()
-            .map(|c| c.correlation_id.clone())
-            .unwrap_or_default();
+        let corr_id = correlation_text(query.correlation_id.as_ref());
         let req = crate::proto_ext::correlated_request(query, &corr_id);
         let mut stream = self.inner.clone().get_events(req).await?.into_inner();
         let mut results = Vec::with_capacity(max_books.min(1024));
@@ -437,32 +429,22 @@ impl CommandHandlerClient {
         drop(self);
     }
 
-    /// Send a `CommandRequest` over the pinned spec's coordinator RPC.
-    async fn handle_command(&self, command: CommandRequest) -> Result<CommandResponse> {
-        // Audit #69 stage (b): canonical correlation_id at
-        // `command.command.cover.correlation_id` (CommandRequest →
-        // CommandBook → Cover). Empty / missing skips the header.
-        let corr_id = command
-            .command
-            .as_ref()
-            .and_then(|cb| cb.cover.as_ref())
-            .map(|c| c.correlation_id.clone())
-            .unwrap_or_default();
-        let req = crate::proto_ext::correlated_request(command, &corr_id);
-        let response = self.inner.clone().handle_command(req).await?;
-        Ok(response.into_inner())
-    }
-
-    /// Execute a command asynchronously (fire-and-forget).
-    ///
-    /// Convenience method that wraps CommandBook in CommandRequest with async sync mode.
+    /// Send a command and wait for its decision
+    /// (`CommandHandlerCoordinatorService.Handle`): the response carries
+    /// the persisted events and the delivery outcome.
     pub async fn handle(&self, command: CommandBook) -> Result<CommandResponse> {
-        self.handle_command(CommandRequest {
-            command: Some(command),
-            sync_mode: SyncMode::Async as i32,
-            cascade_error_mode: CascadeErrorMode::CascadeErrorFailFast as i32,
-        })
-        .await
+        // Audit #69 stage (b): `x-correlation-id` from the command page's
+        // correlation_id. Unset skips the header (the coordinator assigns
+        // one).
+        let corr_id = correlation_text(
+            command
+                .page
+                .as_ref()
+                .and_then(|p| p.correlation_id.as_ref()),
+        );
+        let req = crate::proto_ext::correlated_request(command, &corr_id);
+        let response = self.inner.clone().handle(req).await?;
+        Ok(response.into_inner())
     }
 }
 
@@ -471,27 +453,13 @@ impl traits::GatewayClient for CommandHandlerClient {
     async fn execute(&self, command: CommandBook) -> Result<CommandResponse> {
         self.handle(command).await
     }
-
-    async fn execute_with_sync_mode(
-        &self,
-        command: CommandBook,
-        sync_mode: SyncMode,
-    ) -> Result<CommandResponse> {
-        self.handle_command(CommandRequest {
-            command: Some(command),
-            sync_mode: sync_mode as i32,
-            cascade_error_mode: CascadeErrorMode::CascadeErrorFailFast as i32,
-        })
-        .await
-    }
 }
 
-/// Per-domain client combining command execution, event querying, and speculative operations.
+/// Per-domain client combining command execution and event querying.
 ///
 /// Connects to a single domain's endpoint and provides:
 /// - Command execution via `command_handler`
 /// - Event querying via `query`
-/// - Speculative (what-if) execution via `speculative`
 ///
 /// Matches the distributed architecture where each domain has its own coordinator service.
 #[derive(Clone)]
@@ -500,8 +468,6 @@ pub struct DomainClient {
     pub command_handler: CommandHandlerClient,
     /// Query client for event retrieval.
     pub query: QueryClient,
-    /// Speculative client for dry-run and what-if scenarios.
-    pub speculative: SpeculativeClient,
 }
 
 impl DomainClient {
@@ -548,8 +514,7 @@ impl DomainClient {
     pub fn from_channel(channel: Channel) -> Self {
         Self {
             command_handler: CommandHandlerClient::from_channel(channel.clone()),
-            query: QueryClient::from_channel(channel.clone()),
-            speculative: SpeculativeClient::from_channel(channel),
+            query: QueryClient::from_channel(channel),
         }
     }
 
@@ -561,30 +526,10 @@ impl DomainClient {
         drop(self);
     }
 
-    /// Execute a command asynchronously (fire-and-forget).
-    ///
-    /// Use `execute_with_mode()` to specify a different sync mode.
+    /// Send a command and wait for its decision (delegates to the
+    /// command handler client).
     pub async fn execute(&self, command: CommandBook) -> Result<CommandResponse> {
         self.command_handler.handle(command).await
-    }
-
-    /// Execute a command with the specified sync mode.
-    ///
-    /// Use `SyncMode::Async` for fire-and-forget (default).
-    /// Use `SyncMode::Simple` to wait for sync projectors.
-    /// Use `SyncMode::Cascade` for full sync including saga cascade.
-    pub async fn execute_with_mode(
-        &self,
-        command: CommandBook,
-        sync_mode: SyncMode,
-    ) -> Result<CommandResponse> {
-        self.command_handler
-            .handle_command(CommandRequest {
-                command: Some(command),
-                sync_mode: sync_mode as i32,
-                cascade_error_mode: CascadeErrorMode::CascadeErrorFailFast as i32,
-            })
-            .await
     }
 
     /// Query events — unary RPC returning single EventBook (delegates to query client).
@@ -603,16 +548,6 @@ impl traits::GatewayClient for DomainClient {
     async fn execute(&self, command: CommandBook) -> Result<CommandResponse> {
         self.execute(command).await
     }
-
-    async fn execute_with_sync_mode(
-        &self,
-        command: CommandBook,
-        sync_mode: SyncMode,
-    ) -> Result<CommandResponse> {
-        self.command_handler
-            .execute_with_sync_mode(command, sync_mode)
-            .await
-    }
 }
 
 #[async_trait]
@@ -623,131 +558,6 @@ impl traits::QueryClient for DomainClient {
 
     async fn get_events(&self, query: Query) -> Result<Vec<EventBook>> {
         self.get_events(query).await
-    }
-}
-
-/// Speculative client for what-if scenarios.
-///
-/// Provides speculative execution across different coordinator types.
-/// Each method targets a specific coordinator's speculative RPC.
-#[derive(Clone)]
-pub struct SpeculativeClient {
-    command_handler: TonicCommandHandlerClient<Channel>,
-    projector: TonicProjectorClient<Channel>,
-    saga: TonicSagaClient<Channel>,
-    pm: TonicPmClient<Channel>,
-}
-
-impl SpeculativeClient {
-    /// Connect to services at the given endpoint.
-    ///
-    /// Supports both TCP (host:port) and Unix Domain Sockets (file paths).
-    pub async fn connect(endpoint: &str) -> Result<Self> {
-        Self::connect_with_retry(endpoint, &RetryPolicy::default()).await
-    }
-
-    /// Connect with a custom retry policy.
-    pub async fn connect_with_retry(endpoint: &str, retry: &RetryPolicy) -> Result<Self> {
-        let channel = create_channel(endpoint, retry).await?;
-        Ok(Self::from_channel(channel))
-    }
-
-    /// Connect using an endpoint from environment variable with fallback.
-    pub async fn from_env(env_var: &str, default: &str) -> Result<Self> {
-        let endpoint = endpoint_from_env(env_var, default);
-        Self::connect(&endpoint).await
-    }
-
-    /// Create a client from an existing channel.
-    pub fn from_channel(channel: Channel) -> Self {
-        Self {
-            command_handler: TonicCommandHandlerClient::new(channel.clone()),
-            projector: TonicProjectorClient::new(channel.clone()),
-            saga: TonicSagaClient::new(channel.clone()),
-            pm: TonicPmClient::new(channel),
-        }
-    }
-
-    /// Explicitly release this client's channel handle.
-    ///
-    /// Equivalent to letting the client drop; provided for symmetry with the
-    /// synchronous client libraries.
-    pub fn close(self) {
-        drop(self);
-    }
-}
-
-#[async_trait]
-impl traits::SpeculativeClient for SpeculativeClient {
-    // Audit #69 stage (b): each speculative method attaches
-    // `x-correlation-id` from the canonical Cover.correlation_id field
-    // in its request type. Different request types nest the Cover at
-    // different paths; canonical paths inlined per method.
-
-    async fn command_handler(
-        &self,
-        request: SpeculateCommandHandlerRequest,
-    ) -> Result<CommandResponse> {
-        // SpeculateCommandHandlerRequest.command: CommandBook → Cover.
-        let corr_id = request
-            .command
-            .as_ref()
-            .and_then(|cb| cb.cover.as_ref())
-            .map(|c| c.correlation_id.clone())
-            .unwrap_or_default();
-        let req = crate::proto_ext::correlated_request(request, &corr_id);
-        let response = self
-            .command_handler
-            .clone()
-            .handle_sync_speculative(req)
-            .await?;
-        Ok(response.into_inner())
-    }
-
-    async fn projector(&self, request: SpeculateProjectorRequest) -> Result<Projection> {
-        // SpeculateProjectorRequest.events: EventBook → Cover.
-        let corr_id = request
-            .events
-            .as_ref()
-            .and_then(|eb| eb.cover.as_ref())
-            .map(|c| c.correlation_id.clone())
-            .unwrap_or_default();
-        let req = crate::proto_ext::correlated_request(request, &corr_id);
-        let response = self.projector.clone().handle_speculative(req).await?;
-        Ok(response.into_inner())
-    }
-
-    async fn saga(&self, request: SpeculateSagaRequest) -> Result<SagaResponse> {
-        // SpeculateSagaRequest.request: SagaHandleRequest, .source:
-        // EventBook → Cover.
-        let corr_id = request
-            .request
-            .as_ref()
-            .and_then(|sr| sr.source.as_ref())
-            .and_then(|eb| eb.cover.as_ref())
-            .map(|c| c.correlation_id.clone())
-            .unwrap_or_default();
-        let req = crate::proto_ext::correlated_request(request, &corr_id);
-        let response = self.saga.clone().execute_speculative(req).await?;
-        Ok(response.into_inner())
-    }
-
-    async fn process_manager(
-        &self,
-        request: SpeculatePmRequest,
-    ) -> Result<ProcessManagerHandleResponse> {
-        // SpeculatePmRequest.request: ProcessManagerHandleRequest,
-        // .trigger: EventBook → Cover.
-        let corr_id = request
-            .request
-            .as_ref()
-            .and_then(|pr| pr.trigger.as_ref())
-            .and_then(|eb| eb.cover.as_ref())
-            .map(|c| c.correlation_id.clone())
-            .unwrap_or_default();
-        let req = crate::proto_ext::correlated_request(request, &corr_id);
-        let response = self.pm.clone().handle_speculative(req).await?;
-        Ok(response.into_inner())
     }
 }
 
@@ -797,9 +607,9 @@ mod tests {
         use crate::proto::event_query_service_server::{
             EventQueryService, EventQueryServiceServer,
         };
-        use crate::proto::{AggregateRoot, EventBook, Query};
+        use crate::proto::{CorrelationQuery, Cover, EventBook, Query};
         use futures::stream::{self, BoxStream};
-        use tonic::{Request, Response, Status, Streaming};
+        use tonic::{Request, Response, Status};
 
         struct ThreeBooks;
         #[tonic::async_trait]
@@ -818,14 +628,14 @@ mod tests {
                 let books = (0..3).map(|_| Ok(EventBook::default()));
                 Ok(Response::new(Box::pin(stream::iter(books))))
             }
-            type SynchronizeStream = BoxStream<'static, Result<EventBook, Status>>;
-            async fn synchronize(
+            type GetCorrelatedEventsStream = BoxStream<'static, Result<EventBook, Status>>;
+            async fn get_correlated_events(
                 &self,
-                _: Request<Streaming<Query>>,
-            ) -> Result<Response<Self::SynchronizeStream>, Status> {
-                Err(Status::unimplemented("synchronize"))
+                _: Request<CorrelationQuery>,
+            ) -> Result<Response<Self::GetCorrelatedEventsStream>, Status> {
+                Err(Status::unimplemented("get_correlated_events"))
             }
-            type GetAggregateRootsStream = BoxStream<'static, Result<AggregateRoot, Status>>;
+            type GetAggregateRootsStream = BoxStream<'static, Result<Cover, Status>>;
             async fn get_aggregate_roots(
                 &self,
                 _: Request<()>,

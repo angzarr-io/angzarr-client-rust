@@ -1,15 +1,15 @@
 //! Audit #45 — the `#[handles_fact]` opt-in surface.
 //!
 //! Covers:
-//! - `CommandHandlerRouter::supports_handle_fact()` correctly reads
-//!   metadata from the `#[command_handler]`-emitted config.
-//! - `dispatch_fact` routes facts by their cover domain to the matching
-//!   `#[handles_fact]` method, which records (possibly annotated) facts.
-//! - An aggregate that declares no fact handler gets `false` from
-//!   `supports_handle_fact()`; HandleFact refuses every fact with
+//! - a fact (the Fact arm of a command page) routes by its cover domain to
+//!   the matching `#[handles_fact]` method, which records the (possibly
+//!   annotated) fact;
+//! - an aggregate that declares no fact handler refuses every fact with
 //!   `INVALID_ARGUMENT` / `NO_FACT_HANDLER`.
 
-use angzarr_client::proto::{EventBook, EventPage, FactRequest, PageHeader};
+use angzarr_client::proto::{
+    command_page, CommandBook, CommandPage, ContextualCommand, EventBook, Fact,
+};
 use angzarr_client::router::Router;
 // `applies` and `handles` are macro markers consumed by
 // `#[command_handler]`; the compiler counts the imports as unused once
@@ -63,7 +63,7 @@ impl ::prost::Name for OrderState {
 }
 
 // --------------------------------------------------------------------------
-// Aggregate WITHOUT opt-in — supports_* should be false.
+// Aggregate WITHOUT a fact handler — every fact is refused.
 
 struct PlainOrder;
 
@@ -78,27 +78,13 @@ impl PlainOrder {
 
     #[handles(CreateOrder)]
     #[allow(unused_variables, dead_code)]
-    fn create(&self, cmd: CreateOrder, state: &OrderState, seq: u32) -> CommandResult<EventBook> {
+    fn create(&self, cmd: CreateOrder, state: &OrderState, seq: u64) -> CommandResult<EventBook> {
         Ok(EventBook::default())
     }
 }
 
-#[test]
-fn supports_handle_fact_false_without_opt_in() {
-    let r = Router::new("orders")
-        .with_handler(|| PlainOrder)
-        .build()
-        .expect("build");
-    let r = match r {
-        angzarr_client::router::Built::CommandHandler(r) => r,
-        _ => panic!("expected CommandHandler"),
-    };
-    assert!(!r.supports_handle_fact());
-}
-
 // --------------------------------------------------------------------------
-// Aggregate WITH `#[handles_fact]` — supports_handle_fact() true,
-// dispatch_fact routes correctly.
+// Aggregate WITH `#[handles_fact]` — facts route to it.
 
 struct FactOrder;
 
@@ -113,7 +99,7 @@ impl FactOrder {
 
     #[handles(CreateOrder)]
     #[allow(unused_variables, dead_code)]
-    fn create(&self, cmd: CreateOrder, state: &OrderState, seq: u32) -> CommandResult<EventBook> {
+    fn create(&self, cmd: CreateOrder, state: &OrderState, seq: u64) -> CommandResult<EventBook> {
         Ok(EventBook::default())
     }
 
@@ -132,20 +118,7 @@ impl FactOrder {
 }
 
 #[test]
-fn supports_handle_fact_true_with_handles_fact() {
-    let r = Router::new("orders")
-        .with_handler(|| FactOrder)
-        .build()
-        .expect("build");
-    let r = match r {
-        angzarr_client::router::Built::CommandHandler(r) => r,
-        _ => panic!("expected CommandHandler"),
-    };
-    assert!(r.supports_handle_fact());
-}
-
-#[test]
-fn dispatch_fact_routes_to_matching_handler() {
+fn a_fact_routes_to_its_fact_handler() {
     let r = Router::new("orders")
         .with_handler(|| FactOrder)
         .build()
@@ -155,30 +128,16 @@ fn dispatch_fact_routes_to_matching_handler() {
         _ => panic!("expected CommandHandler"),
     };
 
-    let mut req = FactRequest::default();
-    let mut facts = EventBook {
-        cover: Some(angzarr_client::proto::Cover {
-            domain: "order".into(),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    let mut page = EventPage::default();
-    let any = Any {
+    let req = fact_command(Any {
         type_url: full_type_url::<StockReserved>(),
         value: ::prost::Message::encode_to_vec(&StockReserved {
             order_id: "o-1".into(),
         }),
-    };
-    page.payload = Some(angzarr_client::proto::event_page::Payload::Event(any));
-    page.header = Some(PageHeader::default());
-    facts.pages.push(page);
-    req.facts = Some(facts);
+    });
 
-    let book = r.dispatch_fact(req).expect("dispatch_fact");
+    let book = r.dispatch(req).expect("dispatch").events.expect("events");
     assert_eq!(book.pages.len(), 1);
-    let Some(angzarr_client::proto::event_page::Payload::Event(recorded)) = &book.pages[0].payload
-    else {
+    let Some(recorded) = &book.pages[0].payload else {
         panic!("expected an event page");
     };
     assert_eq!(recorded.type_url, full_type_url::<StockReserved>());
@@ -187,7 +146,7 @@ fn dispatch_fact_routes_to_matching_handler() {
 }
 
 #[tokio::test]
-async fn handle_fact_without_fact_handlers_refuses_with_no_fact_handler() {
+async fn a_fact_without_fact_handlers_is_refused_with_no_fact_handler() {
     use angzarr_client::proto::command_handler_service_server::CommandHandlerService;
     let angzarr_client::router::Built::CommandHandler(r) = Router::new("orders")
         .with_handler(|| PlainOrder)
@@ -197,29 +156,37 @@ async fn handle_fact_without_fact_handlers_refuses_with_no_fact_handler() {
         panic!("expected CommandHandler");
     };
     let grpc = angzarr_client::handler::CommandHandlerGrpc::new(r);
-    let request = FactRequest {
-        facts: Some(EventBook {
-            cover: Some(angzarr_client::proto::Cover {
-                domain: "order".into(),
-                ..Default::default()
-            }),
-            pages: vec![EventPage {
-                payload: Some(angzarr_client::proto::event_page::Payload::Event(Any {
-                    type_url: full_type_url::<StockReserved>(),
-                    value: vec![],
-                })),
-                ..Default::default()
-            }],
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
+    let request = fact_command(Any {
+        type_url: full_type_url::<StockReserved>(),
+        value: vec![],
+    });
     let status = grpc
-        .handle_fact(tonic::Request::new(request))
+        .handle(tonic::Request::new(request))
         .await
         .expect_err("undeclared fact is refused");
     assert_eq!(status.code(), tonic::Code::InvalidArgument);
     let (code, _meta, _cover) =
         angzarr_client::error::unpack_status_details(status.details()).expect("details");
     assert_eq!(code, angzarr_client::error_codes::codes::NO_FACT_HANDLER);
+}
+
+/// A contextual command whose page carries `fact` in its Fact arm, for the
+/// "order" domain, with no prior events.
+fn fact_command(fact: Any) -> ContextualCommand {
+    ContextualCommand {
+        command: Some(CommandBook {
+            cover: Some(angzarr_client::proto::Cover {
+                domain: "order".into(),
+                ..Default::default()
+            }),
+            page: Some(CommandPage {
+                body: Some(command_page::Body::Fact(Fact {
+                    payload: Some(fact),
+                })),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
 }

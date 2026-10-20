@@ -80,7 +80,7 @@ async fn when_build_query_domain(world: &mut QueryBuilderWorld, domain: String) 
 }
 
 #[when(expr = "I set range from {int}")]
-async fn when_set_range_from(world: &mut QueryBuilderWorld, lower: u32) {
+async fn when_set_range_from(world: &mut QueryBuilderWorld, lower: u64) {
     let root = world.root.unwrap_or_else(Uuid::new_v4);
     let query = world
         .mock_client
@@ -91,7 +91,7 @@ async fn when_set_range_from(world: &mut QueryBuilderWorld, lower: u32) {
 }
 
 #[when(expr = "I set range from {int} to {int}")]
-async fn when_set_range_from_to(world: &mut QueryBuilderWorld, lower: u32, upper: u32) {
+async fn when_set_range_from_to(world: &mut QueryBuilderWorld, lower: u64, upper: u64) {
     let root = world.root.unwrap_or_else(Uuid::new_v4);
     let query = world
         .mock_client
@@ -102,7 +102,7 @@ async fn when_set_range_from_to(world: &mut QueryBuilderWorld, lower: u32, upper
 }
 
 #[when(expr = "I set as_of_sequence to {int}")]
-async fn when_set_as_of_sequence(world: &mut QueryBuilderWorld, seq: u32) {
+async fn when_set_as_of_sequence(world: &mut QueryBuilderWorld, seq: u64) {
     let root = world.root.unwrap_or_else(Uuid::new_v4);
     let query = world
         .mock_client
@@ -136,7 +136,9 @@ async fn when_set_by_correlation_id(world: &mut QueryBuilderWorld, cid: String) 
         world.mock_client.query_domain(&world.domain)
     };
 
-    let query = builder.by_correlation_id(&cid).build();
+    let query = builder
+        .by_correlation_id(crate::common::backend::correlation_for(&cid))
+        .build();
     world.built_query = Some(query);
 }
 
@@ -260,7 +262,7 @@ async fn then_query_has_range_selection(world: &mut QueryBuilderWorld) {
 }
 
 #[then(expr = "the range lower bound should be {int}")]
-async fn then_range_lower_bound(world: &mut QueryBuilderWorld, expected: u32) {
+async fn then_range_lower_bound(world: &mut QueryBuilderWorld, expected: u64) {
     let query = world.built_query.as_ref().expect("query not built");
     if let Some(Selection::Range(range)) = &query.selection {
         assert_eq!(range.lower, expected);
@@ -280,7 +282,7 @@ async fn then_range_upper_empty(world: &mut QueryBuilderWorld) {
 }
 
 #[then(expr = "the range upper bound should be {int}")]
-async fn then_range_upper_bound(world: &mut QueryBuilderWorld, expected: u32) {
+async fn then_range_upper_bound(world: &mut QueryBuilderWorld, expected: u64) {
     let query = world.built_query.as_ref().expect("query not built");
     if let Some(Selection::Range(range)) = &query.selection {
         assert_eq!(range.upper, Some(expected));
@@ -296,7 +298,7 @@ async fn then_query_has_temporal_selection(world: &mut QueryBuilderWorld) {
 }
 
 #[then(expr = "the point_in_time should be sequence {int}")]
-async fn then_point_in_time_sequence(world: &mut QueryBuilderWorld, expected: u32) {
+async fn then_point_in_time_sequence(world: &mut QueryBuilderWorld, expected: u64) {
     let query = world.built_query.as_ref().expect("query not built");
     if let Some(Selection::Temporal(temporal)) = &query.selection {
         if let Some(angzarr_client::proto::temporal_query::PointInTime::AsOfSequence(seq)) =
@@ -341,8 +343,12 @@ async fn then_error_invalid_timestamp(world: &mut QueryBuilderWorld) {
 #[then(expr = "the built query should have correlation ID {string}")]
 async fn then_query_has_correlation_id(world: &mut QueryBuilderWorld, expected: String) {
     let query = world.built_query.as_ref().expect("query not built");
-    let cover = query.cover.as_ref().expect("cover missing");
-    assert_eq!(cover.correlation_id, expected);
+    assert_eq!(
+        query.correlation_id,
+        Some(angzarr_client::uuid_to_proto(
+            crate::common::backend::correlation_for(&expected)
+        ))
+    );
 }
 
 #[then(expr = "the built query should have edition {string}")]
@@ -350,8 +356,7 @@ async fn then_query_has_edition(world: &mut QueryBuilderWorld, expected: String)
     let query = world.built_query.as_ref().expect("query not built");
     let cover = query.cover.as_ref().expect("cover missing");
     assert!(cover.edition.is_some());
-    let edition = cover.edition.as_ref().unwrap();
-    assert_eq!(edition.name, expected);
+    assert_eq!(cover.edition.as_deref(), Some(expected.as_str()));
 }
 
 #[then("the built query should have no edition")]

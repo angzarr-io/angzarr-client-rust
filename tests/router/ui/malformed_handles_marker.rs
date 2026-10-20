@@ -20,7 +20,7 @@ struct T;
 #[command_handler(domain = "x", state = State)]
 impl T {
     #[handles("Cmd")]
-    fn handle(&self, _cmd: Cmd, _state: &State, _seq: u32) -> CommandResult<EventBook> {
+    fn handle(&self, _cmd: Cmd, _state: &State, _seq: u64) -> CommandResult<EventBook> {
         Ok(EventBook::default())
     }
 }

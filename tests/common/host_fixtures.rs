@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use angzarr_client::proto::command_handler_service_client::CommandHandlerServiceClient;
 use angzarr_client::proto::{
-    business_response, command_page, event_page, BusinessResponse, CommandBook, CommandPage,
-    ContextualCommand, Cover, EventBook, EventPage,
+    command_page, Command, CommandBook, CommandHandlerResponse, CommandPage, ContextualCommand,
+    Cover, EventBook, EventPage,
 };
 use angzarr_client::router::command_handler;
 use angzarr_client::{full_type_url, CommandResult, HostAddress};
@@ -92,13 +92,13 @@ fn record(component: &str, cmd: &Record, gate: &Gate) -> EventBook {
     }
     EventBook {
         pages: vec![EventPage {
-            payload: Some(event_page::Payload::Event(Any {
+            payload: Some(Any {
                 type_url: full_type_url::<Recorded>(),
                 value: Recorded {
                     component: component.into(),
                 }
                 .encode_to_vec(),
-            })),
+            }),
             ..Default::default()
         }],
         ..Default::default()
@@ -111,7 +111,7 @@ pub struct OrderComponent(pub Arc<Gate>);
 #[command_handler(domain = "order", state = Tally)]
 impl OrderComponent {
     #[handles(Record)]
-    fn on_record(&self, cmd: Record, _state: &Tally, _seq: u32) -> CommandResult<EventBook> {
+    fn on_record(&self, cmd: Record, _state: &Tally, _seq: u64) -> CommandResult<EventBook> {
         Ok(record("order", &cmd, &self.0))
     }
 }
@@ -122,7 +122,7 @@ pub struct PaymentComponent(pub Arc<Gate>);
 #[command_handler(domain = "payment", state = Tally)]
 impl PaymentComponent {
     #[handles(Record)]
-    fn on_record(&self, cmd: Record, _state: &Tally, _seq: u32) -> CommandResult<EventBook> {
+    fn on_record(&self, cmd: Record, _state: &Tally, _seq: u64) -> CommandResult<EventBook> {
         Ok(record("payment", &cmd, &self.0))
     }
 }
@@ -219,25 +219,27 @@ pub fn record_command(domain: &str, hold: bool) -> ContextualCommand {
                 domain: domain.into(),
                 ..Default::default()
             }),
-            pages: vec![CommandPage {
-                payload: Some(command_page::Payload::Command(Any {
-                    type_url: full_type_url::<Record>(),
-                    value: Record { hold }.encode_to_vec(),
+            page: Some(CommandPage {
+                body: Some(command_page::Body::Command(Command {
+                    payload: Some(Any {
+                        type_url: full_type_url::<Record>(),
+                        value: Record { hold }.encode_to_vec(),
+                    }),
                 })),
                 ..Default::default()
-            }],
+            }),
+            ..Default::default()
         }),
-        events: None,
+        ..Default::default()
     }
 }
 
 /// Which component handled a `Record` call, from its `Recorded` event.
-pub fn handled_by(response: &BusinessResponse) -> String {
-    let Some(business_response::Result::Events(book)) = &response.result else {
+pub fn handled_by(response: &CommandHandlerResponse) -> String {
+    let Some(book) = &response.events else {
         panic!("expected events, got {response:?}");
     };
-    let Some(event_page::Payload::Event(any)) = book.pages.first().and_then(|p| p.payload.clone())
-    else {
+    let Some(any) = book.pages.first().and_then(|p| p.payload.clone()) else {
         panic!("expected one event, got {book:?}");
     };
     Recorded::decode(any.value.as_slice())
@@ -250,7 +252,7 @@ pub async fn send_record(
     channel: Channel,
     domain: &str,
     hold: bool,
-) -> Result<BusinessResponse, tonic::Status> {
+) -> Result<CommandHandlerResponse, tonic::Status> {
     CommandHandlerServiceClient::new(channel)
         .handle(record_command(domain, hold))
         .await

@@ -527,16 +527,14 @@ mod tests {
         let stamped = rej.with_cover(Cover {
             domain: "player".into(),
             root: Some(Uuid {
-                value: vec![0xab, 0xcd],
+                value: vec![0xab, 0xcd].into(),
             }),
-            correlation_id: "corr-123".into(),
-            edition: None,
-            ..Default::default()
+            edition: Some("trial".into()),
         });
         let cover = stamped.cover.expect("cover stamped");
         assert_eq!(cover.domain, "player");
-        assert_eq!(cover.correlation_id, "corr-123");
-        assert_eq!(cover.root.unwrap().value, vec![0xab, 0xcd]);
+        assert_eq!(cover.edition.as_deref(), Some("trial"));
+        assert_eq!(cover.root.unwrap().value.as_ref(), &[0xab, 0xcd]);
     }
 
     #[test]
@@ -650,19 +648,17 @@ mod tests {
         .with_cover(Cover {
             domain: "player".into(),
             root: Some(ProtoUuid {
-                value: vec![0xab, 0xcd, 0xef],
+                value: vec![0xab, 0xcd, 0xef].into(),
             }),
-            correlation_id: "corr-42".into(),
-            edition: None,
-            ..Default::default()
+            edition: Some("trial".into()),
         });
         let status: Status = rej.into();
         let (code, _metadata, unpacked) = unpack_status_details(status.details()).expect("decode");
         assert_eq!(code, "ENTITY_NOT_FOUND");
         let cover = unpacked.expect("cover roundtripped");
         assert_eq!(cover.domain, "player");
-        assert_eq!(cover.correlation_id, "corr-42");
-        assert_eq!(cover.root.unwrap().value, vec![0xab, 0xcd, 0xef]);
+        assert_eq!(cover.edition.as_deref(), Some("trial"));
+        assert_eq!(cover.root.unwrap().value.as_ref(), &[0xab, 0xcd, 0xef]);
     }
 
     #[test]

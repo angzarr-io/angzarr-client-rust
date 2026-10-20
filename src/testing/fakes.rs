@@ -1,19 +1,15 @@
 //! Recording fakes of the client traits.
 //!
-//! One struct per client trait ([`GatewayClient`], [`QueryClient`],
-//! [`SpeculativeClient`]) standing in for the coordinator: each records its
+//! One struct per client trait ([`GatewayClient`], [`QueryClient`])
+//! standing in for the coordinator: each records its
 //! calls (`call_count`, `last_call`) and answers with canned responses or
 //! errors. Mirrors Python's `RecordingStub`.
 
 use std::sync::Mutex;
 
 use crate::error::{ClientError, Result};
-use crate::proto::{
-    CommandBook, CommandResponse, EventBook, ProcessManagerHandleResponse, Projection, Query,
-    SagaResponse, SpeculateCommandHandlerRequest, SpeculatePmRequest, SpeculateProjectorRequest,
-    SpeculateSagaRequest, SyncMode,
-};
-use crate::traits::{GatewayClient, QueryClient, SpeculativeClient};
+use crate::proto::{CommandBook, CommandResponse, EventBook, Query};
+use crate::traits::{GatewayClient, QueryClient};
 use async_trait::async_trait;
 use tonic::{Code, Status};
 
@@ -33,17 +29,13 @@ pub fn stub_rpc_error(code: Code, details: &str) -> ClientError {
 // RecordingGatewayClient
 // ---------------------------------------------------------------------------
 
-/// Recorded call to a [`GatewayClient`] method. Both `execute` and
-/// `execute_with_sync_mode` record as `"execute"`; `sync_mode` tells them
-/// apart.
+/// Recorded call to a [`GatewayClient`] method.
 #[derive(Debug, Clone)]
 pub struct GatewayCall {
     /// Trait method name.
     pub method: &'static str,
     /// The command sent.
     pub command: CommandBook,
-    /// The sync mode, when sent through `execute_with_sync_mode`.
-    pub sync_mode: Option<SyncMode>,
 }
 
 /// [`GatewayClient`] fake: records each command and answers with a canned
@@ -51,7 +43,7 @@ pub struct GatewayCall {
 #[derive(Debug, Default)]
 pub struct RecordingGatewayClient {
     calls: Mutex<Vec<GatewayCall>>,
-    /// Canned `execute` / `execute_with_sync_mode` response. Returned (cloned)
+    /// Canned `execute` response. Returned (cloned)
     /// for every call until overwritten. Unset → `Ok(CommandResponse::default())`.
     response: Mutex<Option<CommandResponse>>,
     /// If set, every call returns `Err(error.clone())` instead of `response`.
@@ -120,24 +112,6 @@ impl GatewayClient for RecordingGatewayClient {
         self.calls.lock().unwrap().push(GatewayCall {
             method: "execute",
             command,
-            sync_mode: None,
-        });
-        self.produce()
-    }
-
-    async fn execute_with_sync_mode(
-        &self,
-        command: CommandBook,
-        sync_mode: SyncMode,
-    ) -> Result<CommandResponse> {
-        // Record under "execute" so callers checking `last_call("execute")`
-        // see both code paths (matches Python's RecordingStub behavior where
-        // the wrapping client's `execute(sync_mode=...)` lands in the same
-        // recorded slot). The variant is distinguishable via `sync_mode`.
-        self.calls.lock().unwrap().push(GatewayCall {
-            method: "execute",
-            command,
-            sync_mode: Some(sync_mode),
         });
         self.produce()
     }
@@ -264,163 +238,6 @@ impl QueryClient for RecordingQueryClient {
 }
 
 // ---------------------------------------------------------------------------
-// RecordingSpeculativeClient
-// ---------------------------------------------------------------------------
-
-/// Recorded call to a [`SpeculativeClient`] method, carrying its request.
-// Unboxed so tests can match the request directly; a recording is short-lived.
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone)]
-pub enum SpeculativeCall {
-    /// `command_handler`.
-    CommandHandler(SpeculateCommandHandlerRequest),
-    /// `projector`.
-    Projector(SpeculateProjectorRequest),
-    /// `saga`.
-    Saga(SpeculateSagaRequest),
-    /// `process_manager`.
-    ProcessManager(SpeculatePmRequest),
-}
-
-/// [`SpeculativeClient`] fake: records each request and answers with the
-/// canned response for that method (default when unset) or the configured
-/// error.
-#[derive(Debug, Default)]
-pub struct RecordingSpeculativeClient {
-    calls: Mutex<Vec<(&'static str, SpeculativeCall)>>,
-    command_handler_response: Mutex<Option<CommandResponse>>,
-    projector_response: Mutex<Option<Projection>>,
-    saga_response: Mutex<Option<SagaResponse>>,
-    pm_response: Mutex<Option<ProcessManagerHandleResponse>>,
-    error: Mutex<Option<ClientError>>,
-}
-
-impl RecordingSpeculativeClient {
-    /// A fake with no calls, answering default responses.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Answer subsequent `command_handler` calls with `resp`.
-    pub fn respond_command_handler(&self, resp: CommandResponse) {
-        *self.command_handler_response.lock().unwrap() = Some(resp);
-    }
-
-    /// Answer subsequent `projector` calls with `resp`.
-    pub fn respond_projector(&self, resp: Projection) {
-        *self.projector_response.lock().unwrap() = Some(resp);
-    }
-
-    /// Answer subsequent `saga` calls with `resp`.
-    pub fn respond_saga(&self, resp: SagaResponse) {
-        *self.saga_response.lock().unwrap() = Some(resp);
-    }
-
-    /// Answer subsequent `process_manager` calls with `resp`.
-    pub fn respond_pm(&self, resp: ProcessManagerHandleResponse) {
-        *self.pm_response.lock().unwrap() = Some(resp);
-    }
-
-    /// Fail every subsequent call with `err`.
-    pub fn fail_with(&self, err: ClientError) {
-        *self.error.lock().unwrap() = Some(err);
-    }
-
-    /// Number of recorded calls to `method`.
-    pub fn call_count(&self, method: &str) -> usize {
-        self.calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(m, _)| *m == method)
-            .count()
-    }
-
-    /// Most recent call to `method`.
-    pub fn last_call(&self, method: &str) -> Option<SpeculativeCall> {
-        self.calls
-            .lock()
-            .unwrap()
-            .iter()
-            .rev()
-            .find(|(m, _)| *m == method)
-            .map(|(_, c)| c.clone())
-    }
-
-    fn err_if_set(&self) -> Option<ClientError> {
-        self.error.lock().unwrap().as_ref().map(clone_err)
-    }
-}
-
-#[async_trait]
-impl SpeculativeClient for RecordingSpeculativeClient {
-    async fn command_handler(
-        &self,
-        request: SpeculateCommandHandlerRequest,
-    ) -> Result<CommandResponse> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(("command_handler", SpeculativeCall::CommandHandler(request)));
-        if let Some(err) = self.err_if_set() {
-            return Err(err);
-        }
-        Ok(self
-            .command_handler_response
-            .lock()
-            .unwrap()
-            .clone()
-            .unwrap_or_default())
-    }
-
-    async fn projector(&self, request: SpeculateProjectorRequest) -> Result<Projection> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(("projector", SpeculativeCall::Projector(request)));
-        if let Some(err) = self.err_if_set() {
-            return Err(err);
-        }
-        Ok(self
-            .projector_response
-            .lock()
-            .unwrap()
-            .clone()
-            .unwrap_or_default())
-    }
-
-    async fn saga(&self, request: SpeculateSagaRequest) -> Result<SagaResponse> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(("saga", SpeculativeCall::Saga(request)));
-        if let Some(err) = self.err_if_set() {
-            return Err(err);
-        }
-        Ok(self
-            .saga_response
-            .lock()
-            .unwrap()
-            .clone()
-            .unwrap_or_default())
-    }
-
-    async fn process_manager(
-        &self,
-        request: SpeculatePmRequest,
-    ) -> Result<ProcessManagerHandleResponse> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(("process_manager", SpeculativeCall::ProcessManager(request)));
-        if let Some(err) = self.err_if_set() {
-            return Err(err);
-        }
-        Ok(self.pm_response.lock().unwrap().clone().unwrap_or_default())
-    }
-}
-
-// ---------------------------------------------------------------------------
 // ClientError is not Clone — provide a best-effort clone for canned errors.
 // ---------------------------------------------------------------------------
 
@@ -495,16 +312,13 @@ mod tests {
         };
         let fake = RecordingGatewayClient::new().with_response(canned.clone());
         assert_eq!(fake.execute(command("a")).await.unwrap(), canned);
-        fake.execute_with_sync_mode(command("b"), SyncMode::Cascade)
-            .await
-            .unwrap();
+        fake.execute(command("b")).await.unwrap();
         assert_eq!(fake.call_count("execute"), 2);
         assert_eq!(fake.call_count("other"), 0);
         assert_eq!(fake.calls().len(), 2);
-        assert_eq!(fake.calls()[0].sync_mode, None);
+        assert_eq!(fake.calls()[0].command, command("a"));
         let last = fake.last_call("execute").unwrap();
         assert_eq!(last.command, command("b"));
-        assert_eq!(last.sync_mode, Some(SyncMode::Cascade));
         assert!(fake.last_call("other").is_none());
 
         let replaced = CommandResponse::default();
@@ -576,90 +390,6 @@ mod tests {
             .await
             .unwrap_err()
             .is_not_found());
-    }
-
-    #[tokio::test]
-    async fn speculative_fake_records_each_method_and_answers_its_response() {
-        let fake = RecordingSpeculativeClient::new();
-        let ch = CommandResponse {
-            events: Some(book("ch")),
-            ..Default::default()
-        };
-        let pj = Projection {
-            projector: "p".into(),
-            ..Default::default()
-        };
-        let sg = SagaResponse {
-            commands: vec![command("s")],
-            ..Default::default()
-        };
-        let pm = ProcessManagerHandleResponse {
-            commands: vec![command("pm")],
-            ..Default::default()
-        };
-        fake.respond_command_handler(ch.clone());
-        fake.respond_projector(pj.clone());
-        fake.respond_saga(sg.clone());
-        fake.respond_pm(pm.clone());
-
-        assert_eq!(fake.command_handler(Default::default()).await.unwrap(), ch);
-        assert_eq!(fake.projector(Default::default()).await.unwrap(), pj);
-        assert_eq!(fake.saga(Default::default()).await.unwrap(), sg);
-        assert_eq!(fake.process_manager(Default::default()).await.unwrap(), pm);
-
-        fake.saga(Default::default()).await.unwrap();
-        for method in ["command_handler", "projector", "process_manager"] {
-            assert_eq!(fake.call_count(method), 1, "{method}");
-        }
-        assert_eq!(fake.call_count("saga"), 2);
-        assert_eq!(fake.call_count("other"), 0);
-        assert!(matches!(
-            fake.last_call("command_handler"),
-            Some(SpeculativeCall::CommandHandler(_))
-        ));
-        assert!(matches!(
-            fake.last_call("projector"),
-            Some(SpeculativeCall::Projector(_))
-        ));
-        assert!(matches!(
-            fake.last_call("saga"),
-            Some(SpeculativeCall::Saga(_))
-        ));
-        assert!(matches!(
-            fake.last_call("process_manager"),
-            Some(SpeculativeCall::ProcessManager(_))
-        ));
-        assert!(fake.last_call("other").is_none());
-    }
-
-    #[tokio::test]
-    async fn speculative_fake_defaults_and_fails() {
-        let fake = RecordingSpeculativeClient::new();
-        assert_eq!(
-            fake.saga(Default::default()).await.unwrap(),
-            SagaResponse::default()
-        );
-        fake.fail_with(stub_rpc_error(Code::InvalidArgument, "bad"));
-        assert!(fake
-            .command_handler(Default::default())
-            .await
-            .unwrap_err()
-            .is_invalid_argument());
-        assert!(fake
-            .projector(Default::default())
-            .await
-            .unwrap_err()
-            .is_invalid_argument());
-        assert!(fake
-            .saga(Default::default())
-            .await
-            .unwrap_err()
-            .is_invalid_argument());
-        assert!(fake
-            .process_manager(Default::default())
-            .await
-            .unwrap_err()
-            .is_invalid_argument());
     }
 
     #[test]

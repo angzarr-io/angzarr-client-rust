@@ -7,9 +7,8 @@
 //! [`Router::build`]: crate::router::Router::build
 
 use crate::proto::{
-    BusinessResponse, ContextualCommand, Cover, EventBook, FactRequest,
-    ProcessManagerHandleRequest, ProcessManagerHandleResponse, Projection, SagaHandleRequest,
-    SagaResponse, UpcastRequest, UpcastResponse,
+    CommandHandlerResponse, ContextualCommand, Cover, EventBook, ProcessManagerHandleRequest,
+    ProcessManagerHandleResponse, Projection, SagaResponse, UpcastRequest, UpcastResponse,
 };
 use crate::router::component::{begin_dispatch, from_coded};
 use crate::router::HandlerConfig;
@@ -47,26 +46,14 @@ pub struct CommandHandlerRouter {
 }
 
 impl CommandHandlerRouter {
-    /// Route a contextual command to its aggregate.
-    pub fn dispatch(&self, cmd: ContextualCommand) -> Result<BusinessResponse, ClientError> {
+    /// Route a contextual command (its page's Command or Fact arm) to its
+    /// aggregate.
+    pub fn dispatch(&self, cmd: ContextualCommand) -> Result<CommandHandlerResponse, ClientError> {
         begin_dispatch();
         let cover = cmd.command.as_ref().and_then(|c| c.cover.clone());
         self.inner
             .dispatch_command(&cmd)
             .map_err(|e| stamp_cover(from_coded(e), cover.as_ref()))
-    }
-
-    /// Route facts to the aggregate of the facts' cover domain.
-    pub fn dispatch_fact(&self, request: FactRequest) -> Result<EventBook, ClientError> {
-        begin_dispatch();
-        self.inner.handle_fact(&request).map_err(from_coded)
-    }
-
-    /// True if any registered aggregate declares a `#[handles_fact]` method.
-    pub fn supports_handle_fact(&self) -> bool {
-        self.configs.iter().any(|c| {
-            matches!(c, HandlerConfig::CommandHandler { handles_fact, .. } if !handles_fact.is_empty())
-        })
     }
 
     /// The first registered aggregate's domain.
@@ -95,14 +82,13 @@ pub struct SagaRouter {
 }
 
 impl SagaRouter {
-    /// Run every saga consuming the source domain; their output merges in
-    /// registration order and emitted commands are deferred.
-    pub fn dispatch(&self, request: SagaHandleRequest) -> Result<SagaResponse, ClientError> {
+    /// Run every saga consuming the source book's domain; their commands
+    /// merge in registration order.
+    pub fn dispatch(&self, source: EventBook) -> Result<SagaResponse, ClientError> {
         begin_dispatch();
-        let cover = request.source.as_ref().and_then(|s| s.cover.clone());
         self.inner
-            .dispatch_saga(&request)
-            .map_err(|e| stamp_cover(from_coded(e), cover.as_ref()))
+            .dispatch_saga(&source)
+            .map_err(|e| stamp_cover(from_coded(e), source.cover.as_ref()))
     }
 
     /// The first registered saga's name.
@@ -182,17 +168,28 @@ pub struct ProjectorRouter {
 
 impl ProjectorRouter {
     /// Run every projector over the book (each filters by its domains).
-    /// Projectors are side-effect only; the response carries the book's
-    /// cover and next sequence.
+    /// A sole projector answers its own `Projection`; several answer one
+    /// carrying the book's cover, with no projector name and no
+    /// projection. Either way `next_sequence` follows types.proto
+    /// (`Projection`): the last page's sequence + 1, or the book's
+    /// `next_sequence` when it has no pages.
     pub fn dispatch(&self, book: EventBook) -> Result<Projection, ClientError> {
         begin_dispatch();
-        self.inner.dispatch_projectors(&book).map_err(from_coded)?;
-        Ok(Projection {
-            cover: book.cover,
-            projector: String::new(),
-            sequence: book.next_sequence,
-            projection: None,
-        })
+        let mut projections = self.inner.dispatch_projectors(&book).map_err(from_coded)?;
+        let next_sequence = book
+            .pages
+            .last()
+            .map_or(book.next_sequence, |page| page.sequence + 1);
+        let mut projection = if projections.len() == 1 {
+            projections.remove(0)
+        } else {
+            Projection {
+                cover: book.cover,
+                ..Default::default()
+            }
+        };
+        projection.next_sequence = next_sequence;
+        Ok(projection)
     }
 
     /// The first registered projector's name.

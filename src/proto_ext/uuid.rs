@@ -48,9 +48,7 @@ pub trait UuidExt {
 
 impl UuidExt for uuid::Uuid {
     fn to_proto_uuid(&self) -> ProtoUuid {
-        ProtoUuid {
-            value: self.as_bytes().to_vec(),
-        }
+        ProtoUuid::from(*self)
     }
 }
 
@@ -67,7 +65,7 @@ mod tests {
             0x30, 0xc8,
         ];
         let proto = ProtoUuid {
-            value: bytes.to_vec(),
+            value: bytes.to_vec().into(),
         };
         assert_eq!(proto.to_uuid_text(), "6ba7b810-9dad-11d1-80b4-00c04fd430c8");
     }
@@ -77,7 +75,7 @@ mod tests {
         // Mirrors Python's `bytes_to_uuid_text(b)` non-16-byte branch
         // (`helpers.py:129-131`): non-canonical inputs return dashless hex.
         let proto = ProtoUuid {
-            value: vec![0xAB, 0xCD, 0xEF],
+            value: vec![0xAB, 0xCD, 0xEF].into(),
         };
         assert_eq!(proto.to_uuid_text(), "abcdef");
     }
@@ -88,7 +86,7 @@ mod tests {
         // finding #48 added `to_uuid_text` for the dashed form; pinning
         // here to ensure they don't collapse into one.
         let proto = ProtoUuid {
-            value: vec![0xDE, 0xAD, 0xBE, 0xEF],
+            value: vec![0xDE, 0xAD, 0xBE, 0xEF].into(),
         };
         assert_eq!(proto.to_hex(), "deadbeef");
     }

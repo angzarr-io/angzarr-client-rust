@@ -35,7 +35,6 @@ use steps::parity::ParityWorld;
 use steps::query_builder::QueryBuilderWorld;
 use steps::query_client_steps::QueryClientWorld;
 use steps::retry::RetryWorld;
-use steps::speculative_client_steps::SpeculativeClientWorld;
 use steps::testing::TestingWorld;
 
 const CLIENT_DIR: &str = "angzarr-project/features/client";
@@ -46,12 +45,26 @@ const PARITY_DIR: &str = "angzarr-project/parity/client";
 const PENDING: &[(&str, &str)] = &[
     ("C-0336", "no configurable connect timeout"),
     ("C-0337", "no configurable HTTP/2 keep-alive"),
-    // compute_root follows decision 9.2 (ANGZARR_ROOT_NAMESPACE); these
-    // scenarios still pin NAMESPACE_OID vectors until the shared
-    // identity.feature is updated (backlog UU-2).
-    ("C-0110", "pins pre-9.2 NAMESPACE_OID vectors (UU-2)"),
-    ("C-0485", "pins pre-9.2 NAMESPACE_OID vectors (UU-2)"),
-    ("C-0114", "pins pre-9.2 NAMESPACE_OID vectors (UU-2)"),
+    // The delivery-mode surface (fire-and-forget, wait for projectors) is
+    // proposed in docs/design/sender-and-registration.md and awaits
+    // sign-off; its steps exist only under the `proposal-tests` feature.
+    ("C-0197", "delivery-mode API awaits sign-off"),
+    ("C-0198", "delivery-mode API awaits sign-off"),
+    // Parity scenarios the 619933c protos no longer support: a Cover has
+    // no correlation_id, an EventPage no offloaded (PayloadReference)
+    // payload, and an unspecified conflict resolution means the
+    // configured default (a builder naming COMMUTATIVE is refused for a
+    // state without it). angzarr-project must update them.
+    ("C-0118", "stale spec: Cover has no correlation_id"),
+    ("C-0315", "stale spec: default resolution is UNSPECIFIED"),
+    (
+        "C-0371",
+        "stale spec: EventPage has no PayloadReference payload",
+    ),
+    // A Query never crosses its cover's domain (types.proto, Query); the
+    // cross-domain read is GetCorrelatedEvents, which the client does not
+    // expose yet (proposal, awaiting sign-off).
+    ("C-0241", "no GetCorrelatedEvents client method yet"),
 ];
 
 /// Outcome of one feature run.
@@ -154,7 +167,6 @@ async fn main() {
         run_suite!(sel, AggregateClientWorld, client("aggregate_client")),
         run_suite!(sel, DomainClientWorld, client("domain-client")),
         run_suite!(sel, QueryClientWorld, client("query_client")),
-        run_suite!(sel, SpeculativeClientWorld, client("speculative_client")),
         // parity/client — cross-language surface parity.
         run_suite!(sel, CommandBuilderWorld, parity("command_builder")),
         run_suite!(sel, ConnectionWorld, parity("connection")),
