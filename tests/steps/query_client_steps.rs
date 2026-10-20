@@ -317,9 +317,7 @@ async fn when_query_correlation(world: &mut QueryClientWorld, id: String) {
         world
             .client
             .get()
-            .query_domain("orders")
-            .by_correlation_id(correlation_for(&id))
-            .get_events()
+            .get_correlated_events(correlation_for(&id), None)
             .await,
     );
 }

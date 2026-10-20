@@ -7,7 +7,7 @@ use crate::error_codes::{codes, keys, messages};
 use crate::proto::{
     command_handler_coordinator_service_client::CommandHandlerCoordinatorServiceClient as TonicCommandHandlerClient,
     event_query_service_client::EventQueryServiceClient as TonicQueryClient, CommandBook,
-    CommandResponse, EventBook, Query, Uuid as ProtoUuid,
+    CommandResponse, CorrelationQuery, EventBook, Query, Uuid as ProtoUuid,
 };
 use crate::retry::RetryPolicy;
 use crate::traits;
@@ -135,6 +135,28 @@ fn error_chain(err: &dyn std::error::Error) -> String {
         source = e.source();
     }
     out
+}
+
+/// Read a stream of EventBooks, failing once it exceeds `max_books`.
+async fn drain_books(
+    mut stream: tonic::Streaming<EventBook>,
+    max_books: usize,
+) -> Result<Vec<EventBook>> {
+    let mut results = Vec::with_capacity(max_books.min(1024));
+    while let Some(book) = stream.message().await? {
+        if results.len() >= max_books {
+            return Err(ClientError::invalid_argument(
+                codes::STREAM_LIMIT_EXCEEDED,
+                messages::STREAM_LIMIT_EXCEEDED,
+                [
+                    (keys::EXPECTED, max_books.to_string()),
+                    (keys::ACTUAL, format!("{}+", max_books)),
+                ],
+            ));
+        }
+        results.push(book);
+    }
+    Ok(results)
 }
 
 /// The canonical text of a wire correlation id, empty when unset.
@@ -357,22 +379,30 @@ impl QueryClient {
     ) -> Result<Vec<EventBook>> {
         let corr_id = correlation_text(query.correlation_id.as_ref());
         let req = crate::proto_ext::correlated_request(query, &corr_id);
-        let mut stream = self.inner.clone().get_events(req).await?.into_inner();
-        let mut results = Vec::with_capacity(max_books.min(1024));
-        while let Some(book) = stream.message().await? {
-            if results.len() >= max_books {
-                return Err(ClientError::invalid_argument(
-                    codes::STREAM_LIMIT_EXCEEDED,
-                    messages::STREAM_LIMIT_EXCEEDED,
-                    [
-                        (keys::EXPECTED, max_books.to_string()),
-                        (keys::ACTUAL, format!("{}+", max_books)),
-                    ],
-                ));
-            }
-            results.push(book);
-        }
-        Ok(results)
+        let stream = self.inner.clone().get_events(req).await?.into_inner();
+        drain_books(stream, max_books).await
+    }
+
+    /// Every event of one correlation, across every domain it touched
+    /// (`GetCorrelatedEvents`): one EventBook per stream. `edition` picks
+    /// the timeline (`None` = main). Capped like [`Self::get_events`].
+    pub async fn get_correlated_events(
+        &self,
+        correlation_id: uuid::Uuid,
+        edition: Option<String>,
+    ) -> Result<Vec<EventBook>> {
+        let query = CorrelationQuery {
+            correlation_id: Some(ProtoUuid::from(correlation_id)),
+            edition,
+        };
+        let req = crate::proto_ext::correlated_request(query, &correlation_id.to_string());
+        let stream = self
+            .inner
+            .clone()
+            .get_correlated_events(req)
+            .await?
+            .into_inner();
+        drain_books(stream, DEFAULT_MAX_EVENT_BOOKS).await
     }
 }
 
@@ -384,6 +414,14 @@ impl traits::QueryClient for QueryClient {
 
     async fn get_events(&self, query: Query) -> Result<Vec<EventBook>> {
         self.get_events(query).await
+    }
+
+    async fn get_correlated_events(
+        &self,
+        correlation_id: uuid::Uuid,
+        edition: Option<String>,
+    ) -> Result<Vec<EventBook>> {
+        self.get_correlated_events(correlation_id, edition).await
     }
 }
 
@@ -574,6 +612,18 @@ impl DomainClient {
     pub async fn get_events(&self, query: Query) -> Result<Vec<EventBook>> {
         self.query.get_events(query).await
     }
+
+    /// Every event of one correlation across domains (delegates to query
+    /// client).
+    pub async fn get_correlated_events(
+        &self,
+        correlation_id: uuid::Uuid,
+        edition: Option<String>,
+    ) -> Result<Vec<EventBook>> {
+        self.query
+            .get_correlated_events(correlation_id, edition)
+            .await
+    }
 }
 
 #[async_trait]
@@ -599,6 +649,14 @@ impl traits::QueryClient for DomainClient {
 
     async fn get_events(&self, query: Query) -> Result<Vec<EventBook>> {
         self.get_events(query).await
+    }
+
+    async fn get_correlated_events(
+        &self,
+        correlation_id: uuid::Uuid,
+        edition: Option<String>,
+    ) -> Result<Vec<EventBook>> {
+        self.get_correlated_events(correlation_id, edition).await
     }
 }
 

@@ -15,6 +15,14 @@ impl traits::QueryClient for MockQueryClient {
     async fn get_events(&self, _query: Query) -> Result<Vec<EventBook>> {
         Ok(vec![self.event_book.clone(), self.event_book.clone()])
     }
+
+    async fn get_correlated_events(
+        &self,
+        _correlation_id: Uuid,
+        _edition: Option<String>,
+    ) -> Result<Vec<EventBook>> {
+        Ok(vec![self.event_book.clone()])
+    }
 }
 
 // Mock client for testing CommandBuilder: records the last command sent.

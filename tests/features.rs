@@ -51,10 +51,6 @@ const PENDING: &[(&str, &str)] = &[
         "C-0305",
         "spec rewrite pending: no generated correlation id",
     ),
-    // A Query never crosses its cover's domain (types.proto, Query); the
-    // cross-domain read is GetCorrelatedEvents, which the client does not
-    // expose yet (proposal, awaiting sign-off).
-    ("C-0241", "no GetCorrelatedEvents client method yet"),
 ];
 
 /// Outcome of one feature run.

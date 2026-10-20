@@ -884,11 +884,38 @@ impl EventQueryService for Svc {
 
     type GetCorrelatedEventsStream = BookStream;
 
+    /// Every stream of the edition holding pages of the correlation, one
+    /// book per stream, across domains.
     async fn get_correlated_events(
         &self,
-        _request: Request<CorrelationQuery>,
+        request: Request<CorrelationQuery>,
     ) -> Result<Response<Self::GetCorrelatedEventsStream>, Status> {
-        Err(Status::unimplemented("test backend: GetCorrelatedEvents"))
+        self.rpc("GetCorrelatedEvents");
+        let query = request.into_inner();
+        let correlation = query
+            .correlation_id
+            .ok_or_else(|| Status::invalid_argument("correlation_id is required"))?;
+        let edition = query.edition.unwrap_or_default();
+        let books: Vec<EventBook> = self
+            .0
+            .store
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|a| edition_key(&a.cover) == edition)
+            .filter_map(|a| {
+                let pages = a.correlated(&correlation);
+                (!pages.is_empty()).then(|| EventBook {
+                    cover: Some(a.cover.clone()),
+                    pages,
+                    snapshot: None,
+                    next_sequence: a.next_sequence(),
+                })
+            })
+            .collect();
+        Ok(Response::new(Box::pin(tokio_stream::iter(
+            books.into_iter().map(Ok),
+        ))))
     }
 
     type GetAggregateRootsStream = RootStream;

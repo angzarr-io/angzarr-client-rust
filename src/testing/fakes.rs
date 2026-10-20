@@ -236,11 +236,32 @@ impl QueryClient for RecordingQueryClient {
         Ok(self.event_book.lock().unwrap().clone().unwrap_or_default())
     }
 
+    /// Recorded as a `Query` carrying the correlation id and, when given,
+    /// the edition on its cover; answered like `get_events`.
+    async fn get_correlated_events(
+        &self,
+        correlation_id: uuid::Uuid,
+        edition: Option<String>,
+    ) -> Result<Vec<EventBook>> {
+        let query = Query {
+            cover: edition.map(|edition| crate::proto::Cover {
+                edition: Some(edition),
+                ..Default::default()
+            }),
+            correlation_id: Some(correlation_id.into()),
+            ..Default::default()
+        };
+        self.answer_stream("get_correlated_events", query)
+    }
+
     async fn get_events(&self, query: Query) -> Result<Vec<EventBook>> {
-        self.calls.lock().unwrap().push(QueryCall {
-            method: "get_events",
-            query,
-        });
+        self.answer_stream("get_events", query)
+    }
+}
+
+impl RecordingQueryClient {
+    fn answer_stream(&self, method: &'static str, query: Query) -> Result<Vec<EventBook>> {
+        self.calls.lock().unwrap().push(QueryCall { method, query });
         if let Some(err) = self.err_if_set() {
             return Err(err);
         }
@@ -438,6 +459,25 @@ mod tests {
             .await
             .unwrap_err()
             .is_not_found());
+    }
+
+    #[tokio::test]
+    async fn query_fake_records_correlated_reads() {
+        let fake = RecordingQueryClient::new();
+        fake.respond_events_stream(vec![book("a"), book("b")]);
+        let id = uuid::Uuid::from_u128(7);
+        let books = fake
+            .get_correlated_events(id, Some("trial".into()))
+            .await
+            .unwrap();
+        assert_eq!(books.len(), 2);
+        let call = fake.last_call("get_correlated_events").expect("recorded");
+        assert_eq!(call.query.correlation_id, Some(id.into()));
+        assert_eq!(
+            call.query.cover.and_then(|c| c.edition).as_deref(),
+            Some("trial")
+        );
+        assert_eq!(fake.call_count("get_events"), 0);
     }
 
     #[test]

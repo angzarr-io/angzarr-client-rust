@@ -171,7 +171,6 @@ async fn a_stale_sequence_is_classified_as_aborted() {
 // Correlated reads across domains (C-0241; query.proto GetCorrelatedEvents).
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "proposal-tests")]
 #[tokio::test]
 async fn correlated_events_cross_domains() {
     let backend = TestBackend::start_tcp().await;

@@ -47,4 +47,13 @@ pub trait QueryClient: Send + Sync {
     async fn get_events(&self, query: Query) -> Result<Vec<EventBook>> {
         Ok(vec![self.get_event_book(query).await?])
     }
+
+    /// Every event of one correlation across every domain it touched
+    /// (`GetCorrelatedEvents`), one EventBook per stream; `edition` picks
+    /// the timeline (`None` = main).
+    async fn get_correlated_events(
+        &self,
+        correlation_id: uuid::Uuid,
+        edition: Option<String>,
+    ) -> Result<Vec<EventBook>>;
 }
