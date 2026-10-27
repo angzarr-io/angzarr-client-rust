@@ -29,7 +29,13 @@ IMAGE := "ghcr.io/angzarr-io/angzarr-rust:latest"
 _container +ARGS:
     #!/usr/bin/env bash
     if [ "${DEVCONTAINER:-}" = "true" ]; then
-        just {{ARGS}}
+        # Name the container justfile explicitly. A bare `just {{ARGS}}`
+        # resolves to THIS (host) justfile, whose recipes call `_container`
+        # again: build -> _container build -> just build -> ... with no
+        # limit. That recursion exhausted the cgroup's task cap and killed
+        # the session running it (2026-10-26). `_container-ephemeral`
+        # already does this.
+        just --justfile "{{ROOT}}/justfile.container" {{ARGS}}
     else
         docker run --rm --network=host \
             -v "{{ROOT}}:/workspace:Z" \
