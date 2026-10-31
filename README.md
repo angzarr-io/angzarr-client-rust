@@ -246,7 +246,7 @@ let response = client.command_handler(request, None).await?;
 
 ## License
 
-AGPL-3.0-only
+Licensed under either of Apache License 2.0 or BSD 3-Clause, at your option.
 
 ## Development
 
