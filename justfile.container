@@ -18,6 +18,11 @@ test:
     cargo test --workspace --lib
     cargo test --test features --no-fail-fast
 
+# Build the tests `test` runs without running them
+build-tests:
+    cargo test --workspace --lib --no-run
+    cargo test --test features --no-run
+
 # Run clippy linter
 lint:
     cargo clippy --workspace -- -D warnings

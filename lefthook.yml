@@ -1,18 +1,35 @@
 # Lefthook configuration
 # https://github.com/evilmartians/lefthook
 #
-# Setup: lefthook install
-# Bypass: git commit --no-verify (or LEFTHOOK=0 git commit)
+# Setup: lefthook install (again after a hook is added or removed here:
+# pre-merge-commit and pre-push were)
+# Bypass: none; a failing hook is a finding: fix the cause and commit again.
+#
+# Red tests are allowed on branches and never merged red: a commit off the
+# default branch may carry failing tests (`just test-commit`, warned), a
+# commit or merge commit on it may not, and a push to it is refused unless
+# the pushed commit's tests pass (`just push-check`).
 
+# Plant the in-submodule pre-commit guard (angzarr-project/submodule.just's
+# install-submodule-hooks, imported by the justfile) after checkouts and
+# merges. A fresh clone or `git worktree add` runs post-checkout before any
+# submodule is checked out: angzarr-project/submodule.just is not there, so
+# the justfile's `import?` brings no `install-submodule-hooks`, and there is
+# no submodule checkout to guard either. The step says so, and how to
+# install the guard once the submodules are checked out; with
+# submodule.just there, the recipe runs and its failure fails the hook.
 post-checkout:
   commands:
     install-submodule-hooks:
-      run: just install-submodule-hooks
+      run: &install-submodule-hooks >-
+        if [ -f angzarr-project/submodule.just ]; then just install-submodule-hooks;
+        else echo "no submodule guard installed: angzarr-project is not checked out (git submodule update --init, then just install-submodule-hooks)";
+        fi
 
 post-merge:
   commands:
     install-submodule-hooks:
-      run: just install-submodule-hooks
+      run: *install-submodule-hooks
 
 pre-commit:
   parallel: false
@@ -27,9 +44,33 @@ pre-commit:
     fmt:
       run: just fmt-fix
       stage_fixed: true
+    # Red tests are committed off the default branch and refused on it; a
+    # build failure is refused everywhere (`just test-commit`).
     test:
-      run: just test
+      run: just test-commit
+
+# A merge commit is tested as a commit is: one bringing red tests onto the
+# default branch is refused, one onto another branch is warned.
+pre-merge-commit:
+  commands:
+    test:
+      run: just test-commit
+
+# Red tests never reach the default branch: `just push-check` runs every test
+# in each pushed commit's own tree (the justfile says how), refusing a push
+# to the default branch whose tests fail and warning on any other branch.
+# git's pushed refs are on stdin, and {1} is the remote's name. lefthook
+# skips a pre-push command when it finds no files changed between HEAD and
+# the remote, which says nothing of the refs pushed; a `{files}` in `run`
+# turns that off, so `files` names one that is always there, and push-check
+# ignores it.
+pre-push:
+  commands:
+    push-check:
+      use_stdin: true
+      files: echo justfile
+      run: just push-check {1} {files}
 
 # Mutation testing runs on a weekly schedule
-# (.github/workflows/mutation.yml) rather than gating every push.
+# (.github/workflows/mutation.yml) rather than in any hook.
 # Invoke manually with `just mutation-test` when needed.
