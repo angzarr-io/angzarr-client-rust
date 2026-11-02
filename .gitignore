@@ -1,5 +1,7 @@
 # Build artifacts
 target/
+# The container cargo home (`just _container`: CARGO_HOME=/workspace/.cargo-container)
+.cargo-container/
 Cargo.lock
 *.rs.bk
 
