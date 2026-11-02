@@ -6,9 +6,19 @@
 //! ```bash
 //! cargo test --test features
 //! ```
+//!
+//! Every suite runs, then the process exits non-zero if any of them failed:
+//! a scenario with a failing step, a step that matches no binding (cucumber's
+//! `fail_on_skipped`), or a feature file that does not parse. cucumber's
+//! `run` only reports; the verdict is its writer's `execution_has_failed`, as
+//! angzarr-embedded's conformance runner and angzarr-cli's codegen runner
+//! read it.
 
 mod steps;
 
+use std::fmt::Debug;
+
+use cucumber::writer::Stats as _;
 use cucumber::World;
 use steps::aggregate_client::AggregateClientWorld;
 use steps::builder::BuilderWorld;
@@ -41,84 +51,109 @@ use steps::upcaster::UpcasterWorld;
 use steps::validation::ValidationWorld;
 use steps::wire_parity::WireParityWorld;
 
+/// Run the feature at `path` with `W`'s steps, recording `path` in `failed`
+/// if it failed.
+async fn run<W>(path: &'static str, failed: &mut Vec<&'static str>)
+where
+    W: World + Debug + cucumber::codegen::WorldInventory,
+{
+    let writer = W::cucumber().fail_on_skipped().run(path).await;
+    if writer.execution_has_failed() {
+        failed.push(path);
+    }
+}
+
 #[tokio::main]
 async fn main() {
+    let mut failed = Vec::new();
+
     // Run Parity tests
     println!("\n=== Running Parity Tests ===\n");
-    ParityWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/parity.feature")
-        .await;
+    run::<ParityWorld>(
+        "angzarr-project/features/client/parity.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run Identity tests
     println!("\n=== Running Identity Tests ===\n");
-    IdentityWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/identity.feature")
-        .await;
+    run::<IdentityWorld>(
+        "angzarr-project/features/client/identity.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run Testing tests
     println!("\n=== Running Testing Tests ===\n");
-    TestingWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/testing.feature")
-        .await;
+    run::<TestingWorld>(
+        "angzarr-project/features/client/testing.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run Connection tests
     println!("\n=== Running Connection Tests ===\n");
-    ConnectionWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/connection.feature")
-        .await;
+    run::<ConnectionWorld>(
+        "angzarr-project/features/client/connection.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run DomainClient tests
     println!("\n=== Running DomainClient Tests ===\n");
-    DomainClientWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/domain-client.feature")
-        .await;
+    run::<DomainClientWorld>(
+        "angzarr-project/features/client/domain-client.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run AggregateClient tests
     println!("\n=== Running AggregateClient Tests ===\n");
-    AggregateClientWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/aggregate_client.feature")
-        .await;
+    run::<AggregateClientWorld>(
+        "angzarr-project/features/client/aggregate_client.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run QueryClient tests
     println!("\n=== Running QueryClient Tests ===\n");
-    QueryClientWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/query_client.feature")
-        .await;
+    run::<QueryClientWorld>(
+        "angzarr-project/features/client/query_client.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run SpeculativeClient tests
     println!("\n=== Running SpeculativeClient Tests ===\n");
-    SpeculativeClientWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/speculative_client.feature")
-        .await;
+    run::<SpeculativeClientWorld>(
+        "angzarr-project/features/client/speculative_client.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run CommandBuilder tests
     println!("\n=== Running CommandBuilder Tests ===\n");
-    CommandBuilderWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/command_builder.feature")
-        .await;
+    run::<CommandBuilderWorld>(
+        "angzarr-project/features/client/command_builder.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run QueryBuilder tests
     println!("\n=== Running QueryBuilder Tests ===\n");
-    QueryBuilderWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/query_builder.feature")
-        .await;
+    run::<QueryBuilderWorld>(
+        "angzarr-project/features/client/query_builder.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run ErrorHandling tests
     println!("\n=== Running ErrorHandling Tests ===\n");
-    ErrorHandlingWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/error_handling.feature")
-        .await;
+    run::<ErrorHandlingWorld>(
+        "angzarr-project/features/client/error_handling.feature",
+        &mut failed,
+    )
+    .await;
 
     // Legacy router.feature is retired in the Rust tier — routing behavior is
     // covered by the TIER5 suites below (builder / command_handler /
@@ -128,17 +163,19 @@ async fn main() {
 
     // Run EventDecoding tests
     println!("\n=== Running EventDecoding Tests ===\n");
-    EventDecodingWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/event_decoding.feature")
-        .await;
+    run::<EventDecodingWorld>(
+        "angzarr-project/features/client/event_decoding.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run Compensation tests
     println!("\n=== Running Compensation Tests ===\n");
-    CompensationWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/compensation.feature")
-        .await;
+    run::<CompensationWorld>(
+        "angzarr-project/features/client/compensation.feature",
+        &mut failed,
+    )
+    .await;
 
     // ------------------------------------------------------------------
     // TIER5 Router feature suite.
@@ -146,85 +183,99 @@ async fn main() {
 
     // Run Builder tests
     println!("\n=== Running Builder Tests ===\n");
-    BuilderWorld::cucumber()
-        .run("angzarr-project/features/client/builder.feature")
-        .await;
+    run::<BuilderWorld>(
+        "angzarr-project/features/client/builder.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run CommandHandler tests
     println!("\n=== Running CommandHandler Tests ===\n");
-    CommandHandlerWorld::cucumber()
-        .run("angzarr-project/features/client/command_handler.feature")
-        .await;
+    run::<CommandHandlerWorld>(
+        "angzarr-project/features/client/command_handler.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run MultiHandler tests
     println!("\n=== Running MultiHandler Tests ===\n");
-    MultiHandlerWorld::cucumber()
-        .run("angzarr-project/features/client/multi_handler.feature")
-        .await;
+    run::<MultiHandlerWorld>(
+        "angzarr-project/features/client/multi_handler.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run ProcessManager tests
     println!("\n=== Running ProcessManager Tests ===\n");
-    ProcessManagerWorld::cucumber()
-        .run("angzarr-project/features/client/process_manager.feature")
-        .await;
+    run::<ProcessManagerWorld>(
+        "angzarr-project/features/client/process_manager.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run Projector tests
     println!("\n=== Running Projector Tests ===\n");
-    ProjectorWorld::cucumber()
-        .run("angzarr-project/features/client/projector.feature")
-        .await;
+    run::<ProjectorWorld>(
+        "angzarr-project/features/client/projector.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run Rejection tests
     println!("\n=== Running Rejection Tests ===\n");
-    RejectionWorld::cucumber()
-        .run("angzarr-project/features/client/rejection.feature")
-        .await;
+    run::<RejectionWorld>(
+        "angzarr-project/features/client/rejection.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run Saga tests
     println!("\n=== Running Saga Tests ===\n");
-    SagaWorld::cucumber()
-        .run("angzarr-project/features/client/saga.feature")
-        .await;
+    run::<SagaWorld>("angzarr-project/features/client/saga.feature", &mut failed).await;
 
     // Run RejectedCompensation tests
     println!("\n=== Running RejectedCompensation Tests ===\n");
-    RejectedCompensationWorld::cucumber()
-        .run("angzarr-project/features/client/rejected_compensation.feature")
-        .await;
+    run::<RejectedCompensationWorld>(
+        "angzarr-project/features/client/rejected_compensation.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run Validation tests
     println!("\n=== Running Validation Tests ===\n");
-    ValidationWorld::cucumber()
-        .run("angzarr-project/features/client/validation.feature")
-        .await;
+    run::<ValidationWorld>(
+        "angzarr-project/features/client/validation.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run Upcaster tests
     println!("\n=== Running Upcaster Tests ===\n");
-    UpcasterWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/upcaster.feature")
-        .await;
+    run::<UpcasterWorld>(
+        "angzarr-project/features/client/upcaster.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run Retry tests
     println!("\n=== Running Retry Tests ===\n");
-    RetryWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/retry.feature")
-        .await;
+    run::<RetryWorld>("angzarr-project/features/client/retry.feature", &mut failed).await;
 
     // Run Decorators tests (kind-declaration parity, C-0121..C-0126)
     println!("\n=== Running Decorators Tests ===\n");
-    DecoratorsWorldCucumber::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/decorators.feature")
-        .await;
+    run::<DecoratorsWorldCucumber>(
+        "angzarr-project/features/client/decorators.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run cross-language wire-format parity tests
     println!("\n=== Running WireParity Tests ===\n");
-    WireParityWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/wire_parity.feature")
-        .await;
+    run::<WireParityWorld>(
+        "angzarr-project/features/client/wire_parity.feature",
+        &mut failed,
+    )
+    .await;
 
     // ------------------------------------------------------------------
     // Coordinator-contract simulations.
@@ -241,27 +292,39 @@ async fn main() {
     // ------------------------------------------------------------------
 
     println!("\n=== Running FactFlow (coordinator-contract sim) ===\n");
-    FactFlowWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/coordinator-contract/fact_flow.feature")
-        .await;
+    run::<FactFlowWorld>(
+        "angzarr-project/features/coordinator-contract/fact_flow.feature",
+        &mut failed,
+    )
+    .await;
 
     println!("\n=== Running MergeStrategy (coordinator-contract sim) ===\n");
-    MergeStrategyWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/coordinator-contract/merge_strategy.feature")
-        .await;
+    run::<MergeStrategyWorld>(
+        "angzarr-project/features/coordinator-contract/merge_strategy.feature",
+        &mut failed,
+    )
+    .await;
 
     println!("\n=== Running StateBuilding (coordinator-contract sim) ===\n");
-    StateBuildingWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/coordinator-contract/state_building.feature")
-        .await;
+    run::<StateBuildingWorld>(
+        "angzarr-project/features/coordinator-contract/state_building.feature",
+        &mut failed,
+    )
+    .await;
 
     // Run Destinations query-surface tests (C-0132..C-0134)
     println!("\n=== Running Destinations Tests ===\n");
-    DestinationsWorld::cucumber()
-        .fail_on_skipped()
-        .run("angzarr-project/features/client/destinations.feature")
-        .await;
+    run::<DestinationsWorld>(
+        "angzarr-project/features/client/destinations.feature",
+        &mut failed,
+    )
+    .await;
+
+    if !failed.is_empty() {
+        eprintln!("\n{} feature suites failed:", failed.len());
+        for path in &failed {
+            eprintln!("  {path}");
+        }
+        std::process::exit(1);
+    }
 }
