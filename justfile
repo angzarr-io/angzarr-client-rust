@@ -24,6 +24,12 @@ import? 'angzarr-project/submodule.just'
 ROOT := `git rev-parse --show-toplevel`
 IMAGE := "ghcr.io/angzarr-io/angzarr-rust:latest"
 
+# Rootless docker maps container uid 0 to the host user, so `-u 0:0` is what
+# makes bind-mounted writes (target/, .cargo-container/) land as the host
+# user; the image's default user maps to an unowned subuid there. Rootful
+# docker keeps the image default.
+DOCKER_USER := if `docker info 2>/dev/null | grep -q rootless && echo yes || echo no` == "yes" { "-u 0:0" } else { "" }
+
 # Run just target in container (or directly if already in devcontainer)
 [private]
 _container +ARGS:
@@ -37,12 +43,19 @@ _container +ARGS:
         # already does this.
         just --justfile "{{ROOT}}/justfile.container" {{ARGS}}
     else
-        docker run --rm --network=host \
+        # Mount the shared git dir at its host path so linked worktrees
+        # (whose .git file points there) resolve inside the container.
+        git_common="$(git rev-parse --path-format=absolute --git-common-dir)"
+        docker run --rm --network=host {{DOCKER_USER}} \
             -v "{{ROOT}}:/workspace:Z" \
+            -v "${git_common}:${git_common}" \
             -v "{{ROOT}}/justfile.container:/workspace/justfile:ro" \
             -w /workspace \
             -e CARGO_HOME=/workspace/.cargo-container \
             -e DEVCONTAINER=true \
+            -e GIT_CONFIG_COUNT=1 \
+            -e GIT_CONFIG_KEY_0=safe.directory \
+            -e GIT_CONFIG_VALUE_0='*' \
             {{IMAGE}} just {{ARGS}}
     fi
 
