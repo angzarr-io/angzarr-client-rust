@@ -78,9 +78,13 @@ pub trait EventPageExt {
 
     /// Type-safe decode using prost::Name reflection.
     ///
-    /// Returns None if the event is missing, type URL doesn't match exactly,
-    /// or decoding fails. The expected type URL is derived from M::full_name().
-    fn decode_typed<M: prost::Message + Default + Name>(&self) -> Option<M>;
+    /// `Ok(None)` when there is no event payload or its type URL is not
+    /// exactly the one derived from `M::full_name()`: a mismatch. A payload
+    /// whose type matches but whose bytes do not decode is an error, not a
+    /// mismatch: `Err` with code `ANY_DECODE_FAILED`, as
+    /// [`crate::convert::unpack`], [`crate::convert::try_unpack`] and
+    /// [`crate::decode_event`] report it.
+    fn decode_typed<M: prost::Message + Default + Name>(&self) -> crate::error::Result<Option<M>>;
 }
 
 impl EventPageExt for EventPage {
@@ -116,17 +120,26 @@ impl EventPageExt for EventPage {
         }
     }
 
-    fn decode_typed<M: prost::Message + Default + Name>(&self) -> Option<M> {
+    fn decode_typed<M: prost::Message + Default + Name>(&self) -> crate::error::Result<Option<M>> {
         let event = match &self.payload {
             Some(crate::proto::event_page::Payload::Event(e)) => e,
-            _ => return None,
+            _ => return Ok(None),
         };
-        let expected = format!("{}{}", TYPE_URL_PREFIX, M::full_name());
-        if event.type_url != expected {
-            return None;
-        }
-        M::decode(event.value.as_slice()).ok()
+        decode_matching(event)
     }
+}
+
+/// Decode a page's payload as `M` when its type URL is exactly `M`'s:
+/// `Ok(None)` on a mismatch, `ANY_DECODE_FAILED` (via the shared
+/// [`crate::convert::decode_payload`]) when matching bytes do not decode.
+fn decode_matching<M: prost::Message + Default + Name>(
+    any: &prost_types::Any,
+) -> crate::error::Result<Option<M>> {
+    let expected = format!("{}{}", TYPE_URL_PREFIX, M::full_name());
+    if any.type_url != expected {
+        return Ok(None);
+    }
+    crate::convert::decode_payload(&any.value, &expected).map(Some)
 }
 
 /// Extension trait for CommandPage proto type.
@@ -151,9 +164,13 @@ pub trait CommandPageExt {
 
     /// Type-safe decode using prost::Name reflection.
     ///
-    /// Returns None if the command is missing, type URL doesn't match exactly,
-    /// or decoding fails. The expected type URL is derived from M::full_name().
-    fn decode_typed<M: prost::Message + Default + Name>(&self) -> Option<M>;
+    /// `Ok(None)` when there is no command payload or its type URL is not
+    /// exactly the one derived from `M::full_name()`: a mismatch. A payload
+    /// whose type matches but whose bytes do not decode is an error, not a
+    /// mismatch: `Err` with code `ANY_DECODE_FAILED`, as
+    /// [`crate::convert::unpack`], [`crate::convert::try_unpack`] and
+    /// [`crate::decode_event`] report it.
+    fn decode_typed<M: prost::Message + Default + Name>(&self) -> crate::error::Result<Option<M>>;
 
     /// Get the merge strategy for this command.
     ///
@@ -194,16 +211,12 @@ impl CommandPageExt for CommandPage {
         }
     }
 
-    fn decode_typed<M: prost::Message + Default + Name>(&self) -> Option<M> {
+    fn decode_typed<M: prost::Message + Default + Name>(&self) -> crate::error::Result<Option<M>> {
         let command = match &self.payload {
             Some(crate::proto::command_page::Payload::Command(c)) => c,
-            _ => return None,
+            _ => return Ok(None),
         };
-        let expected = format!("{}{}", TYPE_URL_PREFIX, M::full_name());
-        if command.type_url != expected {
-            return None;
-        }
-        M::decode(command.value.as_slice()).ok()
+        decode_matching(command)
     }
 
     fn merge_strategy(&self) -> MergeStrategy {
@@ -238,5 +251,108 @@ impl AngzarrDeferredSequenceExt for AngzarrDeferredSequence {
             source.root_id_hex().unwrap_or_default(),
             self.source_seq
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::convert::{full_type_url, type_url};
+    use crate::error::ClientError;
+    use crate::error_codes::{codes, keys};
+    use crate::proto::{command_page, event_page, Cover};
+    use prost::Message;
+    use prost_types::Any;
+
+    fn cover() -> Cover {
+        Cover {
+            domain: "orders".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// Bytes that are no protobuf encoding of anything: a field key whose
+    /// varint never ends.
+    fn undecodable() -> Vec<u8> {
+        vec![0xFF, 0xFF, 0xFF, 0xFF]
+    }
+
+    fn any(type_url: String, value: Vec<u8>) -> Any {
+        Any { type_url, value }
+    }
+
+    fn event_page(any: Any) -> EventPage {
+        EventPage {
+            payload: Some(event_page::Payload::Event(any)),
+            ..Default::default()
+        }
+    }
+
+    fn command_page(any: Any) -> CommandPage {
+        CommandPage {
+            payload: Some(command_page::Payload::Command(any)),
+            ..Default::default()
+        }
+    }
+
+    /// An undecodable payload of the matching type is `ANY_DECODE_FAILED`,
+    /// naming the type URL expected and the decoder's cause.
+    fn assert_decode_failed(err: ClientError) {
+        assert_eq!(err.code(), codes::ANY_DECODE_FAILED);
+        let ClientError::InvalidArgument(detail) = err else {
+            panic!("expected InvalidArgument, got {err:?}");
+        };
+        assert_eq!(detail.details[keys::EXPECTED], full_type_url::<Cover>());
+        assert!(!detail.details[keys::CAUSE].is_empty());
+    }
+
+    #[test]
+    fn event_decode_typed_decodes_a_payload_of_its_type() {
+        let page = event_page(any(full_type_url::<Cover>(), cover().encode_to_vec()));
+        assert_eq!(page.decode_typed::<Cover>().unwrap(), Some(cover()));
+    }
+
+    #[test]
+    fn event_decode_typed_is_none_on_a_type_mismatch() {
+        // A mismatch is no error, whatever the bytes are.
+        let page = event_page(any(type_url("orders.Other"), undecodable()));
+        assert_eq!(page.decode_typed::<Cover>().unwrap(), None);
+    }
+
+    #[test]
+    fn event_decode_typed_is_none_without_an_event() {
+        assert_eq!(EventPage::default().decode_typed::<Cover>().unwrap(), None);
+    }
+
+    #[test]
+    fn event_decode_typed_surfaces_a_decode_failure() {
+        let page = event_page(any(full_type_url::<Cover>(), undecodable()));
+        assert_decode_failed(page.decode_typed::<Cover>().unwrap_err());
+    }
+
+    #[test]
+    fn command_decode_typed_decodes_a_payload_of_its_type() {
+        let page = command_page(any(full_type_url::<Cover>(), cover().encode_to_vec()));
+        assert_eq!(page.decode_typed::<Cover>().unwrap(), Some(cover()));
+    }
+
+    #[test]
+    fn command_decode_typed_is_none_on_a_type_mismatch() {
+        let page = command_page(any(type_url("orders.Other"), undecodable()));
+        assert_eq!(page.decode_typed::<Cover>().unwrap(), None);
+    }
+
+    #[test]
+    fn command_decode_typed_is_none_without_a_command() {
+        assert_eq!(
+            CommandPage::default().decode_typed::<Cover>().unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn command_decode_typed_surfaces_a_decode_failure() {
+        let page = command_page(any(full_type_url::<Cover>(), undecodable()));
+        assert_decode_failed(page.decode_typed::<Cover>().unwrap_err());
     }
 }
