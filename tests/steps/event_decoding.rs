@@ -1,5 +1,6 @@
 //! Event decoding step definitions.
 
+use angzarr_client::error_codes::codes;
 use angzarr_client::proto::{
     event_page, page_header, CommandResponse, Cover, EventBook, EventPage, PageHeader,
 };
@@ -352,7 +353,7 @@ async fn given_mixed_events(world: &mut EventDecodingWorld) {
 #[when("I decode the event as OrderCreated")]
 async fn when_decode_as_order_created(world: &mut EventDecodingWorld) {
     if let Some(ref event) = world.current_event {
-        let result: Option<OrderCreated> = decode_event(event, "orders.OrderCreated");
+        let result: Option<OrderCreated> = decode_event(event, "orders.OrderCreated").unwrap();
         if let Some(decoded) = result {
             world.decode_result = Some(decoded);
         } else {
@@ -367,7 +368,7 @@ async fn when_decode_with_full_name(world: &mut EventDecodingWorld, full_name: S
     // like "OrderCreated" no longer decode against
     // "type.googleapis.com/orders.OrderCreated".
     if let Some(ref event) = world.current_event {
-        let result: Option<OrderCreated> = decode_event(event, &full_name);
+        let result: Option<OrderCreated> = decode_event(event, &full_name).unwrap();
         if let Some(decoded) = result {
             world.decode_result = Some(decoded);
         } else {
@@ -423,19 +424,19 @@ async fn when_decode_payload(world: &mut EventDecodingWorld) {
     }
 }
 
+/// Attempt-to-decode goes through `decode_event`: a page with no payload
+/// decodes to None, a payload of the type whose bytes do not decode is an
+/// error, recorded by its code.
 #[when("I attempt to decode")]
 async fn when_attempt_decode(world: &mut EventDecodingWorld) {
-    if let Some(ref event) = world.current_event {
-        if let Some(event_page::Payload::Event(any)) = &event.payload {
-            match OrderCreated::decode(any.value.as_slice()) {
-                Ok(decoded) => world.decode_result = Some(decoded),
-                Err(e) => world.last_error = Some(e.to_string()),
-            }
-        } else {
-            world.decode_is_none = true;
-        }
-    } else {
+    let Some(ref event) = world.current_event else {
         world.decode_is_none = true;
+        return;
+    };
+    match decode_event::<OrderCreated>(event, "orders.OrderCreated") {
+        Ok(Some(decoded)) => world.decode_result = Some(decoded),
+        Ok(None) => world.decode_is_none = true,
+        Err(e) => world.last_error = Some(e.code().to_string()),
     }
 }
 
@@ -460,7 +461,7 @@ async fn when_decode(world: &mut EventDecodingWorld) {
 #[when(expr = "I call decode_event\\(event, {string}\\)")]
 async fn when_call_decode_event(world: &mut EventDecodingWorld, suffix: String) {
     if let Some(ref event) = world.current_event {
-        let result: Option<OrderCreated> = decode_event(event, &suffix);
+        let result: Option<OrderCreated> = decode_event(event, &suffix).unwrap();
         if let Some(decoded) = result {
             world.decode_result = Some(decoded);
         } else {
@@ -480,7 +481,7 @@ async fn when_call_events_from_response(world: &mut EventDecodingWorld) {
 #[when("I decode each as ItemAdded")]
 async fn when_decode_each_as_item_added(world: &mut EventDecodingWorld) {
     for event in &world.events_list {
-        let _result: Option<ItemAdded> = decode_event(event, "orders.ItemAdded");
+        let _result: Option<ItemAdded> = decode_event(event, "orders.ItemAdded").unwrap();
     }
 }
 
@@ -644,12 +645,16 @@ async fn then_no_error(world: &mut EventDecodingWorld) {
 
 #[then("decoding should fail")]
 async fn then_decoding_fails(world: &mut EventDecodingWorld) {
-    assert!(world.last_error.is_some() || world.decode_is_none);
+    assert!(world.decode_result.is_none(), "no message decodes");
+    assert!(
+        world.last_error.is_some(),
+        "the failure is an error, not a None"
+    );
 }
 
 #[then("an error should indicate deserialization failure")]
 async fn then_error_deserialization(world: &mut EventDecodingWorld) {
-    assert!(world.last_error.is_some());
+    assert_eq!(world.last_error.as_deref(), Some(codes::ANY_DECODE_FAILED));
 }
 
 #[then("no crash should occur")]
@@ -706,7 +711,7 @@ async fn then_each_has_correct_data(world: &mut EventDecodingWorld) {
 #[then("OrderCreated should decode as OrderCreated")]
 async fn then_order_created_decodes(world: &mut EventDecodingWorld) {
     let event = &world.events_list[0];
-    let result: Option<OrderCreated> = decode_event(event, "orders.OrderCreated");
+    let result: Option<OrderCreated> = decode_event(event, "orders.OrderCreated").unwrap();
     assert!(result.is_some());
 }
 
@@ -715,7 +720,7 @@ async fn then_item_added_decodes(world: &mut EventDecodingWorld) {
     for event in &world.events_list {
         if let Some(event_page::Payload::Event(any)) = &event.payload {
             if any.type_url.ends_with("ItemAdded") {
-                let result: Option<ItemAdded> = decode_event(event, "orders.ItemAdded");
+                let result: Option<ItemAdded> = decode_event(event, "orders.ItemAdded").unwrap();
                 assert!(result.is_some());
             }
         }

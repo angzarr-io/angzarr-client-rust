@@ -306,19 +306,27 @@ pub fn events_from_response(response: &CommandResponse) -> &[EventPage] {
 /// `"examples.OrderCreated"`, `"google.protobuf.Duration"`) — NOT a
 /// suffix. The check is exact equality against
 /// `TYPE_URL_PREFIX + full_type_name`, mirroring Python's
-/// `helpers.decode_event` (`helpers.py:439`). Suffix matching is
+/// `helpers.decode_event`. Suffix matching is
 /// rejected as a contract: a real `OrderCreated` and an unrelated
 /// `legacy.OrderCreated` would be indistinguishable. See
 /// PARITY_AUDIT.md finding #25.
-pub fn decode_event<M: Message + Default>(event: &EventPage, full_type_name: &str) -> Option<M> {
+///
+/// `Ok(None)` when the page has no event payload or its type does not
+/// match. A payload of the matching type whose bytes do not decode is an
+/// error, not a mismatch: `Err` with code `ANY_DECODE_FAILED`, as
+/// [`crate::unpack`] and [`crate::try_unpack`] report it.
+pub fn decode_event<M: Message + Default>(
+    event: &EventPage,
+    full_type_name: &str,
+) -> Result<Option<M>> {
     let any = match &event.payload {
         Some(crate::proto::event_page::Payload::Event(e)) => e,
-        _ => return None,
+        _ => return Ok(None),
     };
     if !crate::convert::type_url_matches_exact(&any.type_url, full_type_name) {
-        return None;
+        return Ok(None);
     }
-    M::decode(any.value.as_slice()).ok()
+    crate::convert::decode_payload(&any.value, &any.type_url).map(Some)
 }
 
 #[cfg(test)]
@@ -795,8 +803,7 @@ mod tests {
         };
 
         let decoded: Option<prost_types::Duration> =
-            decode_event(&event, "google.protobuf.Duration");
-        assert!(decoded.is_some());
+            decode_event(&event, "google.protobuf.Duration").unwrap();
         assert_eq!(decoded.unwrap().seconds, 42);
     }
 
@@ -823,7 +830,7 @@ mod tests {
         };
 
         let decoded: Option<prost_types::Duration> =
-            decode_event(&event, "google.protobuf.Timestamp");
+            decode_event(&event, "google.protobuf.Timestamp").unwrap();
         assert!(decoded.is_none());
     }
 
@@ -841,12 +848,12 @@ mod tests {
         };
 
         let decoded: Option<prost_types::Duration> =
-            decode_event(&event, "google.protobuf.Duration");
-        assert!(decoded.is_none(), "garbage bytes must not decode");
+            decode_event(&event, "google.protobuf.Duration").unwrap();
+        assert!(decoded.is_none(), "a page with no payload decodes to None");
     }
 
     #[test]
-    fn test_decode_event_invalid_payload() {
+    fn test_decode_event_surfaces_a_decode_failure() {
         use crate::proto::event_page::Payload;
 
         let event = EventPage {
@@ -863,9 +870,18 @@ mod tests {
             no_commit: false,
         };
 
-        let decoded: Option<prost_types::Duration> =
-            decode_event(&event, "google.protobuf.Duration");
-        assert!(decoded.is_none());
+        // The type matches, so this is no mismatch: the decoder's failure
+        // surfaces as an error rather than a None.
+        let err =
+            decode_event::<prost_types::Duration>(&event, "google.protobuf.Duration").unwrap_err();
+        assert_eq!(err.code(), crate::error_codes::codes::ANY_DECODE_FAILED);
+        match err {
+            ClientError::InvalidArgument(d) => assert_eq!(
+                d.details[crate::error_codes::keys::EXPECTED],
+                "type.googleapis.com/google.protobuf.Duration"
+            ),
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
     }
 
     // Extension trait tests

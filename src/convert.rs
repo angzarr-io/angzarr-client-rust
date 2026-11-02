@@ -82,22 +82,25 @@ pub fn type_url_matches(type_url: &str, full_type_name: &str) -> bool {
 ///
 /// let any: prost_types::Any = /* ... */;
 /// if type_matches::<PlayerRegistered>(&any) {
-///     let msg = try_unpack::<PlayerRegistered>(&any).unwrap();
+///     let msg = unpack::<PlayerRegistered>(&any)?;
 /// }
 /// ```
 pub fn type_matches<T: prost::Message + Name>(any: &Any) -> bool {
     any.type_url == full_type_url::<T>()
 }
 
-/// Unpack an Any to type T if the type matches, returning None otherwise.
+/// Unpack an Any to type T if its type matches, returning `Ok(None)` when it
+/// does not.
 ///
-/// This is type-safe: it only unpacks if the type URL matches exactly.
-pub fn try_unpack<T: prost::Message + Default + Name>(any: &Any) -> Option<T> {
-    if type_matches::<T>(any) {
-        T::decode(any.value.as_slice()).ok()
-    } else {
-        None
+/// This is type-safe: it only unpacks if the type URL matches exactly. A
+/// payload whose type matches but whose bytes do not decode is an error, not
+/// a mismatch: it is `Err` with code `ANY_DECODE_FAILED`, as [`unpack`]
+/// reports it.
+pub fn try_unpack<T: prost::Message + Default + Name>(any: &Any) -> Result<Option<T>> {
+    if !type_matches::<T>(any) {
+        return Ok(None);
     }
+    decode_payload(&any.value, &any.type_url).map(Some)
 }
 
 /// Unpack an Any to type T, returning an error if type doesn't match or decode fails.
@@ -113,12 +116,25 @@ pub fn unpack<T: prost::Message + Default + Name>(any: &Any) -> Result<T> {
             ],
         ));
     }
-    T::decode(any.value.as_slice()).map_err(|e| {
+    decode_payload(&any.value, &expected)
+}
+
+/// Decode the payload bytes of an Any already matched against `type_url`.
+///
+/// A failure is `ANY_DECODE_FAILED`, naming the type URL expected and the
+/// decoder's cause. Shared by [`unpack`], [`try_unpack`] and
+/// [`crate::decode_event`], so every helper reports an undecodable payload
+/// the same way.
+pub(crate) fn decode_payload<T: prost::Message + Default>(
+    value: &[u8],
+    type_url: &str,
+) -> Result<T> {
+    T::decode(value).map_err(|e| {
         ClientError::invalid_argument(
             codes::ANY_DECODE_FAILED,
             messages::ANY_DECODE_FAILED,
             [
-                (keys::EXPECTED, expected.clone()),
+                (keys::EXPECTED, type_url.to_string()),
                 (keys::CAUSE, e.to_string()),
             ],
         )
@@ -289,5 +305,89 @@ mod tests {
     #[test]
     fn test_parse_timestamp_invalid() {
         assert!(parse_timestamp("not a timestamp").is_err());
+    }
+
+    use crate::proto::Cover;
+    use prost::Message;
+
+    /// An Any whose type URL names `Cover`, carrying `value`.
+    fn cover_any(value: Vec<u8>) -> Any {
+        Any {
+            type_url: full_type_url::<Cover>(),
+            value,
+        }
+    }
+
+    /// Bytes that are no protobuf encoding of anything: a field key whose
+    /// varint never ends.
+    fn undecodable() -> Vec<u8> {
+        vec![0xFF, 0xFF, 0xFF, 0xFF]
+    }
+
+    /// The `InvalidArgument` detail an error carries, asserting its code.
+    fn invalid_argument(err: ClientError, code: &str) -> crate::error::ErrorDetail {
+        assert_eq!(err.code(), code);
+        match err {
+            ClientError::InvalidArgument(d) => d,
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_unpack_decodes_a_payload_of_its_type() {
+        let cover = Cover {
+            domain: "orders".to_string(),
+            ..Default::default()
+        };
+        let got = try_unpack::<Cover>(&cover_any(cover.encode_to_vec())).unwrap();
+        assert_eq!(got, Some(cover));
+    }
+
+    #[test]
+    fn try_unpack_is_none_on_a_type_mismatch() {
+        // A mismatch is no error, whatever the bytes are.
+        let any = Any {
+            type_url: type_url("orders.Other"),
+            value: undecodable(),
+        };
+        assert_eq!(try_unpack::<Cover>(&any).unwrap(), None);
+    }
+
+    #[test]
+    fn try_unpack_surfaces_a_decode_failure() {
+        let err = try_unpack::<Cover>(&cover_any(undecodable())).unwrap_err();
+        let detail = invalid_argument(err, codes::ANY_DECODE_FAILED);
+        assert_eq!(detail.details[keys::EXPECTED], full_type_url::<Cover>());
+        assert!(!detail.details[keys::CAUSE].is_empty());
+    }
+
+    #[test]
+    fn unpack_decodes_a_payload_of_its_type() {
+        let cover = Cover {
+            domain: "orders".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            unpack::<Cover>(&cover_any(cover.encode_to_vec())).unwrap(),
+            cover
+        );
+    }
+
+    #[test]
+    fn unpack_rejects_a_type_mismatch() {
+        let any = Any {
+            type_url: type_url("orders.Other"),
+            value: vec![],
+        };
+        let detail = invalid_argument(unpack::<Cover>(&any).unwrap_err(), codes::ANY_TYPE_MISMATCH);
+        assert_eq!(detail.details[keys::EXPECTED], full_type_url::<Cover>());
+        assert_eq!(detail.details[keys::ACTUAL], type_url("orders.Other"));
+    }
+
+    #[test]
+    fn unpack_surfaces_a_decode_failure() {
+        let err = unpack::<Cover>(&cover_any(undecodable())).unwrap_err();
+        let detail = invalid_argument(err, codes::ANY_DECODE_FAILED);
+        assert_eq!(detail.details[keys::EXPECTED], full_type_url::<Cover>());
     }
 }
