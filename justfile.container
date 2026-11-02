@@ -45,16 +45,36 @@ check-all: build test lint fmt
 test-verbose:
     cargo test --workspace --lib -- --nocapture
 
-# Run mutation testing (70% kill rate threshold)
+# Run mutation testing (70% kill rate threshold): killed = caught or timed
+# out, over every mutant tested. cargo-mutants' exit code and mutants.out
+# are the verdict, not its console text. Fails when the tests fail unmutated
+# (exit 4: no mutant can be judged), when cargo mutants fails before a
+# verdict, and when it found mutants and tested fewer: a run that judged
+# nothing has shown nothing.
 mutation-test:
     #!/usr/bin/env bash
     set -euo pipefail
-    output=$(cargo mutants --jobs 4 2>&1) || true
-    echo "$output"
-    total=$(echo "$output" | grep -oP '(\d+) mutants tested' | grep -oP '^\d+' || echo "0")
-    killed=$(echo "$output" | grep -oP '(\d+) killed' | grep -oP '^\d+' || echo "0")
-    if [ "$total" -eq 0 ]; then
-        echo "ERROR: No mutants were tested"
+    rm -rf mutants.out
+    rc=0
+    cargo mutants --jobs 4 || rc=$?
+    # 0: all caught; 2: missed; 3: timeouts (judged below).
+    case "$rc" in
+        0|2|3) ;;
+        4) echo "FAIL: the tests fail unmutated (cargo-mutants baseline); no mutant can be judged"; exit 4 ;;
+        *) echo "FAIL: cargo mutants failed before a verdict (exit $rc)"; exit 1 ;;
+    esac
+    # mutants.json lists those found, one top-level "name" each; each
+    # outcome file holds a line per mutant judged.
+    lines() { { cat "$@" 2>/dev/null || true; } | wc -l; }
+    found=$(grep -c '^    "name": ' mutants.out/mutants.json 2>/dev/null) || found=0
+    killed=$(lines mutants.out/caught.txt mutants.out/timeout.txt)
+    total=$((killed + $(lines mutants.out/missed.txt mutants.out/unviable.txt)))
+    if [ "$found" -eq 0 ]; then
+        echo "ERROR: No mutants were found"
+        exit 1
+    fi
+    if [ "$total" -ne "$found" ]; then
+        echo "FAIL: $found mutants found but $total tested (cargo mutants exit $rc); nothing is judged until every one is"
         exit 1
     fi
     rate=$((killed * 100 / total))
